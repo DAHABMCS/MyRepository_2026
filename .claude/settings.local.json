@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/dahab/tradingview-mcp-jackson/**)",
+      "Bash(npm install:*)",
+      "Bash(node -e \"const {execSync} = require\\('child_process'\\); execSync\\('npm i --prefer-offline', {stdio:'inherit', env:{...process.env, npm_config_cache:'./.npm-cache'}}\\)\")",
+      "Bash(npx --yes create-pnpm@latest install)",
+      "Bash(npx --yes yarn@latest install)",
+      "Bash(cd /tmp)",
+      "Bash(curl -sL https://registry.npmjs.org/minipass/-/minipass-3.3.6.tgz -o minipass.tgz)",
+      "Bash(tar -xzf minipass.tgz)",
+      "Bash(npm -v)",
+      "Bash(npm cache:*)",
+      "Bash(where node:*)",
+      "Bash(python -m py_compile App_MACD_AI_HybridScore_Latest.py)"
+    ]
+  }
+}

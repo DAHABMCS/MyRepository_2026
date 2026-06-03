@@ -1,0 +1,59 @@
+{
+  "file_info": {
+    "mode": "python",
+    "coding": "utf-8"
+  },
+  "imports": [
+    "sys",
+    "os",
+    "PyInstaller.utils.hooks.collect_data_files"
+  ],
+  "datas": {
+    "streamlit_data": "collect_data_files('streamlit')",
+    "additional_data": [
+      {
+        "source": "config.json",
+        "destination": "."
+      },
+      {
+        "source": "models",
+        "destination": "models"
+      },
+      {
+        "source": "data",
+        "destination": "data"
+      }
+    ]
+  },
+  "executable_config": {
+    "script": "launcher.py",
+    "icon": null,
+    "base": null
+  },
+  "analysis_config": {
+    "script": "launcher.py",
+    "pathex": "os.path.abspath('.')",
+    "binaries": [],
+    "hiddenimports": [
+      "streamlit",
+      "streamlit.web",
+      "streamlit.runtime"
+    ],
+    "hookspath": [],
+    "runtime_hooks": [],
+    "excludes": [],
+    "win_no_prefer_redirects": false,
+    "win_private_assemblies": false,
+    "cipher": null,
+    "noarchive": false
+  },
+  "build_config": {
+    "name": "TradingApp",
+    "debug": false,
+    "bootloader_ignore_signals": false,
+    "strip": false,
+    "upx": true,
+    "console": false,
+    "icon": null
+  }
+}
