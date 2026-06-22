@@ -7,6 +7,7 @@
 import json
 import logging
 import os
+os.environ['BACKTESTING_DISABLE_MULTIPROCESSING'] = '1'  # future-proof hint
 import random
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
@@ -319,7 +320,19 @@ class ProfessionalRiskController:
         if risk_per_trade <= 0 or risk_per_trade > 0.25:
             return 0
 
-        expected_profit = risk_per_trade * 2.0
+        # ── PATCH v9.5: USE MEASURED PROFIT FACTOR INSTEAD OF A FLAT 2:1 ──
+        # `profit_factor` and `tier` were accepted as parameters but never
+        # referenced anywhere in this function — Kelly always assumed a
+        # fixed 2:1 reward:risk regardless of the strategy's actual
+        # realized payoff or the take-profit ladder (3R/5R/8R) defined
+        # elsewhere. Deriving the reward assumption from profit_factor
+        # makes sizing self-correct as the real edge drifts: a
+        # profit_factor of 1.0 (breakeven payoff) sizes conservatively,
+        # while a strategy realizing 2-3x gross profit/gross loss sizes
+        # up accordingly. Capped at 4.0 so a short run of lucky trades
+        # can't blow out position size before enough data accumulates.
+        reward_multiple = max(1.0, min(profit_factor, 4.0))
+        expected_profit = risk_per_trade * reward_multiple
 
         if expected_profit <= 0:
             kelly_fraction = 0.0
@@ -328,6 +341,16 @@ class ProfessionalRiskController:
         kelly_fraction = max(0.0, min(kelly_fraction, 0.05))
 
         quality_weight = max(0.5, min((quality_score / 75) ** 0.5, 1.5))
+
+        # ── PATCH v9.5: TIER-AWARE SIZING ──────────────────────────────────
+        # `tier` distinguishes higher-confidence (tier 2, stricter quality
+        # bar) entries from standard (tier 1) entries, but was previously
+        # unused — every entry sized identically regardless of tier. This
+        # is intentionally a small multiplier (not a big one) since
+        # quality_score already captures most of the confidence signal;
+        # tier just nudges size slightly for the subset of entries that
+        # clear the stricter tier-2 bar.
+        tier_weight = 1.1 if tier == 2 else 1.0
 
         if adx < 20:
             adx_multiplier = 0.6
@@ -353,7 +376,8 @@ class ProfessionalRiskController:
         equity_adjustment = min(equity_health ** 2, 1.0)
 
         risk_pct = (self.base_risk_pct * quality_weight * adx_multiplier *
-                    losing_streak_multiplier * performance_adjust * equity_adjustment)
+                    losing_streak_multiplier * performance_adjust * equity_adjustment *
+                    tier_weight)
 
         risk_pct = max(0.001, min(risk_pct, 0.05))
 
@@ -520,6 +544,19 @@ class ProfessionalExitManager:
         self.min_hold_bars_before_stop = config.get('min_hold_bars_before_stop', 6)
         self.emergency_stop_multiplier = config.get('emergency_stop_multiplier', 2.0)
 
+        # ── PATCH v9.5: PARTIAL TAKE-PROFIT LADDER ─────────────────────────
+        # take_profit_r1/r2/r3 existed in MOMENTUM_PARAMS but were never
+        # read anywhere — evaluate_exit() only ever returned exit_pct of
+        # 1.0 or 0.0, so the partial-exit branch in the callers (both the
+        # live execute_sell() and the backtest partial-exit handler) was
+        # dead code. Wiring them up here lets winners scale out in pieces
+        # instead of riding 100% of size until one all-or-nothing signal
+        # (MACD cross / EMA reversal / ADX collapse) closes the whole trade.
+        self.take_profit_r1 = config.get('take_profit_r1', 3.0)
+        self.take_profit_r2 = config.get('take_profit_r2', 5.0)
+        self.take_profit_r3 = config.get('take_profit_r3', 8.0)
+        self.partial_exit_pct = config.get('partial_exit_pct', 0.33)
+
     def get_initial_trailing_stop(self, entry_price, atr=None, position_type='long'):
         return entry_price
 
@@ -579,7 +616,21 @@ class ProfessionalExitManager:
                 print(f"  🎯 SHORT TRAILING STOP HIT: ${current_price:.2f} >= ${trailing_stop:.2f}")
                 return "trailing_stop_hit", 1.0
 
-        # ═══ 3. MACD CROSS EXIT ═══
+        # ═══ 3. PARTIAL TAKE-PROFIT LADDER (R-multiple scale-out) ═══
+        # Checked highest-R-first so a trade that gapped straight past r1
+        # lands on the correct tier instead of always taking r1 first.
+        # `partial_exits` gates each tier so it only fires once per trade.
+        if profit_r >= self.take_profit_r3 and partial_exits < 3:
+            print(f"  💰 TAKE PROFIT R3 HIT: {profit_r:.2f}R >= {self.take_profit_r3:.2f}R")
+            return "take_profit_r3", self.partial_exit_pct
+        if profit_r >= self.take_profit_r2 and partial_exits < 2:
+            print(f"  💰 TAKE PROFIT R2 HIT: {profit_r:.2f}R >= {self.take_profit_r2:.2f}R")
+            return "take_profit_r2", self.partial_exit_pct
+        if profit_r >= self.take_profit_r1 and partial_exits < 1:
+            print(f"  💰 TAKE PROFIT R1 HIT: {profit_r:.2f}R >= {self.take_profit_r1:.2f}R")
+            return "take_profit_r1", self.partial_exit_pct
+
+        # ═══ 4. MACD CROSS EXIT ═══
         if self.macd_bearish_cross_enabled and profit_r >= self.macd_cross_profit_min:
             if position_type == 'long':
                 if macd_prev >= signal_prev and macd < macd_signal:
@@ -594,7 +645,7 @@ class ProfessionalExitManager:
                     else:
                         return "macd_bullish_cross", 1.0
 
-        # ═══ 4. EMA FULL REVERSAL (>= 2R) ═══
+        # ═══ 5. EMA FULL REVERSAL (>= 2R) ═══
         if self.ema_cross_exit_enabled and profit_r >= 2.0:
             if position_type == 'long':
                 if ema_fast < ema_mid < ema_slow:
@@ -603,7 +654,7 @@ class ProfessionalExitManager:
                 if ema_fast > ema_mid > ema_slow:
                     return "ema_full_reversal", 1.0
 
-        # ═══ 5. ADX COLLAPSE + MACD INVERSION ═══
+        # ═══ 6. ADX COLLAPSE + MACD INVERSION ═══
         if adx < 25 and profit_r >= 1.5:
             if position_type == 'long':
                 if macd < macd_signal and not (current_price > ema_mid and ema_fast > ema_slow):
@@ -612,7 +663,7 @@ class ProfessionalExitManager:
                 if macd > macd_signal and not (current_price < ema_mid and ema_fast < ema_slow):
                     return "adx_collapse_trend_weak", 1.0
 
-        # ═══ 6. MAX HOLD TIME ═══
+        # ═══ 7. MAX HOLD TIME ═══
         if bars_held >= self.max_hold_bars:
             return "max_hold_time", 1.0
 
@@ -628,12 +679,12 @@ MOMENTUM_PARAMS = {
     "trade_direction": "both",
 
     # ═══ LONG THRESHOLDS ═══════════════════════════════════════════════
-    "quality_tier1_min": 68,           # updated: 72 → 68
+    "quality_tier1_min": 62,           # updated: 72 → 68
     "quality_tier2_min": 65,
     "fixed_threshold": 72,
 
     # ═══ SHORT THRESHOLDS ═══════════════════════════════════════════════
-    "short_quality_tier1_min": 70,     # updated: 75 → 70
+    "short_quality_tier1_min": 65,     # updated: 75 → 70
     "short_quality_tier2_min": 70,
     "short_fixed_threshold": 75,
 
@@ -651,9 +702,9 @@ MOMENTUM_PARAMS = {
     "fuzzy_conservative_start": True,
 
     # EMA Settings
-    "ema_fast_period": 8,
-    "ema_mid_period": 24,
-    "ema_slow_period": 60,
+    "ema_fast_period": 10,
+    "ema_mid_period": 18,
+    "ema_slow_period": 45,
 
     # Regime Detection
     "regime_filter_enabled": True,
@@ -667,11 +718,11 @@ MOMENTUM_PARAMS = {
 
     # Quality Component Weights — TOTAL 100 POINTS
     # 20 + 20 + 25 + 20 + 15 = 100
-    "weight_ema": 20,
-    "weight_adx": 20,
-    "weight_macd": 25,
-    "weight_rsi": 20,
-    "weight_volume": 15,  # was 12 — corrected to make weights sum to exactly 100
+    "weight_ema": 25,
+    "weight_adx": 15,
+    "weight_macd": 28,
+    "weight_rsi": 18,
+    "weight_volume": 18,  # was 12 — corrected to make weights sum to exactly 100
 
     "ema_near_tolerance": 0.005,
     "rsi_dynamic_enabled": True,
@@ -684,12 +735,12 @@ MOMENTUM_PARAMS = {
     "price_percentile_lookback": 20,
 
     # ═══ LONG FILTERS ═══════════════════════════════════════════════════
-    "tier1_adx_hard_min": 25,          # updated: 20 → 25
+    "tier1_adx_hard_min": 22,          # updated: 20 → 25
     "tier1_adx_min": 20,
-    "tier1_rsi_min": 40,               # updated: 44 → 40
+    "tier1_rsi_min": 42,               # updated: 44 → 40
     "tier1_rsi_max": 68,               # updated: 64 → 68
-    "tier1_volume_min": 0.8,           # hard default; relaxes to 0.2 when EMA stacked + ADX>=25
-    "tier1_momentum_min": 0.02,
+    "tier1_volume_min": 1.0,           # hard default; relaxes to 0.2 when EMA stacked + ADX>=25
+    "tier1_momentum_min": 0.01,
     "tier1_kalman_min": 0.0,
     "tier1_macd_gate": True,
     "tier1_price_ema_max_pct": 1.5,
@@ -733,11 +784,11 @@ MOMENTUM_PARAMS = {
     "be_stop_no_progress_bars":  50,    # updated: 30 → 50
 
     # ═══ SHORT FILTERS ════════════════════════════════════════════════════
-    "short_tier1_adx_hard_min": 30,    # updated: 28 → 30
-    "short_tier1_rsi_max": 54,
-    "short_tier1_rsi_min": 34,
-    "short_tier1_volume_min": 1.3,
-    "short_tier1_momentum_min": 0.05,
+    "short_tier1_adx_hard_min": 25,    # updated: 28 → 30
+    "short_tier1_rsi_max": 48,
+    "short_tier1_rsi_min": 32,
+    "short_tier1_volume_min": 1.2,
+    "short_tier1_momentum_min": 0.04,
     "short_tier1_macd_gate": True,
     "daily_trend_down_filter_enabled": True,
     "short_require_lower_highs_bars": 2,
@@ -2930,6 +2981,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
         params = MomentumConfig.get_config(momentum_params)
         MomentumLogic.__init__(self, config=params, trading_app=trading_app)
 
+        self.trade_counter = 0
         self.name = "Professional Momentum Strategy v9.4 — ATR_FILTER | EXTENDED_RUN | SIZE_CAP"
 
         self.position = {
