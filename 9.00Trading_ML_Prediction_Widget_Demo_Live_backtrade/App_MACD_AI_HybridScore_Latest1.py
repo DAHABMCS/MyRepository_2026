@@ -475,7 +475,8 @@ class TradingApp:
 
         # Trade stats — only count trades made THIS session
         start_count = getattr(self, '_session_start_trade_count', 0)
-        all_closed  = [t for t in self.trade_history if t.get('type') == 'sell']
+        all_closed = [t for t in self.trade_history if t.get('exit_timestamp') is not None]
+        # all_closed  = [t for t in self.trade_history if t.get('type') == 'sell']
         session_trades = all_closed[start_count:]   # trades added during this session
 
         if not session_trades:

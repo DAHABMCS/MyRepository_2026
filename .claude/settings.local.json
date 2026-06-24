@@ -12,7 +12,8 @@
       "Bash(npm -v)",
       "Bash(npm cache:*)",
       "Bash(where node:*)",
-      "Bash(python -m py_compile App_MACD_AI_HybridScore_Latest.py)"
+      "Bash(python -m py_compile App_MACD_AI_HybridScore_Latest.py)",
+      "Bash(python *)"
     ]
   }
 }
