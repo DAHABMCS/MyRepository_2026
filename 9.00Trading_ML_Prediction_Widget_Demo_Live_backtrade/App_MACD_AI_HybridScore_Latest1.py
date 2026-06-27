@@ -14826,7 +14826,7 @@ class TradingApp:
 
                             # Try all possible column names
                             if 'ReturnPct' in row:
-                                pnl_pct = float(row['ReturnPct'])
+                                pnl_pct = float(row['ReturnPct']) * 100
                             elif 'Return [%]' in row:
                                 pnl_pct = float(row['Return [%]'])
                             elif 'PnL [%]' in row:
