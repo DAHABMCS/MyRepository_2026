@@ -1,6 +1,7 @@
 """Trading strategy backtesting and optimization module."""
 
 import os
+
 # ═══════════════════════════════════════════════════════════════════════════
 # TQDM FIX FOR PYINSTALLER/EXE COMPILATION
 # ═══════════════════════════════════════════════════════════════════════════
@@ -474,7 +475,8 @@ class TradingApp:
 
         # Trade stats — only count trades made THIS session
         start_count = getattr(self, '_session_start_trade_count', 0)
-        all_closed  = [t for t in self.trade_history if t.get('type') == 'sell']
+        all_closed = [t for t in self.trade_history if t.get('exit_timestamp') is not None]
+        # all_closed  = [t for t in self.trade_history if t.get('type') == 'sell']
         session_trades = all_closed[start_count:]   # trades added during this session
 
         if not session_trades:
@@ -991,20 +993,84 @@ class TradingApp:
         return os.path.join(base_path, relative_path)
 
     def needs_multitimeframe(self) -> bool:
+        """
+        U6: Returns True when Scalping strategy is active so the
+        trading_loop fetches 1h context data on every bar cycle.
+        Zero impact on Momentum and Kalman — they skip the fetch.
+        """
+        strategy_name = getattr(self, 'strategy_type_var', None)
+        if strategy_name is not None:
+            try:
+                return strategy_name.get() == "Scalping"
+            except Exception:
+                pass
         return False
 
     def get_market_data_multiframe(self) -> dict:
+        """
+        U6: Fetches 1h candles, computes EMA9 and EMA50, pushes the
+        result into strategy._htf_data so _htf_trend_agrees() can
+        filter 15m scalp entries against the higher-TF trend direction.
+        Also fetches 15m and 5m for legacy compatibility.
+        """
         symbol = self.symbol_var.get()
-        df_1h  = self.get_historical_data(symbol=symbol, interval='1h', limit=200,
-            start=self.start_date_var.get() if self.mode_var.get().lower() == "backtest" else None,
-            end=self.end_date_var.get()   if self.mode_var.get().lower() == "backtest" else None)
-        df_15m = self.get_historical_data(symbol=symbol, interval='15m', limit=100,
-            start=self.start_date_var.get() if self.mode_var.get().lower() == "backtest" else None,
-            end=self.end_date_var.get()   if self.mode_var.get().lower() == "backtest" else None)
-        df_5m  = self.get_historical_data(symbol=symbol, interval='5m', limit=50,
-            start=self.start_date_var.get() if self.mode_var.get().lower() == "backtest" else None,
-            end=self.end_date_var.get()   if self.mode_var.get().lower() == "backtest" else None)
-        return {'1h': df_1h, '15m': df_15m, '5m': df_5m}
+        is_bt = self.mode_var.get().lower() == "backtest"
+        start = self.start_date_var.get() if is_bt else None
+        end = self.end_date_var.get() if is_bt else None
+
+        result = {'1h': None, '15m': None, '5m': None, '_htf': {}}
+
+        # ── 1h data + EMA trend context ───────────────────────────────────
+        try:
+            df_1h = self.get_historical_data(
+                symbol=symbol, interval='1h', limit=200,
+                start=start, end=end)
+            result['1h'] = df_1h
+
+            if df_1h is not None and len(df_1h) >= 50:
+                import talib as _tl
+                import numpy as _np
+                closes = df_1h['Close'].values.astype(float)
+                ema_f = _tl.EMA(closes, 9)
+                ema_s = _tl.EMA(closes, 50)
+                # Use last CLOSED bar (-2), not the live bar (-1)
+                idx = -2 if len(ema_f) >= 2 else -1
+                ef_val = float(ema_f[idx]) if not _np.isnan(ema_f[idx]) else 0.0
+                es_val = float(ema_s[idx]) if not _np.isnan(ema_s[idx]) else 0.0
+                result['_htf'] = {
+                    'ema_fast_1h': ef_val,
+                    'ema_slow_1h': es_val,
+                }
+                trend_str = "↑ BULL" if ef_val > es_val else "↓ BEAR"
+                self.log_message(
+                    f"🔭 1h Context: {trend_str}  "
+                    f"EMA9={ef_val:.2f}  EMA50={es_val:.2f}",
+                    "cyan" if ef_val > es_val else "orange")
+
+                # Push into live strategy so filters work immediately
+                if (hasattr(self, 'strategy')
+                        and hasattr(self.strategy, '_htf_data')):
+                    self.strategy._htf_data = result['_htf']
+
+        except Exception as e:
+            self.log_message(f"⚠️ HTF 1h fetch failed: {e}", "orange")
+
+        # ── 15m and 5m for legacy compatibility ───────────────────────────
+        try:
+            result['15m'] = self.get_historical_data(
+                symbol=symbol, interval='15m', limit=100,
+                start=start, end=end)
+        except Exception as e:
+            self.log_message(f"⚠️ 15m fetch failed: {e}", "orange")
+
+        try:
+            result['5m'] = self.get_historical_data(
+                symbol=symbol, interval='5m', limit=50,
+                start=start, end=end)
+        except Exception as e:
+            self.log_message(f"⚠️ 5m fetch failed: {e}", "orange")
+
+        return result
 
     def get_current_tier_thresholds(self):
         quality_tier1_min = None
@@ -2271,6 +2337,7 @@ class TradingApp:
     def _update_global_capital(self):
         """Update global capital from the settings panel"""
         from strategies.MomentumStrategy_MACD_HybridScore_Latest import GlobalConfig
+        from strategies.scalping_strategy import SCALPING_PARAMS
 
         try:
             new_capital = float(self.capital_entry.get().replace(',', '').replace('$', ''))
@@ -2304,10 +2371,10 @@ class TradingApp:
                     strat.risk_controller.starting_equity = new_capital
                     strat.risk_controller.current_equity = new_capital
                     strat.risk_controller.peak_equity = new_capital
-                    strat.risk_controller.daily_loss_limit = new_capital * 0.02
+                    strat.risk_controller.daily_loss_limit   = new_capital * SCALPING_PARAMS['daily_loss_limit_pct']
+                    strat.risk_controller.max_drawdown_limit = new_capital * SCALPING_PARAMS['max_drawdown_limit_pct']
                     strat.risk_controller.weekly_loss_limit = new_capital * 0.05
                     strat.risk_controller.monthly_loss_limit = new_capital * 0.10
-                    strat.risk_controller.max_drawdown_limit = new_capital * 0.20
                 if hasattr(strat, 'equity_curve') and strat.equity_curve:
                     strat.equity_curve[0] = new_capital
 
@@ -5467,6 +5534,28 @@ class TradingApp:
 
                 if not self.running:
                     break
+
+                # ── U6: fetch 1h context when Scalping is active ──────
+                if self.needs_multitimeframe():
+                    try:
+                        multi_df = self.get_market_data_multiframe()
+                        # _htf_data is pushed into strategy inside
+                        # get_market_data_multiframe() — nothing else needed.
+                        htf = multi_df.get('_htf', {})
+                        if htf:
+                            ef_1h = htf.get('ema_fast_1h', 0)
+                            es_1h = htf.get('ema_slow_1h', 0)
+                            if ef_1h and es_1h:
+                                direction = "↑ BULL" if ef_1h > es_1h else "↓ BEAR"
+                                self.log_message(
+                                    f"🔭 1h Context: {direction}  "
+                                    f"(EMA9={ef_1h:.2f} vs EMA50={es_1h:.2f})",
+                                    "cyan" if ef_1h > es_1h else "orange")
+                    except Exception as htf_err:
+                        self.log_message(
+                            f"⚠️ HTF fetch skipped this cycle: {htf_err}",
+                            "orange")
+                # ── end U6 ────────────────────────────────────────────
 
                 df = self.get_market_data()
                 if df is None:
@@ -10871,200 +10960,7 @@ class TradingApp:
 
         return numeric_df
 
-    def combined_score(self, quality_score, ml_score, ml_confidence,
-                       high_conf_thresh=0.70, high_conf_weight=0.40,
-                       med_conf_thresh=0.50, med_conf_weight=0.25,
-                       low_conf_weight=0.10,
-                       agreement_boost=1.05,
-                       quality_agree_thresh=75, ml_agree_thresh=60):
-        """
-        Combine Quality Score and ML Score with confidence-based weighting.
 
-        ML weight increases only when ML confidence justifies it:
-        - High confidence (≥70%) → ML gets 40% weight (partner)
-        - Medium confidence (50-70%) → ML gets 25% weight (gut check)
-        - Low confidence (<50%) → ML gets 10% weight (whisper)
-
-        Agreement bonus: When both signals are positive, apply 5% boost
-        to reflect higher conviction from confluence.
-        """
-        # Determine ML weight based on confidence tier
-        if ml_confidence >= high_conf_thresh:
-            ml_weight = high_conf_weight
-        elif ml_confidence >= med_conf_thresh:
-            ml_weight = med_conf_weight
-        else:
-            ml_weight = low_conf_weight
-
-        # Quality score gets remaining weight
-        qs_weight = 1 - ml_weight
-
-        # Calculate base combined score
-        combined = (qs_weight * quality_score) + (ml_weight * ml_score)
-
-        # Agreement bonus: both signals point to bullish trade
-        if ml_score > ml_agree_thresh and quality_score > quality_agree_thresh:
-            combined *= agreement_boost
-
-        # Cap at maximum score (avoid over-optimistic outliers)
-        return min(combined, 100)
-
-    # def _display_detailed_analysis(self, df, current_data, result):
-    #     self.log_message(f"{'═' * 77}", "blue")
-    #     self.log_message(f"📅 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}", "blue")
-    #     self.log_message(f"{'═' * 77}", "blue")
-    #
-    #     ml_conf_pct = 0.0
-    #     ml_prediction = 0
-    #     ml_is_enabled = getattr(self, 'ml_enabled', False)
-    #
-    #     if ml_is_enabled and hasattr(self, 'current_ml_model') and self.current_ml_model:
-    #         if hasattr(self.current_ml_model, 'is_trained') and self.current_ml_model.is_trained:
-    #             try:
-    #                 n_future = int(self.prediction_candles_slider.get()) if hasattr(self,
-    #                                                                                 'prediction_candles_slider') else 5
-    #                 ml_conf, ml_prediction, forecast = self.current_ml_model.predict(df, n_future)
-    #                 ml_conf_pct = float(ml_conf * 100.0 if ml_conf <= 1.0 else ml_conf)
-    #
-    #                 self._last_forecast = forecast if (forecast is not None and len(forecast) > 0) else None
-    #                 self._last_ml_prediction = ml_prediction
-    #
-    #             except Exception as e:
-    #                 self.log_message(f"⚠️ ML prediction error: {e}", "orange")
-    #                 self._last_forecast = None
-    #                 self._last_ml_prediction = 0
-    #     else:
-    #         self._last_forecast = None
-    #         self._last_ml_prediction = 0
-    #
-    #     if isinstance(result, tuple) and len(result) >= 4:
-    #         decision, quality_score, shares, reason = result[:4]
-    #
-    #         if quality_score >= 0:
-    #             # ── FIX: safe defaults so every strategy works, not just
-    #             #    those that have _calculate_quality_score ──────────────
-    #             combined_confidence = float(quality_score) if quality_score is not None else 0.0
-    #             total_score = combined_confidence
-    #             component_scores = {}
-    #
-    #             if hasattr(self.strategy, '_calculate_quality_score'):
-    #                 _eff_dir = getattr(self.strategy, "_pending_signal", None)
-    #                 _eff_dir = _eff_dir.get("direction", "long") if _eff_dir else getattr(
-    #                     self.strategy, "trade_direction", "long")
-    #                 if _eff_dir == "short" and hasattr(self.strategy, "_calculate_quality_score_short"):
-    #                     total_score, component_scores, score_reason = (
-    #                         self.strategy._calculate_quality_score_short(current_data))
-    #                 else:
-    #                     total_score, component_scores, score_reason = (
-    #                         self.strategy._calculate_quality_score(current_data))
-    #
-    #                 combined_confidence = total_score
-    #                 if ml_is_enabled and ml_conf_pct > 0:
-    #                     combined_confidence = (total_score + ml_conf_pct) / 2
-    #
-    #                 self.log_message(f"🎯 QUALITY SCORE SYSTEM ANALYSIS", "purple")
-    #
-    #                 col_widths = [24, 25, 24]
-    #                 self.log_message(self._create_table_separator(col_widths, "top"), "purple")
-    #                 headers = ["Quality Score", "ML Contribution", "Combined Power"]
-    #                 self.log_message(self._create_table_row(headers, col_widths), "white")
-    #                 self.log_message(self._create_table_separator(col_widths, "middle"), "purple")
-    #
-    #                 quality_bar = self._create_confidence_bar(total_score, 10)
-    #                 quality_cell = f"{total_score}/100 {quality_bar}"
-    #
-    #                 if ml_is_enabled and ml_conf_pct > 0:
-    #                     ml_bar = self._create_confidence_bar(ml_conf_pct, 10)
-    #                     ml_cell = f"{ml_conf_pct:.0f}/100 {ml_bar}"
-    #                 else:
-    #                     ml_cell = "[DISABLED]"
-    #
-    #                 combined_bar = self._create_confidence_bar(combined_confidence, 10)
-    #                 combined_cell = f"{combined_confidence:.0f}/100 {combined_bar}"
-    #
-    #                 data_cells = [quality_cell, ml_cell, combined_cell]
-    #                 self.log_message(self._create_table_row(data_cells, col_widths),
-    #                                  "green" if combined_confidence >= 75 else "orange")
-    #                 self.log_message(self._create_table_separator(col_widths, "bottom"), "purple")
-    #
-    #                 self._display_component_scores(component_scores)
-    #
-    #                 if hasattr(self.strategy, '_get_position_multiplier'):
-    #                     position_mult = self.strategy._get_position_multiplier(combined_confidence)
-    #                     self.log_message(f"💰 Position Size: {position_mult * 100:.0f}% of normal",
-    #                                      "green" if position_mult >= 1.0 else "orange")
-    #
-    #                 tier = getattr(self.strategy, '_last_entry_tier', 1)
-    #                 tier_label = f"TIER {tier}" if tier else "TIER None"
-    #                 tier_color = "green" if tier == 2 else "blue" if tier == 1 else "orange"
-    #                 self.log_message(f"🎯 {tier_label} Entry", tier_color)
-    #
-    #                 if ml_is_enabled and ml_conf_pct > 0:
-    #                     signal_text = "BULLISH" if ml_prediction == 1 else "BEARISH" if ml_prediction == -1 else "NEUTRAL"
-    #                     signal_color = "green" if ml_prediction == 1 else "red" if ml_prediction == -1 else "orange"
-    #                     ml_impact = combined_confidence - total_score
-    #                     self.log_message(
-    #                         f"🤖 ML: {signal_text} ({ml_conf_pct:.0f}%) | Impact: {ml_impact:+.0f} pts",
-    #                         signal_color)
-    #
-    #                     if self._last_forecast is not None:
-    #                         n_future = int(self.prediction_candles_slider.get()) if hasattr(
-    #                             self, 'prediction_candles_slider') else 5
-    #                         current_price = float(current_data.get('Close', 0))
-    #                         self.log_message(f"🕯️ FORECASTED PRICES ({n_future} candles):", "purple")
-    #                         for i, pred_price in enumerate(self._last_forecast, 1):
-    #                             change_pct = ((pred_price - current_price) / current_price * 100
-    #                                           ) if current_price > 0 else 0
-    #                             direction = "🔼" if change_pct > 0 else "🔽" if change_pct < 0 else "➡️"
-    #                             color = "green" if change_pct > 0 else "red" if change_pct < 0 else "white"
-    #                             self.log_message(
-    #                                 f"   Candle {i}: ${pred_price:.4f} ({change_pct:+.2f}%) {direction}",
-    #                                 color)
-    #
-    #                 self.log_message(f"📝 Reason: {reason}", "blue")
-    #
-    #             # ── FIX: derive actual quality threshold from the active strategy
-    #             #    so the "Minimum" label is always correct ──────────────────
-    #             q_min = getattr(self.strategy, 'quality_min_long',
-    #                             getattr(self.strategy, 'quality_minimum_score',
-    #                                     getattr(self.strategy, 'quality_tier2_min', 75)))
-    #
-    #             if (decision == "buy" or decision == "sell") and shares and shares > 0:
-    #                 self.log_message(f"✅ BUY SIGNAL DETECTED - {shares:.4f} shares", "green")
-    #             else:
-    #                 self.log_message(f"\n🎯 QUALITY SCORE REJECTED", "red")
-    #                 self.log_message(f"{'=' * 70}", "red")
-    #                 self.log_message(
-    #                     f"📊 Score: {combined_confidence:.0f}/100 (Minimum: {q_min})", "red")
-    #                 self.log_message(f"   Raw Quality: {total_score:.0f}", "yellow")
-    #                 if ml_is_enabled and ml_conf_pct > 0:
-    #                     self.log_message(f"   ML Contribution: {ml_conf_pct:.0f}%", "yellow")
-    #                 self.log_message(f"   Reason: {reason}", "orange")
-    #                 self.log_message(f"{'=' * 70}", "red")
-    #         else:
-    #             self.log_message(f"ℹ️ Position already open - monitoring", "blue")
-    #     else:
-    #         if len(result) == 2:
-    #             exit_signal, exit_pct = result
-    #             if exit_signal:
-    #                 self.log_message(f"🚨 EXIT SIGNAL: {exit_signal} ({exit_pct * 100:.0f}%)", "yellow")
-    #
-    #                 if hasattr(self.strategy, 'position') and self.strategy.position:
-    #                     entry_price = self.strategy.position.get('entry_price', 0)
-    #                     if entry_price > 0:
-    #                         current_price = float(current_data['Close'])
-    #                         pos_type = self.strategy.position.get('type', 'long')
-    #                         if pos_type == 'short':
-    #                             profit_pct = ((entry_price - current_price) / entry_price) * 100
-    #                             profit_r = ((entry_price - current_price) /
-    #                                         (current_data.get('ATR', 1) * 3.0))
-    #                         else:
-    #                             profit_pct = ((current_price - entry_price) / entry_price) * 100
-    #                             profit_r = ((current_price - entry_price) /
-    #                                         (current_data.get('ATR', 1) * 3.0))
-    #                         self.log_message(
-    #                             f"📊 Current P/L: {profit_pct:.2f}% ({profit_r:.2f}R)",
-    #                             "green" if profit_pct > 0 else "red")
 
     def _display_detailed_analysis(self, df, current_data, result):
         self.log_message(f"{'═' * 77}", "blue")
@@ -11410,6 +11306,64 @@ class TradingApp:
             "green" if full_alignment else "white")
         self.log_message(f"{'=' * 30} {datetime.now(timezone.utc).strftime('%H:%M:%S')} {'=' * 29}", "blue")
 
+    def combined_score(self, quality_score, ml_score_raw, ml_confidence,
+                       trade_direction="long",
+                       high_conf_thresh=0.70, high_conf_weight=0.40,
+                       med_conf_thresh=0.50, med_conf_weight=0.25,
+                       low_conf_weight=0.10,
+                       agreement_boost=1.05):
+        """
+        Combine quality score with ML prediction using direction-aware alignment.
+
+        ml_score_raw    : raw prediction integer  (-1 = bearish, 0 = neutral, +1 = bullish)
+        ml_confidence   : float 0-1  (or 0-100; auto-detected)
+        trade_direction : 'long' or 'short'
+
+        Rules
+        -----
+        Long  + bullish  → aligned   → boost
+        Long  + bearish  → opposed   → penalty
+        Short + bearish  → aligned   → boost
+        Short + bullish  → opposed   → penalty
+        Any   + neutral  → abstain   → score unchanged
+        """
+        # ── Normalise confidence to 0-1 ─────────────────────────────────────────
+        ml_conf_norm = (ml_confidence / 100.0) if ml_confidence > 1.0 else float(ml_confidence)
+        ml_conf_pct = ml_conf_norm * 100.0
+
+        # ── Determine direction alignment ────────────────────────────────────────
+        if ml_score_raw == 0:
+            return float(quality_score)  # neutral — ML abstains entirely
+
+        if trade_direction == "long":
+            alignment = 1 if ml_score_raw == 1 else -1  # bullish=agree, bearish=oppose
+        else:  # short
+            alignment = 1 if ml_score_raw == -1 else -1  # bearish=agree, bullish=oppose
+
+        # ── Weight tier based on confidence level ────────────────────────────────
+        if ml_conf_norm >= high_conf_thresh:
+            ml_weight = high_conf_weight
+        elif ml_conf_norm >= med_conf_thresh:
+            ml_weight = med_conf_weight
+        else:
+            ml_weight = low_conf_weight
+
+        qs_weight = 1.0 - ml_weight
+
+        # ── Compute combined score ───────────────────────────────────────────────
+        if alignment == 1:
+            # Aligned: weighted blend — ML pulls score toward its confidence level
+            combined = (qs_weight * quality_score) + (ml_weight * ml_conf_pct)
+            # Agreement bonus when BOTH signals are independently strong
+            if quality_score >= 70 and ml_conf_pct >= 65:
+                combined *= agreement_boost
+        else:
+            # Opposed: ML confidence scales a penalty deducted from quality score
+            penalty = ml_weight * ml_conf_pct
+            combined = quality_score - penalty
+
+        return float(min(max(combined, 0.0), 100.0))
+
     def _execute_trades_from_result(self, result, current_data, current_price, df):
         if isinstance(result, tuple) and len(result) == 2:
             exit_signal, exit_pct = result
@@ -11430,7 +11384,6 @@ class TradingApp:
         if isinstance(result, tuple) and len(result) >= 4:
             decision, quality_score, shares, reason = result[:4]
 
-            # v9.4.2: Route both long (buy) and short (sell) entry decisions
             is_entry = (decision == "buy" or decision == "sell")
 
             if is_entry and quality_score >= 0 and shares > 0:
@@ -11443,16 +11396,21 @@ class TradingApp:
 
                 confidence_threshold = float(self.confidence_var.get()) * 100
 
-                combined_confidence = quality_score
+                # ── Determine trade direction from decision ───────────────────────
+                _direction = "short" if decision == "sell" else "long"
 
+                # ── Start with quality score as the base ─────────────────────────
+                combined_confidence = float(quality_score)
+
+                # ── ML contribution (direction-aware) ────────────────────────────
                 ml_conf_pct = 0.0
                 ml_prediction = 0
                 ml_is_enabled = getattr(self, 'ml_enabled', False)
 
                 if ml_is_enabled and hasattr(self, 'current_ml_model') and self.current_ml_model:
                     if hasattr(self.current_ml_model, 'is_trained') and self.current_ml_model.is_trained:
-                        n_future = int(self.prediction_candles_slider.get()) if hasattr(self,
-                                                                                        'prediction_candles_slider') else 5
+                        n_future = int(self.prediction_candles_slider.get()) \
+                            if hasattr(self, 'prediction_candles_slider') else 5
                         try:
                             ml_conf, ml_prediction, forecast = self.current_ml_model.predict(df, n_future)
                             ml_conf_pct = float(ml_conf * 100.0 if ml_conf <= 1.0 else ml_conf)
@@ -11460,33 +11418,45 @@ class TradingApp:
                             model_thresh = getattr(self.current_ml_model, "confidence_threshold", 0.65)
                             model_thresh_pct = float(model_thresh * 100.0 if model_thresh <= 1.0 else model_thresh)
 
-                            # REPLACEMENT CODE - Use the new combined_score function
                             if ml_conf_pct >= model_thresh_pct:
-                                # ml_prediction is typically -1, 0, or 1 - convert to 0-100 scale
-                                ml_score_normalized = (ml_prediction + 1) * 50 if ml_prediction is not None else 50
-
-                                # Use the professional combined score function
                                 combined_confidence = self.combined_score(
                                     quality_score=quality_score,
-                                    ml_score=ml_score_normalized,
-                                    ml_confidence=ml_conf_pct / 100.0  # Convert from 0-100 to 0-1
+                                    ml_score_raw=ml_prediction,  # raw -1 / 0 / +1
+                                    ml_confidence=ml_conf_pct / 100.0,
+                                    trade_direction=_direction
+                                )
+                                # Log direction-aware adjustment
+                                delta = combined_confidence - quality_score
+                                align_label = "aligned ✅" if delta >= 0 else "opposed ⚠️"
+                                self.log_message(
+                                    f"🤖 ML ({_direction.upper()}): pred={ml_prediction:+d} "
+                                    f"conf={ml_conf_pct:.0f}% → {align_label} "
+                                    f"Δscore={delta:+.1f} "
+                                    f"({quality_score:.0f} → {combined_confidence:.0f})",
+                                    "green" if delta >= 0 else "orange"
                                 )
                             else:
-                                combined_confidence = quality_score  # ML not confident enough to influence
+                                self.log_message(
+                                    f"🤖 ML confidence {ml_conf_pct:.0f}% below threshold "
+                                    f"{model_thresh_pct:.0f}% — using quality score only",
+                                    "blue"
+                                )
                         except Exception as e:
                             self.log_message(f"⚠️ ML prediction error: {e}", "orange")
 
                 self.log_message(
-                    f"🎯 Entry Check: Combined={combined_confidence:.0f} vs Threshold={confidence_threshold:.0f}",
-                    "cyan")
+                    f"🎯 Entry Check: Quality={quality_score:.0f} | "
+                    f"Combined={combined_confidence:.0f} | "
+                    f"Threshold={confidence_threshold:.0f} | "
+                    f"Direction={_direction.upper()}",
+                    "cyan"
+                )
 
                 if combined_confidence >= confidence_threshold:
                     self.play_notification("pre_buy_alert")
 
                     tier = getattr(self.strategy, '_last_entry_tier', 1)
 
-                    # v9.4.2: execute_buy now internally routes to execute_short
-                    # for short pending signals, so a single call handles both directions
                     success, filled_qty, order_id = self.strategy.execute_buy(
                         shares=shares,
                         price=current_price,
@@ -11496,12 +11466,15 @@ class TradingApp:
                     )
 
                     if success:
-                        ml_msg = ' with ML confirmation' if ml_is_enabled and ml_conf_pct > 0 else ''
+                        ml_msg = (
+                            f' | ML {ml_prediction:+d} ({ml_conf_pct:.0f}%)'
+                            if ml_is_enabled and ml_conf_pct > 0 else ''
+                        )
                         direction_label = "SHORT" if decision == "sell" else "LONG"
                         direction_emoji = "🔴" if decision == "sell" else "🟢"
                         self.log_message(
                             f"{direction_emoji} {direction_label} EXECUTED{ml_msg} "
-                            f"(Quality: {quality_score:.0f}, Combined: {combined_confidence:.0f}%, Tier {tier})\n"
+                            f"(Quality: {quality_score:.0f}, Combined: {combined_confidence:.0f}, Tier {tier})\n"
                             f"Qty {shares:.4f} at ${current_price:.4f}",
                             "green" if decision == "buy" else "red"
                         )
@@ -11510,16 +11483,24 @@ class TradingApp:
                         self.log_message(f"❌ ENTRY FAILED", "red")
                         self.play_notification("error")
                 else:
-                    self.log_message(f"", "white")
-                    self.log_message(f"🎯 QUALITY SCORE REJECTED", "red")
+                    # ── Rejection log ─────────────────────────────────────────────
+                    self.log_message(f"\n🎯 ENTRY REJECTED", "red")
                     self.log_message(f"{'=' * 70}", "red")
-                    self.log_message(f"📊 Score: {combined_confidence:.0f}/100 (Minimum: {confidence_threshold:.0f})",
-                                     "red")
-                    self.log_message(f"   Raw Quality: {quality_score:.0f}", "yellow")
+                    self.log_message(
+                        f"📊 Combined: {combined_confidence:.0f}/100  "
+                        f"(minimum: {confidence_threshold:.0f})",
+                        "red"
+                    )
+                    self.log_message(f"   Raw quality   : {quality_score:.0f}", "yellow")
                     if ml_is_enabled and ml_conf_pct > 0:
-                        ml_impact = combined_confidence - quality_score
-                        self.log_message(f"   ML Impact: {ml_impact:+.0f} ({ml_conf_pct:.0f}%)", "yellow")
-                    self.log_message(f"   Reason: {reason}", "orange")
+                        delta = combined_confidence - quality_score
+                        align_label = "aligned" if delta >= 0 else "OPPOSED"
+                        self.log_message(
+                            f"   ML impact     : {delta:+.1f} pts  "
+                            f"(pred={ml_prediction:+d}, conf={ml_conf_pct:.0f}%, {align_label})",
+                            "orange"
+                        )
+                    self.log_message(f"   Reason        : {reason}", "orange")
                     self.log_message(f"{'=' * 70}", "red")
 
     def get_historical_data(self, symbol, exchange_name="binance", start=None, end=None,
@@ -14845,7 +14826,7 @@ class TradingApp:
 
                             # Try all possible column names
                             if 'ReturnPct' in row:
-                                pnl_pct = float(row['ReturnPct'])
+                                pnl_pct = float(row['ReturnPct']) * 100
                             elif 'Return [%]' in row:
                                 pnl_pct = float(row['Return [%]'])
                             elif 'PnL [%]' in row:

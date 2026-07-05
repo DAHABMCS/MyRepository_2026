@@ -1,70 +1,25 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║   PROFESSIONAL SCALPING STRATEGY v2.0 — PERFECTED EDITION               ║
-║   Target: 30-50 trades/month | WR >52% | PF >1.6 | Max DD <8%          ║
+║   PROFESSIONAL SCALPING STRATEGY v1.6.1 — ALL FIXES APPLIED             ║
+║   Target: 30-50 trades/month | WR >47% | PF >1.3 | Max DD <10%         ║
 ╠══════════════════════════════════════════════════════════════════════════╣
-║  ALL v1.6.1 FIXES CARRIED FORWARD (B1-B6, C1-C10, F1-F4)               ║
+║  ALL BUGS FROM v1.3 FIXED (B1-B6) — carried forward from v1.6           ║
+║  v1.6 CALIBRATION CHANGES (C1-C10) — carried forward                    ║
 ║                                                                          ║
-║  v2.0 PERFECTION UPGRADES:                                               ║
-║                                                                          ║
-║  P1 — MACD Histogram momentum gate                                       ║
-║       _check_long/short_filters now requires MACD_Hist_Rising=True       ║
-║       (histogram growing bar-on-bar). Eliminates entries on fading       ║
-║       crossovers where momentum is already decaying by bar 2.            ║
-║                                                                          ║
-║  P2 — EMA spread quality bonus + filter                                  ║
-║       Measures (EMA_Fast - EMA_Mid) / EMA_Mid * 100 as ema_spread_pct.  ║
-║       Entries blocked when spread < 0.05% (borderline crossover).       ║
-║       Quality score receives +0 to +10 bonus proportional to spread.    ║
-║                                                                          ║
-║  P3 — Pre-entry R:R enforcement (minimum 1.5 : 1)                       ║
-║       Before every entry, computes potential R:R using ATR-based TP1.   ║
-║       Skips trade when (tp1_distance / sl_distance) < min_rr (1.5).     ║
-║       Configurable via 'min_rr_ratio' param (default 1.5).              ║
-║                                                                          ║
-║  P4 — ATR-adaptive take-profit target stored in position dict            ║
-║       execute_buy() now stores tp1 = entry ± atr * take_profit_r1       ║
-║       tp2 = entry ± atr * take_profit_r2 in every position dict.        ║
-║       Exit manager R-calculation now uses this stored ATR-TP instead     ║
-║       of recomputing from the live stop distance (which drifts after     ║
-║       be-stop moves to breakeven, causing R values to go infinite).     ║
-║                                                                          ║
-║  P5 — Breakeven stop promotes take_profit levels upward                  ║
-║       When be_stop fires, tp1 and tp2 in position dict are nudged        ║
-║       upward by the be_offset (0.5 × original_sl_dist) so targets        ║
-║       remain meaningful after the stop moves to entry.                   ║
-║                                                                          ║
-║  P6 — Timeframe-adaptive EMA periods via get_indicator_periods          ║
-║       SCALPING_PARAMS baseline now uses EMA 9/21/50 as the 1H anchor.   ║
-║       scale_params_for_timeframe correctly scales them:                  ║
-║         5m  → EMA ~3/7/17  (fast enough for micro-scalping)             ║
-║         15m → EMA ~5/13/27 (professional 15m crossover periods)         ║
-║         1H  → EMA 9/21/50  (baseline, unchanged)                        ║
-║       The floor values in scale_params_for_timeframe are tightened       ║
-║       so small TFs actually reach the intended fast periods.             ║
-║                                                                          ║
-║  P7 — Timeframe-adaptive RSI period                                      ║
-║       rsi_period scales with TF: 5m → RSI 7, 15m → RSI 9, 1H → 14.    ║
-║       Faster RSI responds to micro-oscillations scalping exploits.       ║
-║                                                                          ║
-║  P8 — Trailing stop activation tightened for fast timeframes             ║
-║       On 5m/15m: trailing_activation_pct capped at 0.008 (0.8%) so      ║
-║       the trail fires on scalp-sized moves, not swing-sized ones.        ║
-║       trailing_distance_pct capped at 0.005 (0.5%) on 5m/15m.          ║
-║                                                                          ║
-║  P9 — Max-hold bars tightened per timeframe                              ║
-║       5m: max_hold_bars = 6 bars (30 min maximum hold).                  ║
-║       15m: max_hold_bars = 8 bars (2 hour maximum hold).                 ║
-║       Prevents scalps silently converting to swing positions.            ║
-║                                                                          ║
-║  P10 — Quality score MACD histogram growth bonus                         ║
-║        _quality_score_long/short: additional +8 pts when MACD            ║
-║        histogram is growing (Hist_Rising=True). Rewards entries          ║
-║        where momentum is accelerating, not just positive.                ║
-║                                                                          ║
-║  P11 — Commission rate corrected to OKX taker (0.1%)                    ║
-║        GlobalConfig.COMMISSION_RATE updated from 0.0005 to 0.001.       ║
-║        All P&L and expectancy calculations now use realistic fees.       ║
+║  v1.6.1 NEW FIXES:                                                       ║
+║  F1 — RegimeDetector.detect_regime now accepts atr/atr_avg args          ║
+║       and returns "SPIKE" when ATR > 1.8x avg (was undetected)          ║
+║  F2 — ScalpingExitManager: runner phase now exits on full EMA             ║
+║       reversal (ema_fast<mid<slow for long) after partial_r2,            ║
+║       preventing profit give-back when trend structure breaks            ║
+║  F3 — ScalpingStrategy: class-level _instance_active guard prevents      ║
+║       duplicate instances — root cause of doubled log lines              ║
+║  F4 — matplotlib crash fix documented:                                   ║
+║       In utils/FinancialCircletimer_New.py line 689:                    ║
+║           CHANGE: self.canvas.draw()                                     ║
+║           TO:     if self.canvas.figure is not None: self.canvas.draw()  ║
+║       In FinancialCircletimer_New.py _update_ema_labels():               ║
+║           Wrap body in try/except IndexError: pass                       ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -77,9 +32,8 @@ from collections import deque
 import numpy as np
 import pandas as pd
 import talib
-from strategies.base3_New import BaseStrategy
+from .base3_New import BaseStrategy
 from backtesting import Strategy
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # GLOBAL CONFIGURATION
@@ -87,7 +41,7 @@ from backtesting import Strategy
 
 class GlobalConfig:
     INITIAL_CAPITAL  = 50000.0
-    COMMISSION_RATE  = 0.001   # P11: OKX taker fee 0.1% (was 0.0005 — wrong by 2×)
+    COMMISSION_RATE  = 0.0005
     DEFAULT_SYMBOL   = "SOL-USDT"
     ACTIVE_TIMEFRAME = "1h"
     VALID_TIMEFRAMES = ["1m","5m","15m","30m","1h","2h","4h","1d"]
@@ -128,10 +82,10 @@ def scale_params_for_timeframe(params: dict, timeframe: str) -> dict:
               'min_bars_between_trades','cooldown_after_loss_bars','consecutive_loss_cooldown_bars',
               'trend_age_max_bars','extended_run_lookback','atr_compression_lookback',
               'be_stop_no_progress_bars','momentum_period','chop_period','bb_period','kc_period']
-    floors = {'ema_fast_period':3,'ema_mid_period':5,'ema_slow_period':10,
-              'macd_fast':3,'macd_slow':5,'macd_signal_period':3,
-              'atr_period':5,'rsi_period':5,'adx_period':5,
-              'volume_period':8,'chop_period':8,'bb_period':8,'kc_period':8,'momentum_period':1}
+    floors = {'ema_fast_period':5,'ema_mid_period':10,'ema_slow_period':20,
+              'macd_fast':5,'macd_slow':12,'macd_signal_period':3,
+              'atr_period':7,'rsi_period':7,'adx_period':7,
+              'volume_period':10,'chop_period':10,'bb_period':10,'kc_period':10,'momentum_period':1}
     for p in linear:
         if p in sc:
             orig = SCALPING_PARAMS.get(p, sc[p])
@@ -145,23 +99,7 @@ def scale_params_for_timeframe(params: dict, timeframe: str) -> dict:
 
     sc['daily_ema_period'] = max(20, sc.get('daily_ema_period', 24))
 
-    bm = GlobalConfig.TIMEFRAME_MINUTES.get(timeframe, 60)   # moved up for P8/P9
-
-    # P8: tighten trailing parameters on fast timeframes so they fire
-    # on scalp-sized moves, not swing-sized ones
-    if bm <= 5:
-        sc['trailing_activation_pct'] = min(sc.get('trailing_activation_pct', 0.020), 0.006)
-        sc['trailing_distance_pct']   = min(sc.get('trailing_distance_pct',   0.012), 0.004)
-    elif bm <= 15:
-        sc['trailing_activation_pct'] = min(sc.get('trailing_activation_pct', 0.020), 0.008)
-        sc['trailing_distance_pct']   = min(sc.get('trailing_distance_pct',   0.012), 0.005)
-
-    # P9: max hold bars per timeframe — prevent scalps becoming swing trades
-    if bm <= 5:
-        sc['max_hold_bars'] = min(sc.get('max_hold_bars', 24), 6)
-    elif bm <= 15:
-        sc['max_hold_bars'] = min(sc.get('max_hold_bars', 24), 8)
-
+    bm = GlobalConfig.TIMEFRAME_MINUTES.get(timeframe, 60)
     if bm <= 5:
         sc['pullback_zone_lower_pct'] = -0.8; sc['pullback_zone_upper_pct'] = 0.5
     elif bm <= 15:
@@ -182,18 +120,9 @@ def scale_params_for_timeframe(params: dict, timeframe: str) -> dict:
 
 
 def get_indicator_periods_for_timeframe(timeframe: str) -> dict:
-    # P6: corrected base anchors — 1H is the reference frame
     base = {'ema_fast':9,'ema_mid':21,'ema_slow':50,'macd_fast':12,'macd_slow':26,'macd_signal':9,
             'rsi':14,'atr':14,'adx':14,'stoch_k':5,'stoch_d':3}
     mult = GlobalConfig.TIMEFRAME_MULTIPLIERS.get(timeframe, 1.)
-    bm   = GlobalConfig.TIMEFRAME_MINUTES.get(timeframe, 60)
-
-    # P7: RSI period by timeframe — faster RSI for faster charts
-    if bm <= 5:    rsi_p = 7
-    elif bm <= 15: rsi_p = 9
-    elif bm <= 30: rsi_p = 11
-    else:          rsi_p = 14
-
     if timeframe in ['1m','5m']:      es, ms = max(.15, mult*.8), max(.2, mult)
     elif timeframe in ['15m','30m']:  es, ms = mult*.9, mult*.95
     elif timeframe in ['2h','4h']:    es, ms = min(1.8, mult*.9), min(1.8, mult*.9)
@@ -205,9 +134,9 @@ def get_indicator_periods_for_timeframe(timeframe: str) -> dict:
             'macd_fast':max(3,int(base['macd_fast']*ms)),
             'macd_slow':max(5,int(base['macd_slow']*ms)),
             'macd_signal_period':max(3,int(base['macd_signal']*ms)),
-            'rsi_period':rsi_p,           # P7: timeframe-specific RSI
-            'atr_period':max(5,int(base['atr']*max(.5,min(1.3,mult)))),
-            'adx_period':max(5,int(base['adx']*max(.5,min(1.3,mult))))}
+            'rsi_period':max(7,int(base['rsi']*max(.7,min(1.3,mult)))),
+            'atr_period':max(7,int(base['atr']*max(.7,min(1.3,mult)))),
+            'adx_period':max(7,int(base['adx']*max(.7,min(1.3,mult))))}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -334,12 +263,6 @@ SCALPING_PARAMS = {
     "take_profit_r1":1.5,"take_profit_r2":2.8,
     "partial_exit_pct_r1":0.50,"partial_exit_pct_r2":0.30,
 
-    # P3: minimum reward:risk ratio enforced before any entry
-    "min_rr_ratio": 1.5,
-
-    # P2: minimum EMA spread (fast vs mid) to confirm a real crossover
-    "ema_spread_min_pct": 0.05,
-
     "macd_cross_exit_enabled":True,"macd_cross_min_profit_r":0.8,
     "stoch_reversal_exit_enabled":True,"stoch_reversal_min_profit_r":0.5,
     "ema_cross_exit_enabled":True,"ema_cross_min_profit_r":1.5,
@@ -421,9 +344,7 @@ class ScalpingRiskController:
     def validate_entry(self, position_size, entry_price):
         if self.today_loss <= -self.daily_loss_limit: return False, "daily_loss_limit"
         dd = (self.peak_equity - self.current_equity) / self.peak_equity
-        # Fix: compare fraction dd against the pct limit (not the dollar limit)
-        dd_limit_pct = SCALPING_PARAMS['max_drawdown_limit_pct']
-        if dd >= dd_limit_pct: return False, f"max_dd_{dd:.1%}"
+        if dd >= self.max_drawdown_limit: return False, f"max_dd_{dd:.1%}"
         if self.consecutive_losses >= self.max_consecutive: return False, "consec_loss"
         if position_size * entry_price > self.current_equity * (1 - self.min_cash_reserve):
             return False, "no_cash"
@@ -589,19 +510,9 @@ class ScalpingExitManager:
                       rsi, adx, atr,
                       position_type='long',
                       trailing_activated=False,
-                      trailing_stop=None,
-                      atr_at_entry=None,     # P4: stable ATR for R calculation
-                      tp1=None,              # P4: ATR-based TP1
-                      tp2=None):             # P4: ATR-based TP2
+                      trailing_stop=None):
 
-        # P4: use atr_at_entry for stable R calculation
-        # If stored atr_at_entry is available, R is always relative to the entry
-        # stop distance set at open — it never drifts when be-stop moves to entry.
-        if atr_at_entry and atr_at_entry > 0:
-            sd = atr_at_entry * self.cfg.get('stop_loss_atr_mult', 2.2)
-        else:
-            sd = atr * self.cfg.get('stop_loss_atr_mult', 2.2)
-
+        sd = atr * self.cfg.get('stop_loss_atr_mult', 2.2)
         pr = ((current_price - entry_price) / sd
               if position_type == 'long'
               else (entry_price - current_price) / sd) if sd > 0 else 0.
@@ -628,31 +539,19 @@ class ScalpingExitManager:
             if position_type == 'short' and current_price >= trailing_stop:
                 return "trailing_stop", 1.
 
-        # ── Partial TP1 — use stored ATR-based TP if available (P4) ─────
+        # ── Partial TP1 (50% at R1) ──────────────────────────────────────
         r1 = self.cfg.get('take_profit_r1', 1.5)
         r2 = self.cfg.get('take_profit_r2', 2.8)
-        if partial_exits == 0:
-            tp1_hit = False
-            if tp1 is not None:
-                tp1_hit = (current_price >= tp1 if position_type == 'long'
-                           else current_price <= tp1)
-            else:
-                tp1_hit = pr >= r1
-            if tp1_hit:
-                return "partial_r1", self.cfg.get('partial_exit_pct_r1', .50)
+        if partial_exits == 0 and pr >= r1:
+            return "partial_r1", self.cfg.get('partial_exit_pct_r1', .50)
 
-        # ── Partial TP2 ─────────────────────────────────────────────────
-        if partial_exits == 1:
-            tp2_hit = False
-            if tp2 is not None:
-                tp2_hit = (current_price >= tp2 if position_type == 'long'
-                           else current_price <= tp2)
-            else:
-                tp2_hit = pr >= r2
-            if tp2_hit:
-                return "partial_r2", self.cfg.get('partial_exit_pct_r2', .30)
+        # ── Partial TP2 (30% at R2) ──────────────────────────────────────
+        if partial_exits == 1 and pr >= r2:
+            return "partial_r2", self.cfg.get('partial_exit_pct_r2', .30)
 
         # ── F2: Runner phase — EMA-reversal exit ─────────────────────────
+        # Only fires after BOTH partials are taken (partial_exits >= 2).
+        # Exits remaining ~20% runner when full stack reverses.
         if (partial_exits >= 2
                 and self.cfg.get('runner_ema_reversal_exit_enabled', True)):
             min_r = self.cfg.get('runner_ema_reversal_min_profit_r', 0.3)
@@ -1035,9 +934,6 @@ class ScalpingLogic:
         macd, ms, mh = data.get('MACD',0), data.get('MACD_Signal',0), data.get('MACD_Histogram',0)
         if macd > ms:  s += 15; comp['macd'] = 15; bk.append("MACD>SIG+15")
         if mh > 0:     s += 5;  comp['mh']   = 5;  bk.append("HIST+5")
-        # P10: bonus for histogram growth — momentum is accelerating, not just positive
-        if data.get('MACD_Hist_Rising', False):
-            s += 8; comp['mh_rising'] = 8; bk.append("HIST_RISING+8")
         rsi = data.get('RSI', 50)
         if getattr(self,'rsi_long_min',40) <= rsi <= getattr(self,'rsi_long_max',70):
             s += 15; comp['rsi'] = 15; bk.append(f"RSI+15({rsi:.0f})")
@@ -1066,9 +962,6 @@ class ScalpingLogic:
         macd, ms, mh = data.get('MACD',0), data.get('MACD_Signal',0), data.get('MACD_Histogram',0)
         if macd < ms:  s += 15; comp['macd'] = 15; bk.append("MACD<SIG+15")
         if mh < 0:     s += 5;  comp['mh']   = 5;  bk.append("HIST_NEG+5")
-        # P10: bonus for histogram falling further — bear momentum accelerating
-        if not data.get('MACD_Hist_Rising', True):
-            s += 8; comp['mh_falling'] = 8; bk.append("HIST_FALLING+8")
         rsi = data.get('RSI', 50)
         if getattr(self,'rsi_short_min',30) <= rsi <= getattr(self,'rsi_short_max',60):
             s += 15; comp['rsi'] = 15; bk.append(f"RSI+15({rsi:.0f})")
@@ -1104,8 +997,6 @@ class ScalpingLogic:
         vr = float(data.get('Volume_Ratio', 1.))
         if vr < getattr(self, 'volume_min_ratio', .9):         return f"long_vol_{vr:.2f}"
         if data.get('MACD', 0) <= data.get('MACD_Signal', 0): return "long_macd_below_sig"
-        # P1: MACD histogram must be growing — confirms momentum acceleration
-        if not data.get('MACD_Hist_Rising', True):             return "long_macd_hist_not_rising"
         sk, sd = data.get('Stoch_K', 50), data.get('Stoch_D', 50)
         if sk <= sd:                                         return "long_sk_lte_sd"
         if sk > 75:                                          return f"long_sk_too_high_{sk:.0f}"
@@ -1113,21 +1004,15 @@ class ScalpingLogic:
             return "long_stoch_ob"
         if data.get('Momentum', 0) < getattr(self, 'momentum_min_long', .003):
             return "long_mom_weak"
-        # P2: EMA spread filter — reject borderline crossovers
-        if ef > 0 and em > 0:
-            spread_pct = (ef - em) / em * 100
-            min_spread = getattr(self, 'ema_spread_min_pct', 0.05)
-            if spread_pct < min_spread:
-                return f"long_ema_spread_thin_{spread_pct:.3f}pct"
         if ef > 0:
             dist = (data.get('Close', 0) - ef) / ef * 100
             pzl = getattr(self, 'pullback_zone_lower_pct', -3.)
             pzu = getattr(self, 'pullback_zone_upper_pct', 1.5)
             if not (pzl <= dist <= pzu):
-                return f"long_zone_{dist:.2f}pct"
+                return f"long_zone_{dist:.2f}pct"  # ← THIS IS LIKELY YOUR BLOCKER
         adx_now = data.get('ADX', 0)
         adx_prev = data.get('ADX_prev', adx_now)
-        bm = getattr(self, 'bar_interval_minutes', None) or self.config.get('bar_interval_minutes', None) or 60
+        bm = getattr(self, 'bar_interval_minutes', None) or self.config.get('bar_interval_minutes', None) or 60  # FIX 1
         asl = getattr(self, 'adx_slope_min', -.5)
         if bm <= 15: asl = -999
         if (adx_now - adx_prev) < asl: return "long_adx_slope_falling"
@@ -1149,8 +1034,6 @@ class ScalpingLogic:
         vr = float(data.get('Volume_Ratio', 1.))
         if vr < getattr(self, 'volume_min_ratio', .9):           return f"short_vol_{vr:.2f}"
         if data.get('MACD', 0) >= data.get('MACD_Signal', 0):   return "short_macd_above_sig"
-        # P1: MACD histogram must be falling (growing negative) — confirms bear momentum
-        if data.get('MACD_Hist_Rising', False):                  return "short_macd_hist_still_rising"
         sk, sd = data.get('Stoch_K', 50), data.get('Stoch_D', 50)
         if sk >= sd:                                           return "short_sk_gte_sd"
         if sk < 25:                                            return f"short_sk_too_low_{sk:.0f}"
@@ -1158,12 +1041,6 @@ class ScalpingLogic:
             return "short_stoch_os"
         if data.get('Momentum', 0) > -getattr(self, 'momentum_min_short', .003):
             return "short_mom_not_bear"
-        # P2: EMA spread filter — reject borderline short crossovers
-        if em > 0 and ef > 0:
-            spread_pct = (em - ef) / em * 100   # positive when ef < em (bear)
-            min_spread = getattr(self, 'ema_spread_min_pct', 0.05)
-            if spread_pct < min_spread:
-                return f"short_ema_spread_thin_{spread_pct:.3f}pct"
         if ef > 0:
             dist = (data.get('Close', 0) - ef) / ef * 100
             if not (getattr(self, 'pullback_zone_lower_pct', -3.) <= dist
@@ -1171,7 +1048,7 @@ class ScalpingLogic:
                 return f"short_zone_{dist:.2f}pct"
         adx_now = data.get('ADX', 0)
         adx_prev = data.get('ADX_prev', adx_now)
-        bm = getattr(self, 'bar_interval_minutes', None) or self.config.get('bar_interval_minutes', None) or 60
+        bm = getattr(self, 'bar_interval_minutes', None) or self.config.get('bar_interval_minutes', None) or 60  # FIX 1
         asl = getattr(self, 'adx_slope_min', -.5)
         if bm <= 15: asl = -999
         if (adx_now - adx_prev) < asl: return "short_adx_slope_falling"
@@ -1264,30 +1141,11 @@ class ScalpingLogic:
         """
         Open a long (or short) position from the pending signal.
         Returns (success, filled_qty, order_id).
-
-        P3: Pre-entry R:R check — skip if potential reward < min_rr × risk.
-        P4: ATR-based TP levels stored in position dict so exit manager
-            R-calculations remain stable even after be-stop moves to entry.
         """
         if self._pending_signal is not None:
             direction = self._pending_signal.get('direction', 'long')
         else:
             direction = 'long'
-
-        atr_mult = getattr(self, 'stop_loss_atr_mult', 2.2)
-        sl_dist  = atr * atr_mult
-        tp1_dist = atr * getattr(self, 'take_profit_r1', 1.5)
-        tp2_dist = atr * getattr(self, 'take_profit_r2', 2.8)
-
-        # P3: enforce minimum R:R before entry
-        min_rr = getattr(self, 'min_rr_ratio', 1.5)
-        if sl_dist > 0:
-            actual_rr = tp1_dist / sl_dist
-            if actual_rr < min_rr:
-                self._log(
-                    f"⛔ R:R SKIP — TP1_dist={tp1_dist:.4f} / SL_dist={sl_dist:.4f} "
-                    f"= {actual_rr:.2f} < min {min_rr:.1f}", "orange")
-                return False, 0, None
 
         success = self.trading_app.place_order(
             'buy' if direction == 'long' else 'sell',
@@ -1300,15 +1158,9 @@ class ScalpingLogic:
         )
 
         if success:
-            stop = (price - sl_dist if direction == 'long' else price + sl_dist)
-
-            # P4: store ATR-based TP levels in position so exit R-calcs stay stable
-            if direction == 'long':
-                tp1 = price + tp1_dist
-                tp2 = price + tp2_dist
-            else:
-                tp1 = price - tp1_dist
-                tp2 = price - tp2_dist
+            atr_mult = getattr(self, 'stop_loss_atr_mult', 2.2)
+            stop = (price - atr * atr_mult if direction == 'long'
+                    else price + atr * atr_mult)
 
             self.position = {
                 'type': direction,
@@ -1316,7 +1168,6 @@ class ScalpingLogic:
                 'quantity': shares,
                 'original_quantity': shares,
                 'stop_loss': stop,
-                'original_sl_dist': sl_dist,      # P5: stored for be-stop TP nudge
                 'trailing_stop': stop,
                 'trailing_activated': False,
                 'highest_price': price if direction == 'long' else None,
@@ -1329,9 +1180,6 @@ class ScalpingLogic:
                 'entry_reason': 'signal',
                 'trade_id': self.trade_counter + 1,
                 'partial_pnl_realised': 0.,
-                'atr_at_entry': atr,              # P4: used for stable R calcs
-                'tp1': tp1,                       # P4: ATR-based take profit 1
-                'tp2': tp2,                       # P4: ATR-based take profit 2
             }
             self.trade_counter += 1
             self.bars_held = 0
@@ -1339,8 +1187,7 @@ class ScalpingLogic:
             self._log(
                 f"✅ {'LONG' if direction == 'long' else 'SHORT'} OPENED "
                 f"T{tier} Q={quality_score} @${price:.4f} "
-                f"SL=${stop:.4f} TP1=${tp1:.4f} TP2=${tp2:.4f} "
-                f"R:R={actual_rr:.2f} sz={shares:.4f}",
+                f"SL=${stop:.4f} sz={shares:.4f}",
                 "green" if direction == 'long' else "red"
             )
             return True, shares, self.trade_counter
@@ -1422,16 +1269,16 @@ class ScalpingLogic:
     def get_strategy_info(self) -> dict:
         """Return metadata for the switch_strategy display panel."""
         return {
-            'name': f"Professional Scalping v2.0",
-            'version': "2.0",
+            'name': f"Professional Scalping v1.6.1",
+            'version': "1.6.1",
             'tier_system': "Tier 1 (Q≥72) / Tier 2 (Q≥55)",
             'expected_trades_monthly': "30-50",
-            'target_win_rate': "52-58%",
-            'target_cagr': "50-80%",
-            'target_sharpe': "1.5-2.5",
-            'max_drawdown': "<8%",
+            'target_win_rate': "47-55%",
+            'target_cagr': "35-60%",
+            'target_sharpe': "1.2-2.0",
+            'max_drawdown': "<10%",
             'tier1_description': f"High-conviction Q≥{getattr(self, 'quality_tier1_min', 72)} "
-                                 f"full-stack + all filters + R:R≥1.5",
+                                 f"full-stack + all filters",
             'tier2_description': f"Standard Q≥{getattr(self, 'quality_min_long', 55)} "
                                  f"minimum — partial size",
             'timeframe': self.timeframe,
@@ -1597,7 +1444,7 @@ class ScalpingStrategy(BaseStrategy, ScalpingLogic):
             self.bars_held = 0; self.trade_counter = 0
             if self.trading_app:
                 self._log("="*70, "cyan")
-                self._log(f"SCALPING v2.0 — {self.timeframe.upper()} LIVE", "bold green")
+                self._log(f"SCALPING v1.6.1 — {self.timeframe.upper()} LIVE", "bold green")
                 self._log(f"  ✅ Stop {params['stop_loss_atr_mult']}×ATR | Dir {self.trade_direction.upper()}", "green")
                 self._log(f"  ✅ Q≥{params['quality_min_long']}(L)/≥{params['quality_min_short']}(S) "
                           f"| Age≥{params['trend_age_min_bars']}b "
@@ -1607,12 +1454,6 @@ class ScalpingStrategy(BaseStrategy, ScalpingLogic):
                 self._log(f"  ✅ SPIKE regime blocking active (ATR >{params['atr_spike_ratio']}×avg)", "green")
                 self._log(f"  ✅ Runner EMA-reversal exit: enabled", "green")
                 self._log(f"  ✅ Single-instance guard: active", "green")
-                self._log(f"  ✅ P1: MACD hist growth gate | P2: EMA spread filter", "green")
-                self._log(f"  ✅ P3: R:R≥{params['min_rr_ratio']} enforced pre-entry", "green")
-                self._log(f"  ✅ P4: ATR-stable TP levels | P5: BE-stop TP nudge", "green")
-                self._log(f"  ✅ P8: Trail activation≤{params['trailing_activation_pct']:.1%} "
-                          f"| P9: max_hold={params['max_hold_bars']}bars", "green")
-                self._log(f"  ✅ P11: Commission {GlobalConfig.COMMISSION_RATE:.3%}/trade", "green")
                 self._log("="*70, "cyan")
         except Exception:
             self.__class__._release_instance()              # F3: release on failure
@@ -1710,11 +1551,7 @@ class ScalpingStrategy(BaseStrategy, ScalpingLogic):
             atr=atr,
             position_type=self.position['type'],
             trailing_activated=self.position.get('trailing_activated', False),
-            trailing_stop=self.position.get('trailing_stop'),
-            atr_at_entry=self.position.get('atr_at_entry'),    # P4
-            tp1=self.position.get('tp1'),                      # P4
-            tp2=self.position.get('tp2'),                      # P4
-        )
+            trailing_stop=self.position.get('trailing_stop'))
 
     def calculate_indicators(self, df):
         return IndicatorCalculator.calculate(df, self.config)
@@ -1743,7 +1580,7 @@ class ScalpingStrategy(BaseStrategy, ScalpingLogic):
 
 class BacktestScalpingStrategy(Strategy, ScalpingLogic):
     """
-    v2.0 Backtest — all v1.6.1 fixes + 11 perfection upgrades (P1–P11).
+    v1.6.1 Backtest — all 6 v1.3 bugs fixed + 4 v1.6.1 fixes.
 
     ── GUI USAGE ────────────────────────────────────────────────────────────
     Before every backtest run, call:
@@ -2102,32 +1939,23 @@ class BacktestScalpingStrategy(Strategy, ScalpingLogic):
                     ns = self._lowest_price * (1 + td)
                     if ns < (self._trailing_stop or 1e9): self._trailing_stop = ns
 
-        # P5: when be-stop fires, nudge stored TP levels upward by
-        # half the original SL distance so targets remain meaningful
-        if getattr(self, 'be_stop_enabled', True) and not self._be_stop_set:
-            sdd = abs(self._entry_price - self._stop_loss)
-            if sdd > 0:
-                ber = getattr(self, 'be_stop_r_trigger', 1.5)
-                beb = getattr(self, 'be_stop_no_progress_bars', 10)
-                if self._position_direction == 'long':
-                    pa = cp - self._entry_price
-                    if pa >= ber * sdd:
-                        self._stop_loss = self._entry_price; self._be_stop_set = True
-                        # P5: nudge stored TP levels up by 0.5 × original SL dist
-                        be_nudge = sdd * 0.5
-                        if 'tp1' in self.__dict__: self._be_tp1_nudge = be_nudge
-                        if 'tp2' in self.__dict__: self._be_tp2_nudge = be_nudge
-                    elif self._bars_held >= beb and pa / self._entry_price < .002:
-                        self._stop_loss = self._entry_price; self._be_stop_set = True
-                else:
-                    pa = self._entry_price - cp
-                    if pa >= ber * sdd:
-                        self._stop_loss = self._entry_price; self._be_stop_set = True
-                        be_nudge = sdd * 0.5
-                        if 'tp1' in self.__dict__: self._be_tp1_nudge = be_nudge
-                        if 'tp2' in self.__dict__: self._be_tp2_nudge = be_nudge
-                    elif self._bars_held >= beb and pa / self._entry_price < .002:
-                        self._stop_loss = self._entry_price; self._be_stop_set = True
+            if getattr(self, 'be_stop_enabled', True) and not self._be_stop_set:
+                sdd = abs(self._entry_price - self._stop_loss)
+                if sdd > 0:
+                    ber = getattr(self, 'be_stop_r_trigger', 1.5)
+                    beb = getattr(self, 'be_stop_no_progress_bars', 10)
+                    if self._position_direction == 'long':
+                        pa = cp - self._entry_price
+                        if pa >= ber * sdd:
+                            self._stop_loss = self._entry_price; self._be_stop_set = True
+                        elif self._bars_held >= beb and pa / self._entry_price < .002:
+                            self._stop_loss = self._entry_price; self._be_stop_set = True
+                    else:
+                        pa = self._entry_price - cp
+                        if pa >= ber * sdd:
+                            self._stop_loss = self._entry_price; self._be_stop_set = True
+                        elif self._bars_held >= beb and pa / self._entry_price < .002:
+                            self._stop_loss = self._entry_price; self._be_stop_set = True
 
             es, ep2 = self.exit_manager.evaluate_exit(
                 current_price=cp, entry_price=self._entry_price,
@@ -2259,5 +2087,5 @@ class TimeframeManager:
 #  attribute 'dpi'" crashes seen in the session logs.
 #
 # ═══════════════════════════════════════════════════════════════════════════
-# END OF FILE — v2.0
+# END OF FILE — v1.6.1
 # ═══════════════════════════════════════════════════════════════════════════

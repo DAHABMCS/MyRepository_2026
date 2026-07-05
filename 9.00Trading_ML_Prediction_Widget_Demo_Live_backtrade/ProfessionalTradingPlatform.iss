@@ -35,7 +35,7 @@ DisableProgramGroupPage=yes
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
 ;PrivilegesRequired=lowest
 OutputDir=C:\Users\dahab\OneDrive\Desktop\ProfessionalTrading
-OutputBaseFilename=mysetup
+OutputBaseFilename=Professional Trading Platform
 SetupIconFile=C:\Users\dahab\PyCharm_2026.2.23\New_Bollinger_bands\9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade\trade.ico
 Password=1234
 Encryption=yes
@@ -55,7 +55,7 @@ Source: "C:\Program Files\Pyinstall Pro\dist\backtest_params.json"; DestDir: "{a
 Source: "C:\Program Files\Pyinstall Pro\dist\config.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\Program Files\Pyinstall Pro\dist\help_documentation.pdf"; DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\Program Files\Pyinstall Pro\dist\launcher_config.json"; DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\Program Files\Pyinstall Pro\dist\ProfessionalTradingPlatformV9.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "C:\Program Files\Pyinstall Pro\dist\ProfessionalTradingPlatformV10.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\Program Files\Pyinstall Pro\dist\strategy_settings.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\Program Files\Pyinstall Pro\dist\trading_bot.log"; DestDir: "{app}"; Flags: ignoreversion
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files

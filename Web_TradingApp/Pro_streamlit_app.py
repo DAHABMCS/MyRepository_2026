@@ -8,9 +8,19 @@ import streamlit as st
 import pandas as pd
 import json
 import time
+import threading
 import numpy as np
 from datetime import datetime, timezone
 from pathlib import Path
+
+# websocket-client is optional — the app works fully without it (falls back
+# to clock-aligned REST polling only). Install with: pip install websocket-client
+try:
+    import websocket as _ws_client  # provided by the "websocket-client" package
+    _WS_CLIENT_AVAILABLE = True
+except ImportError:
+    _ws_client = None
+    _WS_CLIENT_AVAILABLE = False
 
 st.set_page_config(
     page_title="Professional Trading Platform",
@@ -81,6 +91,215 @@ hr { border-color:#1a3060 !important; }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# CLOCK-ALIGNED CANDLE SYNC
+# ═══════════════════════════════════════════════════════════════════════════
+# Candle boundaries on OKX (and exchanges generally) are aligned to the UTC
+# wall clock: 15m bars close on :00/:15/:30/:45, 1H on the top of every hour,
+# 4H on 00/04/08/12/16/20 UTC, 1D at 00:00 UTC, etc. Because UTC midnight is
+# also the Unix epoch's day boundary, we can find the next boundary for any
+# of these timeframes with simple integer division on the epoch timestamp —
+# no per-timeframe special-casing and no DST headaches.
+
+TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1H": 60, "4H": 240, "1D": 1440}
+
+
+def seconds_until_next_candle_close(interval: str, buffer_sec: float = 3.0) -> float:
+    """
+    Seconds to sleep (from right now, UTC) until the *next* clock-aligned
+    candle-close boundary for `interval`.
+
+    Example: interval="15m" at 10:07:42 UTC -> returns time until 10:15:00
+    UTC (+ buffer_sec). This keeps the trading cycle's data-read/process tick
+    locked to the exchange's actual bar boundaries instead of drifting on a
+    free-running fixed-second timer that started whenever "Start Trading"
+    happened to be clicked.
+
+    buffer_sec is a small grace period added after the boundary so the
+    exchange has finished publishing/finalizing the just-closed candle
+    before we fetch it.
+    """
+    period_sec = TF_MINUTES.get(interval, 15) * 60
+    now = datetime.now(timezone.utc).timestamp()
+    next_boundary = (int(now // period_sec) + 1) * period_sec
+    return max(0.5, next_boundary - now + buffer_sec)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# WEBSOCKET CANDLE-CLOSE TRIGGER  (hybrid Tier-1 / Tier-2 design)
+# ═══════════════════════════════════════════════════════════════════════════
+# The WebSocket connection is used ONLY to learn *when* a candle has closed,
+# as fast as possible. It never supplies the actual OHLCV used for signal
+# processing — that always comes from the normal REST fetch in
+# run_trading_cycle(). This means the fast (WS) and safety-net (clock-aligned
+# REST deadline) paths can never disagree on data, only on timing:
+#   - If the WS confirms the close quickly       -> we react almost instantly.
+#   - If the WS is slow, disconnected, or absent -> the clock-aligned deadline
+#     (the same logic as seconds_until_next_candle_close) guarantees we still
+#     fetch and process every single candle close, just a few seconds later.
+# No candle is ever silently skipped either way.
+
+OKX_WS_BUSINESS_URL = "wss://ws.okx.com:8443/ws/v5/business"
+
+
+class _CandleWSBridge:
+    """
+    One persistent background thread per (symbol, interval) pair, shared
+    across all Streamlit reruns/sessions in this process. Streamlit reruns
+    the whole script on every interaction, so st.session_state can't hold a
+    live socket — this lives at module scope instead, guarded by a lock so
+    only one connection is ever opened per symbol/interval combination.
+    """
+    _registry = {}
+    _registry_lock = threading.Lock()
+
+    def __init__(self, symbol: str, interval: str):
+        self.symbol = symbol
+        self.interval = interval
+        self._lock = threading.Lock()
+        self._connected = False
+        self._last_confirmed_ts = None   # epoch seconds of the last CONFIRMED candle close
+        self._last_message_at = 0.0
+        self._thread = None
+        self._stop = False
+
+    # ── thread-safe read for the main script ──────────────────────────
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "connected": self._connected,
+                "last_confirmed_ts": self._last_confirmed_ts,
+                "last_message_at": self._last_message_at,
+            }
+
+    # ── lifecycle ───────────────────────────────────────────────────────
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop = False
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    # ── worker loop: connect, subscribe, listen, reconnect w/ backoff ──
+    def _run(self):
+        bar_channel = f"candle{self.interval}"
+        backoff = 1.0
+        while not self._stop:
+            ws = None
+            try:
+                ws = _ws_client.create_connection(OKX_WS_BUSINESS_URL, timeout=10)
+                ws.send(json.dumps({
+                    "op": "subscribe",
+                    "args": [{"channel": bar_channel, "instId": self.symbol}],
+                }))
+                with self._lock:
+                    self._connected = True
+                    self._last_message_at = time.time()
+                backoff = 1.0  # reset after a successful (re)connect
+                ws.settimeout(25)
+
+                while not self._stop:
+                    try:
+                        raw = ws.recv()
+                    except Exception:
+                        # Quiet for 25s — OKX expects an app-level "ping" or
+                        # it will drop the connection after ~30s of silence.
+                        ws.send("ping")
+                        with self._lock:
+                            self._last_message_at = time.time()
+                        continue
+
+                    if raw == "pong":
+                        with self._lock:
+                            self._last_message_at = time.time()
+                        continue
+
+                    try:
+                        msg = json.loads(raw)
+                    except Exception:
+                        continue
+
+                    with self._lock:
+                        self._last_message_at = time.time()
+
+                    data = msg.get("data")
+                    if not data:
+                        continue
+                    candle = data[0]
+                    # OKX candle arrays end with a "confirm" flag: "1" once
+                    # the bar is final, "0" while it is still forming.
+                    if len(candle) >= 2 and candle[-1] == "1":
+                        with self._lock:
+                            self._last_confirmed_ts = int(candle[0]) / 1000.0
+            except Exception:
+                pass  # fall through to reconnect-with-backoff below
+            finally:
+                with self._lock:
+                    self._connected = False
+                try:
+                    if ws is not None:
+                        ws.close()
+                except Exception:
+                    pass
+            if self._stop:
+                break
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 30.0)
+
+    def stop(self):
+        self._stop = True
+
+    # ── singleton accessor ───────────────────────────────────────────────
+    @classmethod
+    def get(cls, symbol: str, interval: str) -> "_CandleWSBridge":
+        key = (symbol, interval)
+        with cls._registry_lock:
+            bridge = cls._registry.get(key)
+            if bridge is None:
+                bridge = cls(symbol, interval)
+                cls._registry[key] = bridge
+                bridge.start()
+            return bridge
+
+
+def wait_for_next_trigger(symbol: str, interval: str) -> str:
+    """
+    Blocks until the next trading cycle should fire, and returns which
+    mechanism triggered it:
+      "websocket" — OKX confirmed the candle close in real time (fast path)
+      "fallback"  — clock-aligned deadline reached without a WS confirm
+                    (guarantees no candle is ever missed)
+      "fixed"     — legacy fixed-interval mode (sync_to_clock disabled)
+    """
+    if not st.session_state.get("sync_to_clock", True):
+        time.sleep(st.session_state.refresh_interval)
+        return "fixed"
+
+    buffer_sec = st.session_state.get("clock_sync_buffer", 3)
+    period_sec = TF_MINUTES.get(interval, 15) * 60
+    now = time.time()
+    boundary_epoch = (int(now // period_sec) + 1) * period_sec
+    deadline = boundary_epoch + buffer_sec
+
+    use_ws = st.session_state.get("use_ws_trigger", True) and _WS_CLIENT_AVAILABLE
+    if not use_ws:
+        time.sleep(max(0.5, deadline - time.time()))
+        return "fallback"
+
+    bridge = _CandleWSBridge.get(symbol, interval)
+    poll_step = 0.5
+    while time.time() < deadline:
+        snap = bridge.snapshot()
+        confirmed_ts = snap.get("last_confirmed_ts")
+        # A confirm timestamp at/after the boundary means OKX has finalized
+        # the candle we're waiting for — react now rather than waiting out
+        # the rest of the buffer.
+        if confirmed_ts and confirmed_ts >= boundary_epoch - 2:
+            return "websocket"
+        time.sleep(poll_step)
+    return "fallback"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # SESSION STATE
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -104,7 +323,7 @@ def init_state():
             "long_trades": 0, "long_wins": 0, "long_pnl": 0.0,
             "short_trades": 0, "short_wins": 0, "short_pnl": 0.0,
         },
-        "virtual_balance": {"USDT": 1000.0, "COIN": 0.0},
+        "virtual_balance": {"USDT": 5000.0, "COIN": 0.0},
         "ml_prediction": None,
         "ml_confidence": 0.0,
         "backtest_results": None,
@@ -119,6 +338,10 @@ def init_state():
         "last_bar_ts": None,
         "cycle_count": 0,
         "refresh_interval": 10,
+        "sync_to_clock": True,   # lock the trading cycle to the wall-clock candle-close
+        "use_ws_trigger": True,  # fast-path: react to OKX's WS confirm instead of waiting out the buffer
+        "last_trigger_source": None,  # "websocket" | "fallback" | "fixed" — which path fired last cycle
+        "clock_sync_buffer": 3,  # grace seconds added after the boundary tick
         "chart_markers": [],  # {ts, price, kind, pnl_pct}
         "trading_windows": {
             "Momentum": {"enabled": False, "start": "00:00", "end": "23:59",
@@ -132,7 +355,9 @@ def init_state():
         },
         "tw_panel_open": False,
         "session_start_time": None,  # UTC datetime when trading started
-        "session_start_balance": 1000.0,
+        "session_start_balance": 5000.0,
+        "commission_rate": 0.001,  # 0.1% — mirrors desktop's commission_var default,
+                                    # applied per fill (entry + exit) in the real-engine path
         "session_summary": None,  # dict populated when session ends
         # Ranging market detection settings
         "ranging_settings": {
@@ -154,6 +379,11 @@ def init_state():
         },
         "ranging_cooldown_counter": 0,
         "ranging_analysis": None,
+        # ── Real strategy engine (Momentum/Kalman/Scalping parity with desktop) ──
+        "use_real_engine": True,
+        "confidence_threshold": 65.0,   # mirrors desktop's confidence_var / BaseStrategy.min_combined_threshold
+        "_live_strategies": {},
+        "_last_symbol": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1335,12 +1565,318 @@ STRATEGY_FN = {
     "Enhanced": enhanced_signal,
 }
 
+# ═══════════════════════════════════════════════════════════════════════════
+# REAL STRATEGY ENGINE — wires the actual desktop classes (MomentumStrategy /
+# KalmanTrendStrategy / ScalpingStrategy) in so these three produce the same
+# decisions as the desktop app, instead of the simplified momentum_signal()/
+# kalman_signal()/scalping_signal() helpers above.
+#
+# "Enhanced" is NOT wired here — TradingStrategy3.py as supplied is a
+# placeholder (check_entry_conditions always returns a hardcoded 75/75/True,
+# check_exit_conditions always returns None), so there is no real logic to
+# port yet. It keeps using enhanced_signal() above until a working file is
+# provided.
+#
+# KNOWN, DELIBERATE DEVIATION FROM THE DESKTOP FILES AS SUPPLIED:
+# Short-side order ROUTING (not signal logic) was broken in all three files
+# as given to me:
+#   • MomentumStrategy.execute_buy() hardcodes `'type': 'long'` — there is
+#     no code path anywhere in the file that ever opens a short.
+#   • KalmanTrendStrategy.run_analysis_cycle() returns 'long'/'short' as the
+#     decision, but the desktop's generic dispatcher only routes decisions
+#     equal to 'buy'/'sell' — so live entries never fire for Kalman at all
+#     via that path (long OR short).
+#   • ScalpingLogic.check_entry_conditions() clears self._pending_signal to
+#     None and THEN returns the decision — so by the time execute_buy()
+#     reads self._pending_signal to decide long-vs-short, it's already gone
+#     and silently defaults to 'long'.
+# None of this changes any strategy's entry/exit DECISION logic (indicators,
+# thresholds, scoring — all untouched, called exactly as written). It only
+# fixes the plumbing that takes a decision and routes it to the correct
+# execute_* call. Momentum has no short logic to route to, so it stays
+# long-only here. Tell me if you'd rather I replicate these exactly as
+# bugs (i.e. shorts silently no-op) instead of fixing the routing.
+# ═══════════════════════════════════════════════════════════════════════════
+
+REAL_ENGINE_STRATEGIES = {"Momentum", "Kalman", "Scalping"}
+
+
+def _import_live_strategy_class(name: str):
+    """Import the real strategy class. Tries a couple of likely package
+    layouts (a bare top-level import, and the `strategies.<module>` package
+    implied by the __init__.py you uploaded alongside these files) before
+    giving up. Adjust _CANDIDATE_PREFIXES below if your deployment uses a
+    different layout."""
+    module_map = {
+        "Momentum": ("MomentumStrategy_MACD_HybridScore_Latest", "MomentumStrategy"),
+        "Kalman": ("KalmanTrendStrategy_New", "KalmanTrendStrategy"),
+        "Scalping": ("scalping_strategy", "ScalpingStrategy"),
+    }
+    module_name, class_name = module_map[name]
+    last_err = None
+    for prefix in ("", "strategies.", "Web_TradingApp.strategies."):
+        try:
+            mod = __import__(f"{prefix}{module_name}", fromlist=[class_name])
+            return getattr(mod, class_name)
+        except Exception as e:
+            last_err = e
+    raise ImportError(
+        f"Could not import {class_name} from {module_name} under any of the tried "
+        f"package prefixes. Last error: {last_err}. Adjust _import_live_strategy_class()."
+    )
+
+
+class LiveTradingAdapter:
+    """Implements the trading_app contract the real strategy classes expect
+    (self.trading_app.* calls inside MomentumLogic / KalmanLogic /
+    ScalpingLogic / base3_New.BaseStrategy). Backed by Streamlit
+    session_state — virtual fills only, matching the rest of this app's
+    Demo-mode accounting. For Live mode, replace place_order()'s body with
+    a real exchange call and return its actual fill price/quantity."""
+
+    def __init__(self, symbol: str):
+        self.symbol = symbol
+        self.current_data = None  # some strategies read trading_app.current_data directly
+
+    def log_message(self, message, color="white"):
+        level_map = {
+            "red": "err", "bold red": "err", "orange": "warn", "yellow": "warn",
+            "green": "buy", "bold green": "buy", "cyan": "info", "blue": "info",
+            "magenta": "info",
+        }
+        add_log(f"[{self.symbol}] {message}", level_map.get(color, "sys"))
+
+    def get_current_price(self):
+        return st.session_state.get("last_price")
+
+    def get_balance(self, currency, retries=3, delay=2.0):
+        return float(st.session_state.virtual_balance.get(currency, 0.0))
+
+    def get_account_balance(self):
+        return {"quantity": 0.0}
+
+    def get_volume_ratio(self, df=None, current_data=None, default=1.0):
+        # Ported verbatim from the desktop App's get_volume_ratio().
+        vol_ratio = None
+        if df is not None and len(df) >= 2:
+            for col_name in ["Volume_Ratio", "volume_ratio", "Vol_Ratio"]:
+                if col_name in df.columns:
+                    try:
+                        val = df[col_name].iloc[-2]
+                        if pd.notna(val) and val > 0:
+                            vol_ratio = float(val)
+                            break
+                    except Exception:
+                        continue
+        if vol_ratio is None or vol_ratio <= 0:
+            if current_data is not None:
+                for col_name in ["Volume_Ratio", "volume_ratio"]:
+                    try:
+                        val = current_data.get(col_name) if hasattr(current_data, "get") else None
+                        if val and float(val) > 0:
+                            vol_ratio = float(val)
+                            break
+                    except Exception:
+                        continue
+        if vol_ratio is None or vol_ratio <= 0:
+            if df is not None and "Volume" in df.columns and len(df) >= 22:
+                try:
+                    current_vol = float(df["Volume"].iloc[-2])
+                    avg_vol = df["Volume"].iloc[-22:-2].mean()
+                    if avg_vol > 0:
+                        vol_ratio = current_vol / avg_vol
+                except Exception:
+                    pass
+        if vol_ratio is None or vol_ratio <= 0:
+            vol_ratio = default
+        return max(0.01, min(10.0, vol_ratio))
+
+    def update_status_indicators(self, status):
+        st.session_state.current_status = status
+
+    def place_order(self, side, price=None, quantity=None, **kwargs):
+        """Virtual fill — Demo mode only. quantity here is in BASE units
+        (shares), unlike the rest of this file's order_size_pct-of-equity
+        model, because that's what the real strategy classes size and pass.
+        Commission charged per fill as price*quantity*commission_rate,
+        mirroring the desktop App's commission_var pattern (0.1% default) —
+        the strategy classes themselves have no fee awareness at all, so
+        this has to happen at the order-placement layer, same as desktop."""
+        if price is None:
+            price = self.get_current_price()
+        if price is None or quantity is None or quantity <= 0:
+            return {"success": False}
+        commission_rate = float(st.session_state.get("commission_rate", 0.001))
+        commission = float(price) * float(quantity) * commission_rate
+        st.session_state.virtual_balance["USDT"] -= commission
+        return {"success": True, "filled_quantity": float(quantity), "filled_price": float(price),
+                "commission": commission}
+
+
+def get_live_strategy(name: str):
+    """One persistent instance per strategy per browser session — created
+    once and reused on every Streamlit rerun (stored in st.session_state),
+    exactly like the desktop app's long-running self.strategies[name]
+    instance. This is what lets internal state (position, bars_held, risk
+    controller, regime history, fuzzy thresholds) carry across cycles
+    instead of resetting every rerun."""
+    cache = st.session_state.setdefault("_live_strategies", {})
+    if name not in cache:
+        StrategyClass = _import_live_strategy_class(name)
+        adapter = LiveTradingAdapter(st.session_state.get("_last_symbol", "SOL-USDT"))
+        cache[name] = StrategyClass(adapter)
+        add_log(f"⚙️ Real {name} engine initialized (strategy defaults, no UI overrides applied)", "info")
+    strat = cache[name]
+    direction_filter = st.session_state.get("direction", "Long").lower()
+    if hasattr(strat, "trade_direction"):
+        strat.trade_direction = "both" if direction_filter == "both" else direction_filter
+    return strat
+
+
+def _mirror_strategy_position_to_ui(strategy):
+    """Reflect the real strategy's internal position dict into the same
+    session_state fields the rest of the UI (chart, status badge, stats
+    panels) already reads, so nothing else in the app needs to change."""
+    pos = getattr(strategy, "position", None)
+    if pos is None:
+        pos = getattr(strategy, "position_state", None)
+    if pos and pos.get("type"):
+        side = pos["type"]
+        entry_price = pos.get("entry_price", pos.get("price"))
+        st.session_state.position = {
+            "price": entry_price,
+            "stop_loss": pos.get("stop_loss"),
+            "trail_price": pos.get("trailing_stop") or pos.get("stop_loss"),
+            "side": side,
+            "size_pct": st.session_state.get("order_size_pct", 30),
+            "bar_ts": datetime.now().strftime("%H:%M"),
+        }
+        st.session_state.current_status = "BUY" if side == "long" else "SELL"
+    else:
+        st.session_state.position = None
+        st.session_state.current_status = "PARKING"
+
+
+def _record_real_trade_close(strategy_name, profit, exit_price, reason, side="EXIT"):
+    st.session_state.stats["pnl"] += profit
+    st.session_state.stats["trades"] += 1
+    if profit > 0:
+        st.session_state.stats["wins"] += 1
+    t, w = st.session_state.stats["trades"], st.session_state.stats["wins"]
+    st.session_state.stats["win_rate"] = (w / t * 100) if t else 0.0
+    st.session_state.virtual_balance["USDT"] += profit
+    st.session_state.trade_history.append({
+        "Time": datetime.now().strftime("%H:%M:%S"),
+        "Symbol": strategy_name, "Side": side,
+        "Entry": "-", "Exit": round(float(exit_price), 4) if exit_price else "-",
+        "PnL%": "-", "PnL$": f"${profit:+.2f}",
+        "Reason": reason,
+    })
+
+
+def run_real_strategy_cycle(strategy_name, current_data, current_price, df):
+    """Faithful port of the desktop App's _process_trading_result() /
+    _execute_trades_from_result(): calls the real strategy's
+    run_analysis_cycle(), applies the same confidence-threshold gate the
+    desktop GUI applies before entries, then calls the strategy's own
+    execute_buy/execute_sell/execute_short — which is what actually owns
+    ATR-based stops, trailing activation, position sizing and partial
+    exits, exactly as on desktop. See the module-level comment above
+    REAL_ENGINE_STRATEGIES for the short-side routing fix applied here."""
+    strategy = get_live_strategy(strategy_name)
+    result = strategy.run_analysis_cycle(current_data, current_price, df)
+
+    if not isinstance(result, tuple) or len(result) < 2:
+        return
+
+    # ── EXIT PATH ────────────────────────────────────────────────────────
+    # Momentum: 2-tuple (signal, pct). Kalman: 3-tuple (signal, pct, type)
+    # when exiting, 5-tuple (-1, 0, 0, "IN_TRADE", type) when still in a
+    # trade with nothing to do. Handled generically by value, not length.
+    first = result[0]
+    if first not in (None, "hold", "HOLD", -1, "buy", "sell", "long", "short", "sell_short"):
+        exit_signal, exit_pct = first, result[1]
+        add_log(f"🚨 [{strategy_name}] EXECUTING EXIT: {exit_signal}", "warn")
+        success, profit, exit_price = strategy.execute_sell(reason=exit_signal, exit_percentage=exit_pct)
+        if success:
+            add_log(f"✅ [{strategy_name}] EXIT COMPLETE: P&L ${profit:.2f}", "buy" if profit > 0 else "sell")
+            _record_real_trade_close(strategy_name, profit, exit_price, exit_signal)
+        else:
+            add_log(f"❌ [{strategy_name}] EXIT FAILED", "err")
+        _mirror_strategy_position_to_ui(strategy)
+        return
+
+    # ── ENTRY PATH ───────────────────────────────────────────────────────
+    if len(result) >= 4 and first in ("buy", "sell", "long", "short", "sell_short"):
+        decision, quality_score, shares, reason = result[0], result[1], result[2], result[3]
+        if quality_score is None or not shares or shares <= 0:
+            return
+
+        confidence_threshold = float(st.session_state.get("confidence_threshold", 65.0))
+        if quality_score < confidence_threshold:
+            add_log(
+                f"🎯 [{strategy_name}] ENTRY REJECTED — quality {quality_score:.0f} "
+                f"< threshold {confidence_threshold:.0f}", "warn")
+            return
+
+        is_short = decision in ("sell", "short", "sell_short")
+        atr_val = float(current_data.get("ATR", 1)) if hasattr(current_data, "get") else 1.0
+        tier = getattr(strategy, "_last_entry_tier", 1)
+
+        if is_short:
+            if hasattr(strategy, "execute_short"):
+                # Kalman: dedicated short-entry method.
+                success, filled_qty, order_id = strategy.execute_short(
+                    shares=shares, price=current_price, atr=atr_val,
+                    quality_score=quality_score, tier=tier)
+            elif hasattr(strategy, "_pending_signal"):
+                # Scalping: execute_buy() infers direction from
+                # self._pending_signal, which check_entry_conditions()
+                # already cleared. Re-supply it so the fill opens 'short'
+                # instead of silently defaulting to 'long'.
+                strategy._pending_signal = {"direction": "short"}
+                success, filled_qty, order_id = strategy.execute_buy(
+                    shares=shares, price=current_price, atr=atr_val,
+                    quality_score=quality_score, tier=tier)
+            else:
+                # Momentum: no short-entry code path exists in the file
+                # as supplied — nothing to call.
+                add_log(
+                    f"⚠️ [{strategy_name}] SHORT signal ignored — this strategy's "
+                    f"execute path has no short-entry logic in the file provided.", "warn")
+                return
+        else:
+            success, filled_qty, order_id = strategy.execute_buy(
+                shares=shares, price=current_price, atr=atr_val,
+                quality_score=quality_score, tier=tier)
+
+        if success:
+            add_log(
+                f"{'🔴' if is_short else '🟢'} [{strategy_name}] "
+                f"{'SHORT' if is_short else 'LONG'} EXECUTED — qty {filled_qty:.4f} @ "
+                f"{current_price:.4f} (quality {quality_score:.0f}) | {reason}",
+                "sell" if is_short else "buy")
+        else:
+            add_log(f"❌ [{strategy_name}] ENTRY FAILED", "err")
+        _mirror_strategy_position_to_ui(strategy)
+        return
+
+    # ── HOLD / IN_TRADE no-op ────────────────────────────────────────────
+    _mirror_strategy_position_to_ui(strategy)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # LIVE TRADING CYCLE
 # ═══════════════════════════════════════════════════════════════════════════
 
 def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, order_size_pct, mode):
+    # Real-engine strategies skip the web-only ranging gate below entirely —
+    # the desktop app has no such outer filter (should_skip_due_to_ranging
+    # doesn't exist there); MomentumStrategy/KalmanTrendStrategy/ScalpingStrategy
+    # already do their own internal regime/ranging detection, so this extra
+    # gate would only cause false-negative blocking vs. desktop.
+    _use_real_now = strategy in REAL_ENGINE_STRATEGIES and st.session_state.get("use_real_engine", True)
+
     # ── RANGING MARKET CHECK ──────────────────────────────────────────────
     ranging_settings = st.session_state.get("ranging_settings", {"enabled": True, "skip_on_ranging": True})
 
@@ -1348,8 +1884,8 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
     if not st.session_state.trading_running:
         st.session_state.ranging_cooldown_counter = 0
 
-    # Skip if in cooldown
-    if st.session_state.ranging_cooldown_counter > 0:
+    # Skip if in cooldown (web-only gate — not applied on the real-engine path)
+    if not _use_real_now and st.session_state.ranging_cooldown_counter > 0:
         st.session_state.ranging_cooldown_counter -= 1
         add_log(f"⏸ Ranging cooldown: {st.session_state.ranging_cooldown_counter} bars remaining", "sys")
         return
@@ -1371,8 +1907,8 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
         add_log("⚠️ Could not fetch candles — skipping cycle.", "warn")
         return
 
-    # ── RANGING MARKET DETECTION ──────────────────────────────────────────
-    if ranging_settings.get("enabled", True) and ranging_settings.get("skip_on_ranging", True):
+    # ── RANGING MARKET DETECTION (web-only — bypassed for real engine) ────
+    if not _use_real_now and ranging_settings.get("enabled", True) and ranging_settings.get("skip_on_ranging", True):
         skip, ranging_analysis = should_skip_due_to_ranging(
             df,
             strategy=strategy,
@@ -1435,6 +1971,30 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
     st.session_state.last_bar_ts = latest_bar_ts
     st.session_state.bars_processed += 1
     st.session_state.cycle_count += 1
+    st.session_state["_last_symbol"] = symbol
+
+    # ── REAL ENGINE PATH — Momentum / Kalman / Scalping ───────────────────
+    # Bypasses the bespoke signal/position-management code below entirely:
+    # the real strategy object owns its own indicators, entries, exits,
+    # ATR-based stops and position sizing, exactly as on desktop. Uses
+    # df.iloc[-2] (last CLOSED bar) as current_data, matching the desktop
+    # app's get_market_data() → calculate_indicators() → iloc[-2] pattern —
+    # df.iloc[-1] may still be the forming candle depending on the feed.
+    if strategy in REAL_ENGINE_STRATEGIES and st.session_state.get("use_real_engine", True):
+        try:
+            real_strategy = get_live_strategy(strategy)
+            df_real = real_strategy.calculate_indicators(df)
+            if df_real is None or len(df_real) < 2:
+                add_log(f"⚠️ [{strategy}] Real engine: not enough bars for indicators yet.", "warn")
+                return
+            current_data = df_real.iloc[-2]
+            current_price = float(current_data["Close"])
+            st.session_state.last_price = current_price
+            st.session_state.last_cycle_time = datetime.now().strftime("%H:%M:%S")
+            run_real_strategy_cycle(strategy, current_data, current_price, df_real)
+        except Exception as e:
+            add_log(f"❌ [{strategy}] Real engine error: {e}", "err")
+        return
 
     sig_fn = STRATEGY_FN.get(strategy, momentum_signal)
     if strategy == "Enhanced":
@@ -2002,7 +2562,7 @@ def build_session_summary(stop_reason: str = "Manual Stop") -> dict:
 
     s = st.session_state.stats
     bal = st.session_state.virtual_balance["USDT"]
-    start_bal = st.session_state.get("session_start_balance", 1000.0)
+    start_bal = st.session_state.get("session_start_balance", 5000.0)
     net_pnl = bal - start_bal
 
     summary = {
@@ -2237,8 +2797,36 @@ with st.sidebar:
                                 key="interval_select")
 
     st.markdown('<div class="section-header">Strategy</div>', unsafe_allow_html=True)
-    strategy = st.selectbox("Strategy", ["Momentum", "Kalman", "Enhanced", "Scalping"], key="strategy_select",
+    strategy = st.selectbox("Strategy", ["Momentum", "Kalman", "Scalping"], key="strategy_select",
                             label_visibility="collapsed")
+
+    # ── Real strategy engine toggle (Momentum/Kalman/Scalping parity) ─────
+    _engine_on = st.session_state.get("use_real_engine", True)
+    _is_real_engine_strategy = strategy in REAL_ENGINE_STRATEGIES
+    _badge = ("🟢 Real engine" if (_engine_on and _is_real_engine_strategy)
+              else "🟡 Simplified (Enhanced has no real file yet)" if strategy == "Enhanced"
+              else "⚪ Simplified (real engine off)")
+    with st.expander(f"⚙️ Engine — {_badge}", expanded=False):
+        st.toggle(
+            "Use real desktop strategy classes (Momentum/Kalman/Scalping)",
+            value=_engine_on, key="use_real_engine",
+            help="When on, Momentum/Kalman/Scalping run the actual desktop "
+                 "strategy classes (calculate_indicators → run_analysis_cycle → "
+                 "execute_buy/execute_sell) instead of the simplified built-in "
+                 "signal functions. Enhanced always uses the simplified version "
+                 "until a working TradingStrategy3.py is supplied.",
+        )
+        st.slider(
+            "Entry confidence threshold %", 50, 95,
+            int(st.session_state.get("confidence_threshold", 65.0)),
+            key="confidence_threshold",
+            help="Mirrors the desktop app's confidence_var slider — the real "
+                 "strategy's quality_score must clear this before an entry fires.",
+        )
+        if strategy == "Momentum" and st.session_state.get("direction", "Long") in ("Short", "Both"):
+            st.caption("⚠️ Short entries are ignored for Momentum — the supplied "
+                       "MomentumStrategy file has no short-entry execution path. "
+                       "Switch Direction to Long to remove this notice.")
 
     # ── Trading window — inline expander in sidebar ──────────────────────
     st.markdown('<div class="section-header">Trading Window</div>', unsafe_allow_html=True)
@@ -2335,12 +2923,66 @@ with st.sidebar:
                                "Both": "⚡  Both  (long + short)"}[x],
     )
     st.session_state["direction"] = direction
-    maker_pct = st.number_input("Maker %", value=0.0001, step=0.0001, format="%.4f", key="maker_pct")
-    taker_pct = st.number_input("Taker %", value=0.0001, step=0.0001, format="%.4f", key="taker_pct")
+    maker_pct = st.number_input("Maker %", value=0.001, step=0.0001, format="%.4f", key="maker_pct",
+                                 help="Used by the simplified (non-real-engine) close-position math.")
+    taker_pct = st.number_input("Taker %", value=0.001, step=0.0001, format="%.4f", key="taker_pct",
+                                 help="Also used as the per-fill commission rate for the real engine "
+                                      "(Momentum/Kalman/Scalping) — matches desktop's commission_var default (0.1%).")
+    st.session_state.commission_rate = taker_pct
 
     st.markdown('<div class="section-header">Live Refresh</div>', unsafe_allow_html=True)
-    refresh_interval = st.slider("Refresh (sec)", 5, 60, 10, step=5, key="refresh_slider")
-    st.session_state.refresh_interval = refresh_interval
+    sync_to_clock = st.toggle(
+        "⏱ Sync to Candle Close (Clock-Aligned)",
+        value=st.session_state.get("sync_to_clock", True),
+        key="sync_to_clock_toggle",
+        help="ON (recommended): the cycle fires right after each candle closes on the "
+             "wall clock — e.g. :00/:15/:30/:45 for a 15m timeframe, top-of-hour for 1H, "
+             "etc. — instead of a free-running fixed-second timer that drifts away from "
+             "the exchange's real bar boundaries.",
+    )
+    st.session_state.sync_to_clock = sync_to_clock
+
+    if sync_to_clock:
+        buffer_sec = st.slider("Buffer after close (sec)", 1, 15, st.session_state.get("clock_sync_buffer", 3),
+                                step=1, key="clock_buffer_slider",
+                                help="Small grace period after the boundary tick, giving the exchange "
+                                     "time to publish/finalize the new candle before we fetch it. "
+                                     "Acts as the hard fallback deadline if the WebSocket trigger "
+                                     "below is off, slow, or disconnected.")
+        st.session_state.clock_sync_buffer = buffer_sec
+        st.session_state.refresh_interval = buffer_sec  # keep legacy field in sync for any other readers
+
+        if _WS_CLIENT_AVAILABLE:
+            use_ws_trigger = st.toggle(
+                "⚡ WebSocket Trigger (faster close detection)",
+                value=st.session_state.get("use_ws_trigger", True),
+                key="use_ws_trigger_toggle",
+                help="ON (recommended): subscribes to OKX's live candle feed and reacts the instant "
+                     "the exchange confirms the bar closed, instead of waiting out the buffer above. "
+                     "The buffer above still applies as a guaranteed fallback if the socket is ever "
+                     "slow, disconnected, or drops — so no candle close is ever missed either way. "
+                     "The WebSocket is only ever used to detect *when* to fetch; the actual candle "
+                     "data always comes from the same REST source either path uses.",
+            )
+            st.session_state.use_ws_trigger = use_ws_trigger
+            if use_ws_trigger and st.session_state.trading_running:
+                _bridge = _CandleWSBridge.get(symbol, interval)
+                _snap = _bridge.snapshot()
+                _ws_dot = "🟢" if _snap["connected"] else "🟡"
+                _src = st.session_state.get("last_trigger_source")
+                _src_txt = {"websocket": "⚡ WS-confirmed", "fallback": "🛟 Fallback",
+                             "fixed": "🔌 Fixed"}.get(_src, "—")
+                st.caption(f"{_ws_dot} WS {'connected' if _snap['connected'] else 'connecting…'} "
+                           f"| Last trigger: {_src_txt}")
+        else:
+            st.session_state.use_ws_trigger = False
+            st.caption("⚠️ `websocket-client` not installed — running fallback-only "
+                       "(`pip install websocket-client` to enable the faster WS trigger).")
+    else:
+        buffer_sec = st.slider("Refresh (sec)", 5, 60, 10, step=5, key="refresh_slider")
+        st.session_state.refresh_interval = buffer_sec
+
+    refresh_interval = st.session_state.refresh_interval  # always defined, used by log line below
 
     st.divider()
     if st.button("🔗 Check Connection", width='stretch'):
@@ -2409,11 +3051,24 @@ with tab_live:
         )
 
     # Top metrics
+    def _format_session_duration():
+        start = st.session_state.get("session_start_time")
+        if not start:
+            return "—"
+        elapsed = datetime.now(timezone.utc) - start
+        total_sec = int(elapsed.total_seconds())
+        h, rem = divmod(total_sec, 3600)
+        m, s = divmod(rem, 60)
+        if h >= 24:
+            d, h = divmod(h, 24)
+            return f"{d}d {h:02d}:{m:02d}:{s:02d}"
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
     pnl = st.session_state.stats["pnl"]
     dir_now = st.session_state.get("direction", "Long")
     if dir_now == "Both":
         s = st.session_state.stats
-        c1, c2, c3, c4, c5, c6, c7 = st.columns([1, 1, 1, 1, 1, 1, 1])
+        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1, 1, 1, 1, 1, 1, 1, 1])
         with c1:
             render_status_badge(st.session_state.current_status)
         with c2:
@@ -2430,8 +3085,10 @@ with tab_live:
             st.metric("Net P&L", f"${pnl:+.2f}", delta=f"WR {s['win_rate']:.1f}%")
         with c7:
             st.metric("Balance", f"${st.session_state.virtual_balance['USDT']:.2f}")
+        with c8:
+            st.metric("⏱ Duration", _format_session_duration())
     else:
-        c1, c2, c3, c4, c5, c6 = st.columns([1, 1, 1, 1, 1, 1])
+        c1, c2, c3, c4, c5, c6, c7 = st.columns([1, 1, 1, 1, 1, 1, 1])
         with c1:
             render_status_badge(st.session_state.current_status)
         with c2:
@@ -2444,22 +3101,33 @@ with tab_live:
             st.metric("P&L (USDT)", f"${pnl:.2f}", delta=f"{'+' if pnl >= 0 else ''}{pnl:.2f}")
         with c6:
             st.metric("Balance", f"${st.session_state.virtual_balance['USDT']:.2f}")
+        with c7:
+            st.metric("⏱ Duration", _format_session_duration())
 
     # Live cycle status bar (only when running)
     if st.session_state.trading_running:
         _tw_open, _tw_reason = is_within_trading_window(strategy)
         _tw_col = "#00ff99" if _tw_open else "#ff2255"
         _tw_txt = "OPEN" if _tw_open else "CLOSED"
-        elapsed = 0
-        if st.session_state.last_cycle_time:
-            try:
-                last_t = datetime.strptime(st.session_state.last_cycle_time, "%H:%M:%S").replace(
-                    year=datetime.now().year, month=datetime.now().month, day=datetime.now().day)
-                elapsed = int((datetime.now() - last_t).total_seconds())
-            except Exception:
-                pass
-        next_in = max(0, st.session_state.refresh_interval - elapsed)
-        prog = min(1.0, elapsed / max(1, st.session_state.refresh_interval))
+        if st.session_state.get("sync_to_clock", True):
+            period_sec = TF_MINUTES.get(interval, 15) * 60
+            next_in = int(seconds_until_next_candle_close(
+                interval, buffer_sec=st.session_state.get("clock_sync_buffer", 3)
+            ))
+            prog = min(1.0, max(0.0, 1 - (next_in / max(1, period_sec))))
+            next_label = "Next candle close:"
+        else:
+            elapsed = 0
+            if st.session_state.last_cycle_time:
+                try:
+                    last_t = datetime.strptime(st.session_state.last_cycle_time, "%H:%M:%S").replace(
+                        year=datetime.now().year, month=datetime.now().month, day=datetime.now().day)
+                    elapsed = int((datetime.now() - last_t).total_seconds())
+                except Exception:
+                    pass
+            next_in = max(0, st.session_state.refresh_interval - elapsed)
+            prog = min(1.0, elapsed / max(1, st.session_state.refresh_interval))
+            next_label = "Next refresh:"
         sig_col = {"BUY": "#00ff88", "SELL": "#ff4466", "HOLD": "#ffaa00", "—": "#5a6a88"}.get(
             st.session_state.last_signal, "#5a6a88")
         st.markdown(f"""
@@ -2475,7 +3143,7 @@ with tab_live:
   <span style="color:#8a9abc">Bars:</span>
   <span style="color:#00d4ff">{st.session_state.bars_processed}</span>
   <span style="color:#3a4a6a">|</span>
-  <span style="color:#8a9abc">Next refresh:</span>
+  <span style="color:#8a9abc">{next_label}</span>
   <span style="color:#ffaa00">{next_in}s</span>
   <span style="color:#3a4a6a">|</span>
   <span style="color:#8a9abc">Last bar:</span>
@@ -2662,13 +3330,17 @@ Total PnL: <span style="color:{'#00ff99' if s['pnl'] >= 0 else '#ff2255'};font-w
                 "long_trades": 0, "long_wins": 0, "long_pnl": 0.0,
                 "short_trades": 0, "short_wins": 0, "short_pnl": 0.0,
             }
-            st.session_state.virtual_balance = {"USDT": 1000.0, "COIN": 0.0}
+            st.session_state.virtual_balance = {"USDT": 5000.0, "COIN": 0.0}
             st.session_state.session_start_time = datetime.now(timezone.utc)
             st.session_state.session_start_balance = st.session_state.virtual_balance["USDT"]
             st.session_state.session_summary = None
             add_log(f"▶ Trading STARTED — {mode.upper()} | {symbol} | {interval} | {strategy} | Dir:{direction}", "buy")
-            add_log(f"   SL:{stop_loss}% | Trailing:{trailing}% | Size:{order_size}% | Refresh:{refresh_interval}s",
-                    "sys")
+            if st.session_state.get("sync_to_clock", True):
+                add_log(f"   SL:{stop_loss}% | Trailing:{trailing}% | Size:{order_size}% | "
+                        f"Sync:Clock-aligned (+{refresh_interval}s buffer)", "sys")
+            else:
+                add_log(f"   SL:{stop_loss}% | Trailing:{trailing}% | Size:{order_size}% | "
+                        f"Refresh:{refresh_interval}s (fixed)", "sys")
             if mode == "Demo":
                 add_log("💡 Demo mode: virtual $1,000 balance | real OKX market data", "info")
         st.rerun()
@@ -2724,8 +3396,11 @@ Total PnL: <span style="color:{'#00ff99' if s['pnl'] >= 0 else '#ff2255'};font-w
             st.dataframe(pd.DataFrame(st.session_state.trade_history), width='stretch', hide_index=True)
 
     # ══════════════════════════════════════════════════════════════════════
-    # AUTO-REFRESH LOOP — executes one cycle then sleeps and reruns
-    # This is the engine that actually processes candles while running
+    # AUTO-REFRESH LOOP — executes one cycle then waits for the next trigger
+    # This is the engine that actually processes candles while running.
+    # The wait is a hybrid: a WebSocket confirms the close as fast as
+    # possible, with a clock-aligned deadline as a guaranteed fallback so no
+    # candle close is ever missed even if the socket is slow/disconnected.
     # ══════════════════════════════════════════════════════════════════════
     if st.session_state.trading_running:
         run_trading_cycle(
@@ -2733,7 +3408,8 @@ Total PnL: <span style="color:{'#00ff99' if s['pnl'] >= 0 else '#ff2255'};font-w
             stop_loss_pct=stop_loss, trailing_pct=trailing,
             order_size_pct=order_size, mode=mode,
         )
-        time.sleep(st.session_state.refresh_interval)
+        trigger_source = wait_for_next_trigger(symbol, interval)
+        st.session_state.last_trigger_source = trigger_source
         st.rerun()
 
 # ────────────────────────────────────────────
@@ -2744,7 +3420,7 @@ with tab_backtest:
     bc1, bc2 = st.columns(2)
     with bc1:
         bt_symbol = st.selectbox("Symbol##bt", ["SOL-USDT", "BTC-USDT", "ETH-USDT"], key="bt_sym")
-        bt_strategy = st.selectbox("Strategy##bt", ["Momentum", "Kalman", "Enhanced", "Scalping"], key="bt_strat")
+        bt_strategy = st.selectbox("Strategy##bt", ["Momentum", "Kalman", "Scalping"], key="bt_strat")
         bt_capital = st.number_input("Initial Capital ($)", value=50000.0, step=1000.0, key="bt_cap")
         bt_monte = st.toggle("Enable Monte Carlo", key="bt_monte", value=False)
         if bt_monte:
@@ -2844,10 +3520,10 @@ with tab_backtest:
                 if Strat is None:
                     # ── Inline fallback strategy (works without external files) ──
                     class Strat(Strategy):
-                        ema_fast = 5;
-                        ema_slow = 26;
+                        ema_fast = 8;
+                        ema_slow = 24;
                         ema_trend = 60
-                        rsi_min = 40;
+                        rsi_min = 30;
                         rsi_max = 70
 
                         def init(self):

@@ -13,7 +13,9 @@
       "Bash(npm cache:*)",
       "Bash(where node:*)",
       "Bash(python -m py_compile App_MACD_AI_HybridScore_Latest.py)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "PowerShell(Write-Host \"Session: $\\($env:ANTHROPIC_AUTH_TOKEN\\)\"; Write-Host \"User: $\\([Environment]::GetEnvironmentVariable\\('ANTHROPIC_AUTH_TOKEN', 'User'\\)\\)\"; Write-Host \"Machine: $\\([Environment]::GetEnvironmentVariable\\('ANTHROPIC_AUTH_TOKEN', 'Machine'\\)\\)\")",
+      "Skill(dataviz)"
     ]
   }
 }

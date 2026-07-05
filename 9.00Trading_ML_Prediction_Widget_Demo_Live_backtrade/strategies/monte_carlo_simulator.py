@@ -42,10 +42,44 @@ class MonteCarloSimulator:
         if not self.trade_history:
             raise ValueError("No trade history provided")
 
-        # Extract returns from trades
+        # ── FIX: the original filter looked for trade.get('type') == 'sell'
+        # plus a 'pnl_pct' field. Trades produced by MomentumLogic /
+        # BacktestMomentumStrategy never have a 'type' field at all (they
+        # use 'direction': 'long'/'short') and never have 'pnl_pct' (they
+        # have 'profit', a dollar amount). That filter matched zero real
+        # trades, which is why this simulator was silently running on
+        # whatever stale/unrelated data happened to be passed in instead
+        # of the actual backtest results, with no error ever raised.
+        #
+        # Every entry in trade_history from this strategy is already a
+        # completed/closed trade (record_trade() is only called on a full
+        # exit), so there's nothing to filter by "type" — we just need to
+        # convert each trade's dollar profit into a percent return so it
+        # can be fed into the multiplicative equity-curve model below.
+        #
+        # NOTE: this normalizes by starting capital (self.initial_capital),
+        # not by the equity at the moment of each individual trade. Since
+        # your strategy risks a small, fairly stable % of equity per trade,
+        # this is a reasonable approximation — but it is NOT exactly the
+        # same as true equity-relative return. If you want exact accuracy,
+        # have your strategy record an 'equity_at_entry' field per trade
+        # and this code will prefer that automatically.
+        skipped = 0
         for trade in self.trade_history:
-            if trade.get('type') == 'sell' and 'pnl_pct' in trade:
+            if 'pnl_pct' in trade:
+                # Already expressed as a % return — use as-is (backward compatible)
                 self.trade_returns.append(trade['pnl_pct'] / 100)
+            elif 'profit' in trade:
+                equity_basis = trade.get('equity_at_entry', self.initial_capital)
+                if equity_basis and equity_basis > 0:
+                    self.trade_returns.append(trade['profit'] / equity_basis)
+                else:
+                    skipped += 1
+            else:
+                skipped += 1
+
+        if skipped:
+            print(f"⚠️  Skipped {skipped} trade(s) missing 'profit'/'pnl_pct' data")
 
         if not self.trade_returns:
             raise ValueError("No completed trades with PnL data found")
