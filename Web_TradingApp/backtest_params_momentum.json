@@ -1,0 +1,727 @@
+{
+    "strategy": "Momentum",
+    "parameters": {
+        "quality_tier1_min": {
+            "active": true,
+            "value1": "58",
+            "value2": "62",
+            "value3": "68",
+            "value4": "70",
+            "description": "Tier 1 Minimum Score (LONG)"
+        },
+        "quality_tier2_min": {
+            "active": true,
+            "value1": "52",
+            "value2": "56",
+            "value3": "60",
+            "value4": "64",
+            "description": "Tier 2 Minimum Score (LONG)"
+        },
+        "fixed_threshold": {
+            "active": false,
+            "value1": "65",
+            "value2": "68",
+            "value3": "72",
+            "value4": "75",
+            "description": "Fixed Entry Threshold"
+        },
+        "short_quality_tier1_min": {
+            "active": false,
+            "value1": "65",
+            "value2": "68",
+            "value3": "70",
+            "value4": "75",
+            "description": "Tier 1 Minimum Score (SHORT)"
+        },
+        "short_quality_tier2_min": {
+            "active": false,
+            "value1": "60",
+            "value2": "63",
+            "value3": "65",
+            "value4": "68",
+            "description": "Tier 2 Minimum Score (SHORT)"
+        },
+        "short_fixed_threshold": {
+            "active": false,
+            "value1": "70",
+            "value2": "72",
+            "value3": "75",
+            "value4": "78",
+            "description": "Fixed Entry Threshold (SHORT)"
+        },
+        "only_tier2_entries": {
+            "active": false,
+            "value1": "false",
+            "value2": "true",
+            "value3": "",
+            "value4": "",
+            "description": "\ud83d\udd25 ONLY Tier 2 Entries (Block Tier 1)"
+        },
+        "ema_fast_period": {
+            "active": true,
+            "value1": "7",
+            "value2": "8",
+            "value3": "9",
+            "value4": "10",
+            "description": "EMA Fast Period"
+        },
+        "ema_mid_period": {
+            "active": true,
+            "value1": "18",
+            "value2": "20",
+            "value3": "22",
+            "value4": "24",
+            "description": "EMA Mid Period"
+        },
+        "ema_slow_period": {
+            "active": true,
+            "value1": "40",
+            "value2": "45",
+            "value3": "50",
+            "value4": "55",
+            "description": "EMA Slow Period"
+        },
+        "daily_ema_period": {
+            "active": false,
+            "value1": "480",
+            "value2": "600",
+            "value3": "720",
+            "value4": "960",
+            "description": "Daily EMA Period (hours)"
+        },
+        "daily_trend_adx_override": {
+            "active": false,
+            "value1": "22",
+            "value2": "25",
+            "value3": "28",
+            "value4": "32",
+            "description": "Daily Trend ADX Override"
+        },
+        "weight_ema": {
+            "active": false,
+            "value1": "15",
+            "value2": "18",
+            "value3": "20",
+            "value4": "25",
+            "description": "EMA Weight"
+        },
+        "weight_adx": {
+            "active": false,
+            "value1": "15",
+            "value2": "18",
+            "value3": "20",
+            "value4": "25",
+            "description": "ADX Weight"
+        },
+        "weight_macd": {
+            "active": false,
+            "value1": "20",
+            "value2": "22",
+            "value3": "25",
+            "value4": "28",
+            "description": "MACD Weight"
+        },
+        "weight_rsi": {
+            "active": false,
+            "value1": "15",
+            "value2": "18",
+            "value3": "20",
+            "value4": "22",
+            "description": "RSI Weight"
+        },
+        "weight_volume": {
+            "active": false,
+            "value1": "10",
+            "value2": "12",
+            "value3": "15",
+            "value4": "18",
+            "description": "Volume Weight"
+        },
+        "tier1_adx_hard_min": {
+            "active": false,
+            "value1": "20",
+            "value2": "22",
+            "value3": "25",
+            "value4": "28",
+            "description": "Tier 1 ADX Hard Min (LONG)"
+        },
+        "tier1_adx_min": {
+            "active": true,
+            "value1": "18",
+            "value2": "20",
+            "value3": "22",
+            "value4": "25",
+            "description": "Tier 1 ADX Min (soft)"
+        },
+        "tier1_rsi_min": {
+            "active": false,
+            "value1": "38",
+            "value2": "40",
+            "value3": "42",
+            "value4": "44",
+            "description": "Tier 1 RSI Min (LONG)"
+        },
+        "tier1_rsi_max": {
+            "active": false,
+            "value1": "62",
+            "value2": "65",
+            "value3": "68",
+            "value4": "72",
+            "description": "Tier 1 RSI Max (LONG)"
+        },
+        "tier1_volume_min": {
+            "active": false,
+            "value1": "0.7",
+            "value2": "0.8",
+            "value3": "1.0",
+            "value4": "1.2",
+            "description": "Tier 1 Volume Min (LONG)"
+        },
+        "tier1_momentum_min": {
+            "active": false,
+            "value1": "0.01",
+            "value2": "0.015",
+            "value3": "0.02",
+            "value4": "0.03",
+            "description": "Tier 1 Momentum Min % (LONG)"
+        },
+        "tier1_kalman_min": {
+            "active": false,
+            "value1": "0.0",
+            "value2": "0.1",
+            "value3": "0.2",
+            "value4": "0.3",
+            "description": "Tier 1 Kalman Strength Min"
+        },
+        "tier1_macd_gate": {
+            "active": false,
+            "value1": "false",
+            "value2": "true",
+            "value3": "",
+            "value4": "",
+            "description": "Tier 1 MACD Gate Required"
+        },
+        "tier1_price_ema_max_pct": {
+            "active": false,
+            "value1": "1.0",
+            "value2": "1.5",
+            "value3": "2.0",
+            "value4": "3.0",
+            "description": "Tier 1 Price-EMA Max %"
+        },
+        "daily_trend_filter_enabled": {
+            "active": false,
+            "value1": "false",
+            "value2": "true",
+            "value3": "",
+            "value4": "",
+            "description": "Daily Trend Filter Enabled"
+        },
+        "short_tier1_adx_hard_min": {
+            "active": false,
+            "value1": "25",
+            "value2": "28",
+            "value3": "30",
+            "value4": "32",
+            "description": "Tier 1 ADX Hard Min (SHORT)"
+        },
+        "short_tier1_rsi_min": {
+            "active": false,
+            "value1": "30",
+            "value2": "32",
+            "value3": "34",
+            "value4": "36",
+            "description": "Tier 1 RSI Min (SHORT)"
+        },
+        "short_tier1_rsi_max": {
+            "active": false,
+            "value1": "48",
+            "value2": "50",
+            "value3": "54",
+            "value4": "56",
+            "description": "Tier 1 RSI Max (SHORT)"
+        },
+        "short_tier1_volume_min": {
+            "active": false,
+            "value1": "1.0",
+            "value2": "1.2",
+            "value3": "1.3",
+            "value4": "1.5",
+            "description": "Tier 1 Volume Min (SHORT)"
+        },
+        "short_tier1_momentum_min": {
+            "active": false,
+            "value1": "0.03",
+            "value2": "0.04",
+            "value3": "0.05",
+            "value4": "0.06",
+            "description": "Tier 1 Momentum Min % (SHORT)"
+        },
+        "short_tier1_macd_gate": {
+            "active": false,
+            "value1": "false",
+            "value2": "true",
+            "value3": "",
+            "value4": "",
+            "description": "Tier 1 MACD Gate (SHORT)"
+        },
+        "daily_trend_down_filter_enabled": {
+            "active": false,
+            "value1": "false",
+            "value2": "true",
+            "value3": "",
+            "value4": "",
+            "description": "Daily Trend Down Filter Enabled"
+        },
+        "short_require_lower_highs_bars": {
+            "active": false,
+            "value1": "1",
+            "value2": "2",
+            "value3": "3",
+            "value4": "4",
+            "description": "Short: Lower Highs Bars Required"
+        },
+        "short_require_lower_lows_bars": {
+            "active": false,
+            "value1": "1",
+            "value2": "2",
+            "value3": "3",
+            "value4": "4",
+            "description": "Short: Lower Lows Bars Required"
+        },
+        "pullback_zone_lower_pct": {
+            "active": true,
+            "value1": "-4",
+            "value2": "-3",
+            "value3": "-2",
+            "value4": "-1",
+            "description": "Pullback Zone Lower %"
+        },
+        "pullback_zone_upper_pct": {
+            "active": true,
+            "value1": "0.5",
+            "value2": "1.0",
+            "value3": "1.5",
+            "value4": "2.0",
+            "description": "Pullback Zone Upper %"
+        },
+        "adx_slope_min": {
+            "active": false,
+            "value1": "-0.2",
+            "value2": "0.0",
+            "value3": "0.1",
+            "value4": "0.2",
+            "description": "ADX Slope Min (rise per bar)"
+        },
+        "tier2_adx_min": {
+            "active": false,
+            "value1": "12",
+            "value2": "15",
+            "value3": "18",
+            "value4": "22",
+            "description": "Tier 2 ADX Min"
+        },
+        "tier2_volume_min": {
+            "active": false,
+            "value1": "0.3",
+            "value2": "0.4",
+            "value3": "0.5",
+            "value4": "0.7",
+            "description": "Tier 2 Volume Min"
+        },
+        "tier2_volume_min_ratio": {
+            "active": false,
+            "value1": "0.9",
+            "value2": "1.0",
+            "value3": "1.1",
+            "value4": "1.3",
+            "description": "Tier 2 Volume Ratio Min"
+        },
+        "tier2_momentum_min": {
+            "active": false,
+            "value1": "0.03",
+            "value2": "0.04",
+            "value3": "0.05",
+            "value4": "0.07",
+            "description": "Tier 2 Momentum Min %"
+        },
+        "cooldown_tier2_enabled": {
+            "active": false,
+            "value1": "false",
+            "value2": "true",
+            "value3": "",
+            "value4": "",
+            "description": "Enable Tier 2 Cooldown"
+        },
+        "regime_filter_enabled": {
+            "active": true,
+            "value1": "false",
+            "value2": "true",
+            "value3": "",
+            "value4": "",
+            "description": "Regime Filter Enabled"
+        },
+        "chop_threshold": {
+            "active": true,
+            "value1": "48",
+            "value2": "52",
+            "value3": "56",
+            "value4": "60",
+            "description": "Choppiness Index Threshold"
+        },
+        "atr_compression_enabled": {
+            "active": true,
+            "value1": "false",
+            "value2": "true",
+            "value3": "",
+            "value4": "",
+            "description": "ATR Compression Filter Enabled"
+        },
+        "atr_compression_threshold": {
+            "active": true,
+            "value1": "0.10",
+            "value2": "0.15",
+            "value3": "0.20",
+            "value4": "0.25",
+            "description": "ATR Compression Threshold"
+        },
+        "extended_run_max_pct_long": {
+            "active": false,
+            "value1": "8.0",
+            "value2": "10.0",
+            "value3": "12.0",
+            "value4": "15.0",
+            "description": "Extended Run Max % (LONG)"
+        },
+        "extended_run_max_pct_short": {
+            "active": false,
+            "value1": "8.0",
+            "value2": "10.0",
+            "value3": "12.0",
+            "value4": "15.0",
+            "description": "Extended Run Max % (SHORT)"
+        },
+        "adx_min": {
+            "active": false,
+            "value1": "15",
+            "value2": "18",
+            "value3": "20",
+            "value4": "22",
+            "description": "ADX Minimum (Entry)"
+        },
+        "adx_min_trend": {
+            "active": false,
+            "value1": "20",
+            "value2": "22",
+            "value3": "25",
+            "value4": "28",
+            "description": "ADX Min Trend Strength"
+        },
+        "rsi_entry_min": {
+            "active": false,
+            "value1": "38",
+            "value2": "40",
+            "value3": "42",
+            "value4": "45",
+            "description": "RSI Entry Minimum"
+        },
+        "rsi_entry_max": {
+            "active": false,
+            "value1": "62",
+            "value2": "65",
+            "value3": "68",
+            "value4": "72",
+            "description": "RSI Entry Maximum"
+        },
+        "volume_min_ratio": {
+            "active": false,
+            "value1": "0.9",
+            "value2": "1.0",
+            "value3": "1.1",
+            "value4": "1.3",
+            "description": "Volume Ratio Minimum"
+        },
+        "momentum_min": {
+            "active": false,
+            "value1": "0.03",
+            "value2": "0.04",
+            "value3": "0.05",
+            "value4": "0.07",
+            "description": "Momentum Minimum %"
+        },
+        "rsi_direction_bars": {
+            "active": false,
+            "value1": "1",
+            "value2": "2",
+            "value3": "3",
+            "value4": "4",
+            "description": "RSI Direction Bars"
+        },
+        "ema_trending_bars": {
+            "active": false,
+            "value1": "2",
+            "value2": "3",
+            "value3": "4",
+            "value4": "5",
+            "description": "EMA Trending Bars"
+        },
+        "macd_hist_rising_bars": {
+            "active": false,
+            "value1": "0",
+            "value2": "1",
+            "value3": "2",
+            "value4": "3",
+            "description": "MACD Histogram Rising Bars"
+        },
+        "be_stop_enabled": {
+            "active": false,
+            "value1": "false",
+            "value2": "true",
+            "value3": "",
+            "value4": "",
+            "description": "Breakeven Stop Enabled"
+        },
+        "be_stop_r_trigger": {
+            "active": false,
+            "value1": "1.5",
+            "value2": "2.0",
+            "value3": "2.5",
+            "value4": "3.0",
+            "description": "Breakeven Stop R Trigger"
+        },
+        "be_stop_no_progress_bars": {
+            "active": false,
+            "value1": "30",
+            "value2": "40",
+            "value3": "50",
+            "value4": "60",
+            "description": "Breakeven No-Progress Bars"
+        },
+        "stop_loss_atr_mult": {
+            "active": false,
+            "value1": "2.5",
+            "value2": "3.0",
+            "value3": "3.5",
+            "value4": "4.0",
+            "description": "Stop Loss ATR Mult"
+        },
+        "trailing_stop_atr_mult": {
+            "active": false,
+            "value1": "5.0",
+            "value2": "5.5",
+            "value3": "6.0",
+            "value4": "6.5",
+            "description": "Trailing Stop ATR Mult"
+        },
+        "trailing_activation_pct": {
+            "active": false,
+            "value1": "0.02",
+            "value2": "0.03",
+            "value3": "0.04",
+            "value4": "0.05",
+            "description": "Trailing Activation %"
+        },
+        "trailing_distance_pct": {
+            "active": false,
+            "value1": "0.025",
+            "value2": "0.03",
+            "value3": "0.035",
+            "value4": "0.045",
+            "description": "Trailing Distance %"
+        },
+        "trailing_activation_r": {
+            "active": false,
+            "value1": "1.5",
+            "value2": "2.0",
+            "value3": "2.5",
+            "value4": "3.0",
+            "description": "Trail Activation R"
+        },
+        "initial_trailing_atr_mult": {
+            "active": false,
+            "value1": "4.0",
+            "value2": "4.5",
+            "value3": "5.0",
+            "value4": "5.5",
+            "description": "Initial Trailing ATR Mult"
+        },
+        "cooldown_after_loss_bars": {
+            "active": false,
+            "value1": "6",
+            "value2": "8",
+            "value3": "12",
+            "value4": "16",
+            "description": "Cooldown After Loss (bars)"
+        },
+        "consecutive_loss_threshold": {
+            "active": false,
+            "value1": "2",
+            "value2": "3",
+            "value3": "4",
+            "value4": "5",
+            "description": "Consecutive Loss Threshold"
+        },
+        "consecutive_loss_cooldown_bars": {
+            "active": false,
+            "value1": "6",
+            "value2": "8",
+            "value3": "12",
+            "value4": "16",
+            "description": "Consecutive Loss Cooldown (bars)"
+        },
+        "rsi_exit_threshold": {
+            "active": false,
+            "value1": "75",
+            "value2": "78",
+            "value3": "80",
+            "value4": "85",
+            "description": "RSI Exit Threshold"
+        },
+        "macd_bearish_cross_profit_min": {
+            "active": false,
+            "value1": "1.5",
+            "value2": "2.0",
+            "value3": "2.5",
+            "value4": "3.0",
+            "description": "MACD Bearish Cross Min Profit %"
+        },
+        "kalman_fade_threshold": {
+            "active": false,
+            "value1": "25",
+            "value2": "30",
+            "value3": "35",
+            "value4": "40",
+            "description": "Kalman Fade Threshold"
+        },
+        "max_hold_bars": {
+            "active": false,
+            "value1": "200",
+            "value2": "300",
+            "value3": "400",
+            "value4": "500",
+            "description": "Max Hold Bars"
+        },
+        "max_daily_trades": {
+            "active": false,
+            "value1": "6",
+            "value2": "8",
+            "value3": "10",
+            "value4": "15",
+            "description": "Max Daily Trades"
+        },
+        "min_bars_between_trades": {
+            "active": false,
+            "value1": "2",
+            "value2": "3",
+            "value3": "4",
+            "value4": "6",
+            "description": "Min Bars Between Trades"
+        },
+        "cooldown_after_profit_target_bars": {
+            "active": false,
+            "value1": "1",
+            "value2": "2",
+            "value3": "3",
+            "value4": "4",
+            "description": "Cooldown After Profit Target (bars)"
+        },
+        "risk_tier1": {
+            "active": false,
+            "value1": "0.015",
+            "value2": "0.020",
+            "value3": "0.025",
+            "value4": "0.030",
+            "description": "Tier 1 Risk %"
+        },
+        "risk_tier2": {
+            "active": false,
+            "value1": "0.020",
+            "value2": "0.025",
+            "value3": "0.030",
+            "value4": "0.035",
+            "description": "Tier 2 Risk %"
+        },
+        "risk_per_trade": {
+            "active": false,
+            "value1": "0.015",
+            "value2": "0.018",
+            "value3": "0.020",
+            "value4": "0.022",
+            "description": "Base Risk Per Trade"
+        },
+        "take_profit_r1": {
+            "active": false,
+            "value1": "2.0",
+            "value2": "2.5",
+            "value3": "3.0",
+            "value4": "3.5",
+            "description": "Profit Target R1"
+        },
+        "take_profit_r2": {
+            "active": false,
+            "value1": "3.0",
+            "value2": "4.0",
+            "value3": "5.0",
+            "value4": "6.0",
+            "description": "Profit Target R2"
+        },
+        "take_profit_r3": {
+            "active": false,
+            "value1": "6.0",
+            "value2": "7.0",
+            "value3": "8.0",
+            "value4": "10.0",
+            "description": "Profit Target R3"
+        },
+        "price_percentile_bonus_early": {
+            "active": false,
+            "value1": "8",
+            "value2": "10",
+            "value3": "12",
+            "value4": "15",
+            "description": "Early Entry Bonus (pts)"
+        },
+        "price_percentile_penalty_late": {
+            "active": false,
+            "value1": "8",
+            "value2": "10",
+            "value3": "12",
+            "value4": "15",
+            "description": "Late Entry Penalty (pts)"
+        },
+        "fuzzy_default_margin_pct": {
+            "active": false,
+            "value1": "5",
+            "value2": "8",
+            "value3": "10",
+            "value4": "15",
+            "description": "Fuzzy Margin %"
+        },
+        "fuzzy_absolute_min": {
+            "active": false,
+            "value1": "55",
+            "value2": "58",
+            "value3": "62",
+            "value4": "65",
+            "description": "Fuzzy Absolute Min"
+        },
+        "trade_direction": {
+            "active": false,
+            "value1": "long",
+            "value2": "both",
+            "value3": "short",
+            "value4": "",
+            "description": "Trade Direction"
+        }
+    },
+    "metrics": {
+        "sharpe": true,
+        "sortino": true,
+        "returns": true,
+        "winrate": true,
+        "profit_factor": true,
+        "equity": true,
+        "trade_count": true
+    },
+    "timestamp": "2026-06-30T00:00:00.000000"
+}
