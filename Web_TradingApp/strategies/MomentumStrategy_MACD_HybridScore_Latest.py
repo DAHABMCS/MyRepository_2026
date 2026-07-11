@@ -3057,6 +3057,7 @@ class MomentumLogic:
         rsi = _safe(data.get('RSI'), 50.0)
         momentum = _safe(data.get('Momentum'))
         hist_rising = data.get('MACD_Histogram_Rising', False)
+        hist_falling = not hist_rising  # explicit mirror of hist_rising, used symmetrically below
         daily_trend_override_adx = params.get('daily_trend_adx_override', 28)
 
         bullish_stack = bool(ema_f > ema_m > ema_s)
@@ -3076,13 +3077,17 @@ class MomentumLogic:
         # ── Calculate confluence based on the hint ──
         checks_passed = 0
         total_checks = 8
-        penalty = 0
+        penalty = 0  # in percentage points, subtracted from pass_rate below
 
         if direction_hint == 'long':
             # LONG CONFLUENCE (8 checks)
             if daily_trend_unknown or daily_trend_up:
                 checks_passed += 1
-            elif adx >= daily_trend_override_adx:
+            # FIX: ADX-magnitude override now also requires the short-term
+            # stack to already agree with the direction being tested, so a
+            # strong ADX reading during a confirmed DOWNtrend can no longer
+            # hand a free trend-point to LONG just because ADX is high.
+            elif adx >= daily_trend_override_adx and bullish_stack:
                 checks_passed += 1
             else:
                 penalty += 8
@@ -3107,7 +3112,10 @@ class MomentumLogic:
             # SHORT CONFLUENCE (8 checks)
             if daily_trend_unknown or daily_trend_down:
                 checks_passed += 1
-            elif adx >= daily_trend_override_adx:
+            # FIX: mirror of the long-side fix above — requires bearish stack
+            # confirmation before a raw ADX reading can override a confirmed
+            # daily UPtrend in favor of a short.
+            elif adx >= daily_trend_override_adx and bearish_stack:
                 checks_passed += 1
             else:
                 penalty += 8
@@ -3121,7 +3129,7 @@ class MomentumLogic:
             if 28 <= rsi <= 62: checks_passed += 1
             if momentum < 0: checks_passed += 1
             if adx >= 15: checks_passed += 1
-            if macd_hist < 0 or not hist_rising: checks_passed += 1
+            if macd_hist < 0 or hist_falling: checks_passed += 1
 
             if ema_f > 0:
                 pct = ((close - ema_f) / ema_f) * 100
@@ -3129,13 +3137,19 @@ class MomentumLogic:
                     checks_passed += 1
 
         # ── Determine Validity ──
-        pass_rate = checks_passed / total_checks
+        # FIX: penalty was previously computed but never applied — a bearish/
+        # bullish stack directly opposing the requested direction, or a daily
+        # trend conflict, now actually drags the pass_rate down instead of
+        # being silently discarded.
+        raw_pass_rate = checks_passed / total_checks
+        pass_rate = max(0.0, raw_pass_rate - (penalty / 100.0))
         is_valid = pass_rate >= confluence_min
 
-        # Fallback logic
-        if not is_valid and pass_rate >= 0.50:
-            is_valid = True
-            penalty += 5
+        # FIX: removed the old fallback that force-accepted anything with
+        # pass_rate >= 0.50 regardless of confluence_min. That fallback made
+        # the configured direction_confluence_min meaningless for any value
+        # above 0.50 (which is exactly the situation you're in, at the
+        # default of 0.625). confluence_min is now the single source of truth.
 
         # ── Return in the EXACT format your file expects ──
         if is_valid:

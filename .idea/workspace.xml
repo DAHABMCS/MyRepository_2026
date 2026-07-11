@@ -8,11 +8,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="de5054ef-049c-4a9f-ab72-172117478ca0" name="Changes" comment="latest4 best  05_07_2026">
-      <change afterPath="$PROJECT_DIR$/.idea/claudeCodeEditorTabs.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.webui_secret_key" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/Trading Strategy Optimizer Pro.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backtest_ETH_USDT_15m_Momentum_initial_20260704_090540.xlsx" afterDir="false" />
+    <list default="true" id="de5054ef-049c-4a9f-ab72-172117478ca0" name="Changes" comment="latest4 best  11_07_2026">
       <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backtest_SOL_USDT_15m_Momentum_initial_20260630_072312.xlsx" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backtest_SOL_USDT_15m_Momentum_initial_20260630_082629.xlsx" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backtest_SOL_USDT_15m_Momentum_initial_20260702_080626.xlsx" afterDir="false" />
@@ -23,20 +19,7 @@
       <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backtest_SOL_USDT_15m_Momentum_initial_20260704_090533.xlsx" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backtest_SOL_USDT_15m_Momentum_optimized_20260630_072334.xlsx" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backtest_params_momentum.json" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/App_MACD_AI_HybridScore_Latest.py" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/backtest_params.json" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/config.json" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/help_documentation.pdf" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/main_New_MACD_HybridScore_Latest.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/quick_baseline_backtest.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/KalmanTrendStrategy_New.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/MomentumStrategy_MACD_HybridScore_Latest.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/TopDownDayTradingStrategy.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/TradingStrategy3.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/base3_New.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/best_MomentumStrategy_MACD_HybridScore_LAST.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/update_step1+2.py" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/momentum_initial_20260629_173551.html" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/momentum_initial_20260630_112245.html" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/momentum_initial_20260702_104914.html" afterDir="false" />
@@ -72,57 +55,7 @@
       <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/monte_carlo_report_SOL_USDT_Momentum_20260704_081545.txt" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/monte_carlo_report_SOL_USDT_Momentum_20260704_084726.txt" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/monte_carlo_report_SOL_USDT_Momentum_20260704_085513.txt" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/optimized_params_momentum_20260629_173550.json" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/strategies/ema_chart.png" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/ANALYSER.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Build_Fixed.ps1" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Build_correct.bat" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Vedio_SRT/Episode1_Subtitles.srt" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Vedio_SRT/exe_capture_srt_driven.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Vedio_SRT/srt_recorder.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/README.md" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/Web_TradingApp.json" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/Web_TradingApp.spec" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/__init__.py" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/Web_TradingApp/backtest_params.json" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/config.json" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/help_documentation.pdf" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/images/WELCOME.jpg" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/images/bullish.jpg" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/images/cryptoimage.jpg" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/images/img.png" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/images/logo.png" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/images/trade.ico" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/models/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/models/base_ML.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/models/lstm_model_NEW.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/models/random_forest.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/models/xgboost_model.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/requirements.txt" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/requirements_web.txt" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/run.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/strategies/WEB_TEST_RUN_GO_NOGO.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/strategy_settings.json" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/streamlit_app.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/streamlit_app.spec" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Web_TradingApp/trading_windows.json" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/database.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/ethusdt_chart.html" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/glass_platform.db" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/launch_claude.bat" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/models.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/seed_db.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/templates/base.html" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/templates/cart.html" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/templates/index.html" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/templates/product_detail.html" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/templates/success.html" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/New_Bollinger_bands.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/New_Bollinger_bands.iml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/App_MACD_AI_HybridScore_Latest1.py" beforeDir="false" afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/App_MACD_AI_HybridScore_Latest3.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/strategies/MomentumStrategy_MACD_HybridScore_Latest.py" beforeDir="false" afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/strategies/MomentumStrategy_MACD_HybridScore_Latest.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Web_TradingApp/Pro_streamlit_app.py" beforeDir="false" afterPath="$PROJECT_DIR$/Web_TradingApp/Pro_streamlit_app.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -885,7 +818,15 @@
       <option name="project" value="LOCAL" />
       <updated>1783253528215</updated>
     </task>
-    <option name="localTasksCounter" value="40" />
+    <task id="LOCAL-00040" summary="latest4 best  11_07_2026">
+      <option name="closed" value="true" />
+      <created>1783796091928</created>
+      <option name="number" value="00040" />
+      <option name="presentableId" value="LOCAL-00040" />
+      <option name="project" value="LOCAL" />
+      <updated>1783796091928</updated>
+    </task>
+    <option name="localTasksCounter" value="41" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -955,7 +896,8 @@
     <MESSAGE value="latest4 best  24_06_2026" />
     <MESSAGE value="latest4 best  26_06_2026" />
     <MESSAGE value="latest4 best  05_07_2026" />
-    <option name="LAST_COMMIT_MESSAGE" value="latest4 best  05_07_2026" />
+    <MESSAGE value="latest4 best  11_07_2026" />
+    <option name="LAST_COMMIT_MESSAGE" value="latest4 best  11_07_2026" />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
