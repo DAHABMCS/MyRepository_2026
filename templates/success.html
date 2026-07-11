@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block title %}Submission Successful | Kandil Glass{% endblock %}
+
+{% block content %}
+<section class="py-20 bg-slate-50 flex items-center justify-center min-h-[70vh]">
+    <div class="max-w-xl text-center px-4 sm:px-6 lg:px-8 bg-white p-16 shadow-sm border border-slate-200">
+        <div class="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-8">
+            <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+        </div>
+        <h1 class="text-3xl font-bold text-slate-900 mb-4 serif">Thank you, {{ name }}</h1>
+        <p class="text-slate-500 leading-relaxed mb-10">
+            Your inquiry has been received. A representative from our studio will contact you shortly to finalize your collection.
+        </p>
+        <a href="/" class="bg-slate-900 text-white px-8 py-4 text-sm uppercase tracking-widest font-bold hover:bg-slate-800 transition-colors">
+            Return Home
+        </a>
+    </div>
+</section>
+{% endblock %}

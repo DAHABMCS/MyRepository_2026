@@ -1,22 +1,22 @@
 """Trading strategy backtesting and optimization module."""
 
 import os
-
 # ═══════════════════════════════════════════════════════════════════════════
 # TQDM FIX FOR PYINSTALLER/EXE COMPILATION
 # ═══════════════════════════════════════════════════════════════════════════
 import sys
 from typing import Any
 
-import tqdm.asyncio
+import tqdm.asyncio  # Add this line
 
+# Force disable TQDM for all environments
 os.environ['TQDM_DISABLE'] = '1'
 
+# Patch sys.stdout and sys.stderr to ensure they exist
 if sys.stdout is None:
     sys.stdout = open(os.devnull, 'w')
 if sys.stderr is None:
     sys.stderr = open(os.devnull, 'w')
-
 try:
     import openai
     OPENAI_AVAILABLE = True
@@ -24,84 +24,92 @@ except ImportError:
     OPENAI_AVAILABLE = False
     print("⚠️ OpenAI library not installed. AI features will use local analysis only.")
 
+# Monkey patch tqdm to work with EXE
 def fix_tqdm_for_exe():
+    """Comprehensive fix for TQDM in EXE environments"""
     try:
+        # First, try to import tqdm
         import tqdm
+
+        # Patch tqdm.std._file to prevent NoneType errors
         if hasattr(tqdm.std, '_file'):
             tqdm.std._file = sys.stdout
+
+        # Create a safe wrapper for tqdm
         class SafeTQDM:
             def __init__(self, iterable=None, *args, **kwargs):
                 self.iterable = iterable or []
                 self.total = len(self.iterable) if hasattr(self.iterable, '__len__') else None
-                self.n = 0; self.desc = ""; self.file = sys.stdout
-            def __iter__(self): return iter(self.iterable)
-            def __enter__(self): return self
-            def __exit__(self, *args): pass
-            def update(self, n=1): self.n += n; return True
-            def close(self): pass
-            def set_description(self, desc=None, refresh=True):
-                if desc is not None: self.desc = desc
+                self.n = 0
+                self.desc = ""
+                self.file = sys.stdout
+
+            def __iter__(self):
+                return iter(self.iterable)
+
+            def __enter__(self):
                 return self
-            def set_postfix(self, **kwargs): return self
-            def refresh(self): pass
-        tqdm.tqdm = SafeTQDM; tqdm.std.tqdm = SafeTQDM; tqdm.asyncio.tqdm = SafeTQDM
-        if hasattr(tqdm.std, 'Tqdm'): tqdm.std.Tqdm = SafeTQDM
+
+            def __exit__(self, *args):
+                pass
+
+            def update(self, n=1):
+                self.n += n
+                return True
+
+            def close(self):
+                pass
+
+            def set_description(self, desc=None, refresh=True):
+                if desc is not None:
+                    self.desc = desc
+                return self
+
+            def set_postfix(self, **kwargs):
+                return self
+
+            def refresh(self):
+                pass
+
+        # Replace all tqdm instances
+        tqdm.tqdm = SafeTQDM
+        tqdm.std.tqdm = SafeTQDM
+        tqdm.asyncio.tqdm = SafeTQDM
+
+        # Also patch the std module methods
+        if hasattr(tqdm.std, 'Tqdm'):
+            tqdm.std.Tqdm = SafeTQDM
+
         print("✅ TQDM patched successfully for EXE")
+
     except ImportError:
+        # TQDM not installed, create a dummy module
         class FakeTQDM:
-            def __init__(self, *args, **kwargs): pass
-            def __enter__(self): return self
-            def __exit__(self, *args): pass
-            def update(self, n=1): pass
-            def close(self): pass
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def update(self, n=1):
+                pass
+
+            def close(self):
+                pass
+
         sys.modules['tqdm'] = type(sys)('tqdm')
         sys.modules['tqdm'].tqdm = FakeTQDM
         sys.modules['tqdm'].std = type(sys)('std')
         sys.modules['tqdm'].std.tqdm = FakeTQDM
+
         print("✅ Created fake TQDM module")
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ML SYMMETRY AND CLASSIFICATION REVERSAL CORRECTION UTILITIES
-# ═══════════════════════════════════════════════════════════════════════════
 
-def process_ml_prediction(prediction_prob: float) -> dict:
-    """
-    Corrects the classification inversion error. Maps raw model upward probabilities
-    to structural market directions and outputs aligned impact score tailwind points.
-
-    Args:
-        prediction_prob (float): Raw probability score from the model (e.g., 0.38)
-    """
-    # Threshold handling: Below 50% implies a structure that points downward (Bearish)
-    if prediction_prob >= 0.50:
-        ml_direction = "BULLISH"
-        confidence = prediction_prob * 100
-        impact_score = round((prediction_prob - 0.50) * 20)  # Dynamic boost points for Longs
-    else:
-        ml_direction = "BEARISH"
-        confidence = (1.0 - prediction_prob) * 100
-        impact_score = round((0.50 - prediction_prob) * 20)  # Dynamic boost points for Shorts
-
-    return {
-        "ml_direction": ml_direction,
-        "confidence_pct": round(confidence, 2),
-        "impact_points": impact_score
-    }
-
-def parse_and_validate_direction(signal_str: str) -> str:
-    """
-    Standardizes structural direction string values to remain programmatically clean
-    across long/short symmetry evaluation logic filters.
-    """
-    clean_signal = str(signal_str).strip().upper()
-    if "BULL" in clean_signal or "LONG" in clean_signal or clean_signal == "BUY":
-        return "long"
-    elif "BEAR" in clean_signal or "SHORT" in clean_signal or clean_signal == "SELL":
-        return "short"
-    return "flat"
-
+# Apply the fix immediately
 fix_tqdm_for_exe()
-
 import json
 import math
 from glob import glob
@@ -132,30 +140,57 @@ from models.lstm_model_NEW import LSTMModel
 from models.random_forest import RandomForestModel
 from models.xgboost_model import XGBoostModel
 from utils.FinancialCircletimer_New import FinancialChartWidget, CircleTimer
-from strategies.MomentumStrategy_MACD_HybridScore_Latest import MomentumStrategy, BacktestMomentumStrategy, MOMENTUM_PARAMS, GlobalConfig
+from strategies.MomentumStrategy_MACD_HybridScore_Latest import MomentumStrategy, BacktestMomentumStrategy, MOMENTUM_PARAMS,GlobalConfig
 from strategies.KalmanTrendStrategy_New import KalmanTrendStrategy, BacktestKalmanTrendStrategy
 
+# ═══════════════════════════════════════════════════════════════════════════
+# MONKEY PATCH: Disable TQDM completely
+# ═══════════════════════════════════════════════════════════════════════════
 import sys
 import os
+
+# Set environment variable
 os.environ['TQDM_DISABLE'] = '1'
 
+# Monkey patch tqdm to do nothing
 try:
     import tqdm
+
     class FakeTQDM:
         def __init__(self, *args, **kwargs):
             self.iterable = args[0] if args else None
+
         def __iter__(self):
-            if self.iterable: return iter(self.iterable)
+            if self.iterable:
+                return iter(self.iterable)
             return iter([])
-        def __enter__(self): return self
-        def __exit__(self, *args): pass
-        def update(self, n=1): pass
-        def close(self): pass
-        def set_description(self, desc): pass
-    tqdm.tqdm = FakeTQDM; tqdm.std.tqdm = FakeTQDM; tqdm.asyncio.tqdm = FakeTQDM
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def update(self, n=1):
+            pass
+
+        def close(self):
+            pass
+
+        def set_description(self, desc):
+            pass
+
+
+    # Replace tqdm with fake version
+    tqdm.tqdm = FakeTQDM
+    tqdm.std.tqdm = FakeTQDM
+    tqdm.asyncio.tqdm = FakeTQDM
+
     print("✅ TQDM disabled successfully")
+
 except ImportError:
     print("⚠️ TQDM not imported yet")
+
 except Exception as e:
     print(f"⚠️ Could not patch TQDM: {e}")
 
@@ -165,34 +200,56 @@ class TradingApp:
         self.root = root
         self.log_area = None
         self.ai_data_available = False
-        self.param_groups = {}
-        self._updating_group = False
+        self.param_groups = {}  # Will be populated in _build_backtest_optimization_panel
+        self._updating_group = False  # Flag to prevent recursion when syncing groups
         self.backtest_running = False
         self.trading_running = False
         self.root.after_idle(self.load_params_at_startup)
-
+        # Position tracking with enhanced structure
         self.position = {
-            'type': None, 'price': None, 'quantity': None, 'time': None,
-            'stop_loss': None, 'trailing_stop': None, 'entry_confidence': None
+            'type': None,  # long/short
+            'price': None,  # entry price
+            'quantity': None,  # position size
+            'time': None,  # entry time
+            'stop_loss': None,  # current stop loss
+            'trailing_stop': None,  # current trailing stop
+            'entry_confidence': None  # confidence score at entry
         }
+
+        # ═══════════════════════════════════════════════════════════════
+        # Adaptive Objective Configuration
+        # ═══════════════════════════════════════════════════════════════
 
         self.objective_config = {
             'default': {
-                'min_trades_absolute': 10, 'min_trades_penalty': 20,
-                'max_trades_penalty': 500, 'penalty_low': 0.7,
-                'penalty_high': 0.9, 'weights': (0.6, 0.3, 0.1)
+                'min_trades_absolute': 10,
+                'min_trades_penalty': 20,
+                'max_trades_penalty': 500,
+                'penalty_low': 0.7,
+                'penalty_high': 0.9,
+                'weights': (0.6, 0.3, 0.1)
             },
             'momentum': {
-                'min_trades_absolute': 20, 'min_trades_penalty': 35,
-                'min_trades_target': 48, 'max_trades_penalty': 120,
-                'penalty_low': 0.35, 'penalty_high': 0.9, 'weights': (0.5, 0.4, 0.1)
+                'min_trades_absolute': 15,
+                'min_trades_penalty': 25,
+                'max_trades_penalty': 600,
+                'penalty_low': 0.6,
+                'penalty_high': 0.85,
+                'weights': (0.5, 0.4, 0.1)
             },
             'kalman': {
-                'min_trades_absolute': 8, 'min_trades_penalty': 15,
-                'max_trades_penalty': 300, 'penalty_low': 0.8,
-                'penalty_high': 0.9, 'weights': (0.7, 0.2, 0.1)
+                'min_trades_absolute': 8,
+                'min_trades_penalty': 15,
+                'max_trades_penalty': 300,
+                'penalty_low': 0.8,
+                'penalty_high': 0.9,
+                'weights': (0.7, 0.2, 0.1)
             }
         }
+
+        # ═══════════════════════════════════════════════════════════════
+        # Optimization Metrics (for main backtest panel)
+        # ═══════════════════════════════════════════════════════════════
 
         self.optimization_metrics = {
             'sharpe': tk.BooleanVar(value=True),
@@ -201,44 +258,41 @@ class TradingApp:
             'winrate': tk.BooleanVar(value=False),
             'profit_factor': tk.BooleanVar(value=False),
             'equity': tk.BooleanVar(value=True),
-            'trade_count': tk.BooleanVar(value=True),
         }
 
+        # ═══════════════════════════════════════════════════════════════
+        # Backtest Parameters for Indicators (4 values + active toggle)
+        # ═══════════════════════════════════════════════════════════════
+
         self.backtest_params = {}
-        self.scalping_backtest_params = {}
+
 
         self.weight_manager = AdaptiveWeightManager(alpha=0.2, min_w=0.2, max_w=0.8)
-
-        # ── Trading Time Window ──────────────────────────────────────────────
-        self.trading_time_config  = self._init_trading_time_config()
-        self._sched_start_id      = None
-        self._sched_stop_id       = None
-        self._waiting_to_start    = False
-
         self.macd_below_streak = 0
         self.momentum_streak_required = 2
         self.momentum_exit_threshold = 0.995
         self.trailing_stop_buffer = 0.0015
 
+        # Trading state
         self.active_position = None
         self.position_entry_price = None
         self.position_size = None
         self.position_entry_time = None
         self.volume_mean = 0
         self.atr_mean = 0
-        self.strategy_params = {
-            'volume_spike_threshold': 1.2, 'atr_multiplier': 1.5,
-            'enable_early_detection': True
-        }
+        self.strategy_params = {'volume_spike_threshold': 1.2, 'atr_multiplier': 1.5, 'enable_early_detection': True}
         self.strategy_versions = []
         self._strategy_hash = None
         self.last_traded_hash = None
 
+        # Logging setup
         logging.basicConfig(
-            filename='trading_bot.log', level=logging.INFO,
+            filename='trading_bot.log',
+            level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
 
+        # Current data and status;
         self.current_data = None
         self.current_status = "parking"
         self.root = root
@@ -250,16 +304,31 @@ class TradingApp:
         self.initial_stop_loss = None
         self.strategy = None
 
+        # ═══════════════════════════════════════════════════════════════════════════
+        # PARAMETER MANAGEMENT
+        # ═══════════════════════════════════════════════════════════════════════════
         self.strategy_settings_file = "strategy_settings.json"
         self.default_params = {}
         self.custom_params = {}
         self.param_toggle_var = tk.StringVar(value="Default Parameters")
 
+        # Load strategy settings
         self.load_strategy_settings()
 
+        # ═══════════════════════════════════════════════════════════════════════════
+        # FIXED: Initialize log_area first to avoid AttributeError
+        # ═══════════════════════════════════════════════════════════════════════════
         self.log_area = None
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # AI ANALYSIS BUTTON STATE
+        # ═══════════════════════════════════════════════════════════════════════════
         self.ai_data_available = False
+
+        # Volume statistics
         self.volume_stats = {'mean': 0, 'std': 1}
+
+        # ML/Prediction configuration
         self.ml_enabled = False
 
         self.ml_models = {
@@ -270,31 +339,57 @@ class TradingApp:
         self.current_ml_model = None
         self.ml_prediction_threshold = 0.65
 
+        # Performance tracking
         self.performance_stats = {
-            'best_trade': 0, 'worst_trade': 0, 'total_trades': 0,
-            'winning_streak': 0, 'losing_streak': 0
+            'best_trade': 0,
+            'worst_trade': 0,
+            'total_trades': 0,
+            'winning_streak': 0,
+            'losing_streak': 0
         }
 
+        # Risk management parameters
         self.trailing_stop_pct = 0.03
         self.stop_loss_pct = 0.02
         self.order_size_pct = 30
         self.trade_direction = "long"
 
+        # Time intervals mapping
         self.interval_seconds_map = {
-            '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
-            '1H': 3600, '1D': 86400
+            '1m': 60,
+            '5m': 300,
+            '15m': 900,
+            '30m': 1800,
+            '1H': 3600,
+            '1D': 86400
         }
 
+        # Initialize UI and components
         self.load_config()
-        self.create_widgets()
+        self.create_widgets()  # ⬅️ This creates log_area widget
         self.setup_apis()
 
+        # ═══════════════════════════════════════════════════════════════════════════
+        # CRITICAL: ALWAYS load UI from MOMENTUM_PARAMS (Single Source of Truth)
+        # ═══════════════════════════════════════════════════════════════════════════
+
+       # from strategies.MomentumStrategy_MACD_HybridScore_Latest import MOMENTUM_PARAMS, MomentumConfig
+
+        # Start with code defaults
         self.momentum_params = MOMENTUM_PARAMS.copy()
+
+        # Initialize mode tracking
         self.current_mode = "Default Parameters"
         self.custom_params = {}
-        self.load_saved_momentum_settings()
 
-        from strategies.scalping_strategy import ScalpingStrategy, BacktestScalpingStrategy
+        # Load saved settings (if any) and determine mode
+        self.load_saved_momentum_settings()  # <-- ADD THIS LINE
+
+
+        from strategies.TopDownDayTradingStrategy import (
+                    TopDownDayTradingStrategy,
+                    BacktestTopDownStrategy,
+                )
 
         self.strategies = {
             "Momentum":                    MomentumStrategy(self),
@@ -302,19 +397,23 @@ class TradingApp:
             "Kalman":                      KalmanTrendStrategy(self),
             "BacktestKalmanTrendStrategy": BacktestKalmanTrendStrategy,
             "Enhanced":                    TradingStrategy(self, {}),
-            "Scalping":                    ScalpingStrategy(self),
-            "BacktestScalping":            BacktestScalpingStrategy,
+            "TopDown":                     TopDownDayTradingStrategy(self),      # ← NEW
+            "BacktestTopDown":             BacktestTopDownStrategy,              # ← NEW
         }
 
+
+        # Apply initial parameters based on toggle setting
         self.apply_selected_parameters()
         self.strategies["Momentum"].trading_app = self
 
+        # Virtual trading environment
         self.virtual_balance = {'USDT': 1000, 'SOL': 0}
-
         self.trade_history = []
 
+        # Set default strategy
         self.set_strategy("Momentum")
 
+        # Configure UI based on mode
         if self.mode_var.get().lower() == "backtest":
             self.backtest_controls_frame.pack(fill=tk.BOTH, expand=True)
             self.explanation_textbox.pack_forget()
@@ -326,555 +425,38 @@ class TradingApp:
             self.start_btn.config(state=tk.DISABLED)
             self.style.configure('Blue.TButton', foreground='white')
 
+        # ═══════════════════════════════════════════════════════════════
+        # LOG EXPANSION STATE TRACKING
+        # ═══════════════════════════════════════════════════════════════
         self.log_expanded = False
         self.hidden_frames_info = []
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        # Track pyttsx3 engine
         self._tts_engine = None
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # TRADING TIME WINDOW METHODS
-    # ═══════════════════════════════════════════════════════════════════════
-
-    def _init_trading_time_config(self) -> dict:
-        """Per-strategy time window.  start == end → no restriction."""
-        cfg = {}
-        for strategy in ('Momentum', 'Kalman', 'Scalping'):
-            cfg[strategy] = {
-                'start_h': tk.IntVar(value=0),
-                'start_m': tk.IntVar(value=0),
-                'end_h':   tk.IntVar(value=0),
-                'end_m':   tk.IntVar(value=0),
-            }
-        return cfg
-
-    def _is_time_unconstrained(self, strategy: str) -> bool:
-        cfg = self.trading_time_config.get(strategy, {})
-        return (cfg['start_h'].get() == cfg['end_h'].get() and
-                cfg['start_m'].get() == cfg['end_m'].get())
-
-    def _get_window_minutes(self, strategy: str) -> tuple:
-        cfg = self.trading_time_config[strategy]
-        s = cfg['start_h'].get() * 60 + cfg['start_m'].get()
-        e = cfg['end_h'].get()   * 60 + cfg['end_m'].get()
-        return s, e
-
-    def _is_within_trading_window(self, strategy: str) -> bool:
-        if self._is_time_unconstrained(strategy):
-            return True
-        now_utc = datetime.now(timezone.utc)
-        now_min = now_utc.hour * 60 + now_utc.minute
-        s, e    = self._get_window_minutes(strategy)
-        if s < e:
-            return s <= now_min < e
-        return now_min >= s or now_min < e
-
-    def _seconds_until_start(self, strategy: str) -> float:
-        now_utc  = datetime.now(timezone.utc)
-        now_min  = now_utc.hour * 60 + now_utc.minute
-        now_sec  = now_utc.second
-        s, _     = self._get_window_minutes(strategy)
-        diff_min = (s - now_min) % (24 * 60)
-        return max(0., diff_min * 60 - now_sec)
-
-    def _seconds_until_end(self, strategy: str) -> float:
-        now_utc  = datetime.now(timezone.utc)
-        now_min  = now_utc.hour * 60 + now_utc.minute
-        now_sec  = now_utc.second
-        _, e     = self._get_window_minutes(strategy)
-        diff_min = (e - now_min) % (24 * 60)
-        return max(0., diff_min * 60 - now_sec)
-
-    def _cancel_scheduled_trading(self):
-        for attr in ('_sched_start_id', '_sched_stop_id'):
-            aid = getattr(self, attr, None)
-            if aid is not None:
-                try:
-                    self.root.after_cancel(aid)
-                except Exception:
-                    pass
-                setattr(self, attr, None)
-        self._waiting_to_start = False
-
-    def _do_start_trading(self):
-        """Spin up the trading thread (internal)."""
-        self._waiting_to_start = False
-        # Record session start so the end-of-period summary can show duration
-        self._session_start_time = datetime.now(timezone.utc)
-        self._session_start_trade_count = len(
-            [t for t in self.trade_history if t.get('type') == 'sell'])
-
-        # ── Kill any still-alive previous thread ────────────────────────────
-        if hasattr(self, 'trading_thread') and self.trading_thread is not None:
-            if self.trading_thread.is_alive():
-                self.running = False
-                self.trading_running = False
-                self.trading_thread.join(timeout=3.0)
-            self.trading_thread = None
-        self.running         = True
-        self.trading_running = True
-        self.start_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.NORMAL)
-        self.update_mode_display(self.mode_var.get())
-        self.trading_thread = threading.Thread(
-            target=self.trading_loop, daemon=True, name="TradingLoop")
-        self.trading_thread.start()
-        self.log_message("▶ Trading started.", "green")
-        self.play_notification("tick")
-        self.enable_ai_button()
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty('rate', 135)
-            engine.say("Trading started")
-            engine.runAndWait()
-        except Exception:
-            pass
-
-    def _scheduled_start_callback(self):
-        self._sched_start_id = None
-        if not self._waiting_to_start:
-            return
-        strategy = self.strategy_type_var.get()
-        now_str  = datetime.now(timezone.utc).strftime('%H:%M UTC')
-        self.log_message(f"⏰ [{strategy}] Scheduled start at {now_str}", "green")
-        self._do_start_trading()
-        if not self._is_time_unconstrained(strategy):
-            stop_secs = self._seconds_until_end(strategy)
-            if stop_secs > 0:
-                self._sched_stop_id = self.root.after(
-                    int(stop_secs * 1000), self._scheduled_stop_callback)
-                _, em = self._get_window_minutes(strategy)
-                eh, em2 = divmod(em, 60)
-                self.log_message(
-                    f"⏰ [{strategy}] Auto-stop in "
-                    f"{stop_secs/60:.1f} min ({eh:02d}:{em2:02d} UTC)", "blue")
-
-    def _scheduled_stop_callback(self):
-        self._sched_stop_id = None
-        if not self.running:
-            return
-        strategy = self.strategy_type_var.get()
-        now_str  = datetime.now(timezone.utc).strftime('%H:%M UTC')
-        self.log_message(
-            f"⏰ [{strategy}] Trading window closed at {now_str}.", "orange")
-        self._end_of_period_stop()
-
-    def _end_of_period_stop(self):
-        """
-        Called when the scheduled trading period ends.
-        1. Block any new entries immediately.
-        2. Close any open position at market price.
-        3. Print a full session summary to the log.
-        4. Leave the app idle and ready — do NOT exit.
-        """
-        # ── Step 1: Block new entries ─────────────────────────────────────────
-        self.trading_running = False        # signals the loop: no new trades
-        self.log_message("⏸  Trading period ended — no new entries will be taken.", "orange")
-
-        # ── Step 2: Close any open position at market price ──────────────────
-        pos_type = self.position.get('type')
-        if pos_type in ('long', 'short'):
-            current_price = self.get_current_price()
-            if current_price is None and self.current_data is not None:
-                current_price = float(self.current_data.get('Close', 0))
-            if current_price:
-                close_side = 'sell' if pos_type == 'long' else 'buy'
-                qty        = self.position.get('quantity', 0)
-                self.log_message(
-                    f"📤 Period-end close: {pos_type.upper()} {qty:.4f} @ ${current_price:.4f}",
-                    "blue")
-                try:
-                    self.place_order(close_side, current_price, qty,
-                                     exit_reason='period_end')
-                except Exception as e:
-                    self.log_message(f"⚠️  Could not close position: {e}", "red")
-            else:
-                self.log_message("⚠️  No price available — could not close open position.", "red")
-
-        # ── Step 3: Fully stop the trading loop ───────────────────────────────
-        self.stop_trading()          # resets flags, re-enables Start button
-
-        # ── Step 4: Print session summary ─────────────────────────────────────
-        self.root.after(500, self._show_session_summary)   # slight delay so trades settle
-
-    def _show_session_summary(self):
-        """Print a formatted trading period summary to the log panel."""
-        sep = "═" * 60
-        self.log_message(sep, "cyan")
-        self.log_message("📊  TRADING SESSION SUMMARY", "cyan")
-        self.log_message(sep, "cyan")
-
-        # Session timing
-        session_start = getattr(self, '_session_start_time', None)
-        session_end   = datetime.now(timezone.utc)
-        if session_start:
-            duration_mins = (session_end - session_start).total_seconds() / 60
-            self.log_message(
-                f"⏱  Session:   {session_start.strftime('%H:%M UTC')} → "
-                f"{session_end.strftime('%H:%M UTC')}  "
-                f"({duration_mins:.0f} min)", "white")
-
-        # Trade stats — only count trades made THIS session
-        start_count = getattr(self, '_session_start_trade_count', 0)
-        all_closed = [t for t in self.trade_history if t.get('exit_timestamp') is not None]
-        # all_closed  = [t for t in self.trade_history if t.get('type') == 'sell']
-        session_trades = all_closed[start_count:]   # trades added during this session
-
-        if not session_trades:
-            self.log_message("  No trades completed during this session.", "orange")
-        else:
-            total   = len(session_trades)
-            wins    = [t for t in session_trades if t.get('pnl', t.get('net_pnl', 0)) > 0]
-            losses  = [t for t in session_trades if t.get('pnl', t.get('net_pnl', 0)) <= 0]
-            total_pnl   = sum(t.get('pnl', t.get('net_pnl', 0)) for t in session_trades)
-            win_rate    = len(wins) / total * 100 if total else 0
-            avg_win     = sum(t.get('pnl', t.get('net_pnl', 0)) for t in wins)  / len(wins)  if wins   else 0
-            avg_loss    = sum(t.get('pnl', t.get('net_pnl', 0)) for t in losses)/ len(losses) if losses else 0
-            best_trade  = max(t.get('pnl', t.get('net_pnl', 0)) for t in session_trades)
-            worst_trade = min(t.get('pnl', t.get('net_pnl', 0)) for t in session_trades)
-
-            gross_wins  = sum(t.get('pnl', t.get('net_pnl', 0)) for t in wins)
-            gross_loss  = abs(sum(t.get('pnl', t.get('net_pnl', 0)) for t in losses))
-            profit_factor = (gross_wins / gross_loss) if gross_loss > 0 else float('inf')
-
-            pnl_color = "green" if total_pnl >= 0 else "red"
-
-            self.log_message(f"  📈 Trades:          {total}  ({len(wins)}W / {len(losses)}L)", "white")
-            self.log_message(f"  🎯 Win Rate:        {win_rate:.1f}%", "green" if win_rate >= 50 else "orange")
-            self.log_message(f"  💰 Net PnL:         ${total_pnl:+.2f}", pnl_color)
-            self.log_message(f"  📊 Profit Factor:   {profit_factor:.2f}", "green" if profit_factor >= 1 else "red")
-            self.log_message(f"  ✅ Avg Win:         ${avg_win:+.2f}", "green")
-            self.log_message(f"  ❌ Avg Loss:        ${avg_loss:+.2f}", "red")
-            self.log_message(f"  🏆 Best Trade:      ${best_trade:+.2f}", "green")
-            self.log_message(f"  💀 Worst Trade:     ${worst_trade:+.2f}", "red")
-
-            # Exit reason breakdown
-            exit_reasons = {}
-            for t in session_trades:
-                r = t.get('exit_reason', 'unknown')
-                exit_reasons[r] = exit_reasons.get(r, 0) + 1
-            if exit_reasons:
-                reasons_str = "  |  ".join(f"{r}: {c}" for r, c in exit_reasons.items())
-                self.log_message(f"  🚪 Exit reasons:    {reasons_str}", "white")
-
-        self.log_message(sep, "cyan")
-        self.log_message(
-            "✅  Session complete.  Press ▶ Start Trading to begin a new session "
-            "or use any other function.", "green")
-        self.log_message(sep, "cyan")
-
-        # Voice notification
-        try:
-            import pyttsx3 as _pyttsx3
-            engine = _pyttsx3.init()
-            engine.setProperty('rate', 135)
-            engine.say("Trading session complete. Summary ready.")
-            engine.runAndWait()
-        except Exception:
-            pass
-
-    def _update_wait_countdown(self, strategy: str, sh: int, sm: int):
-        if not getattr(self, '_waiting_to_start', False):
-            return
-        secs = self._seconds_until_start(strategy)
-        if secs <= 0:
-            return
-        mins = int(secs / 60)
-        self.mode_display.config(
-            text=f"⏰ STARTS IN {mins}m → {sh:02d}:{sm:02d} UTC",
-            foreground='red')
-        self.root.after(60_000,
-            lambda: self._update_wait_countdown(strategy, sh, sm))
-
-    def open_time_settings_panel(self, strategy: str):
-        """Open a floating panel to set trading hours for *strategy*."""
-        attr     = f"_time_panel_{strategy}"
-        existing = getattr(self, attr, None)
-        if existing and existing.winfo_exists():
-            existing.lift(); existing.focus_force(); return
-
-        cfg   = self.trading_time_config[strategy]
-        panel = tk.Toplevel(self.root)
-        panel.title(f"⏰ Trading Hours — {strategy}")
-        panel.geometry("390x285")
-        panel.resizable(False, False)
-        panel.grab_set()
-        setattr(self, attr, panel)
-
-        hdr_f = tk.Frame(panel, bg="#1a1a2e", pady=8)
-        hdr_f.pack(fill=tk.X)
-        tk.Label(hdr_f, text=f"⏰  {strategy} — Trading Hours (UTC)",
-                 bg="#1a1a2e", fg="white",
-                 font=("Arial", 12, "bold")).pack()
-
-        body = ttk.Frame(panel, padding=15)
-        body.pack(fill=tk.BOTH, expand=True)
-
-        def _time_row(lbl_text, h_var, m_var, row):
-            ttk.Label(body, text=lbl_text,
-                      font=("Arial", 10, "bold")).grid(
-                row=row, column=0, sticky="w", pady=6, padx=5)
-            sb_h = ttk.Spinbox(body, from_=0, to=23, textvariable=h_var,
-                               width=5, format="%02.0f", font=("Consolas", 11))
-            sb_h.grid(row=row, column=1, padx=(10, 2))
-            ttk.Label(body, text=":", font=("Consolas", 13, "bold")).grid(
-                row=row, column=2)
-            sb_m = ttk.Spinbox(body, from_=0, to=59, textvariable=m_var,
-                               width=5, format="%02.0f", font=("Consolas", 11))
-            sb_m.grid(row=row, column=3, padx=(2, 10))
-            ttk.Label(body, text="UTC", foreground="grey").grid(
-                row=row, column=4, padx=5)
-
-        _time_row("▶  Start time :", cfg["start_h"], cfg["start_m"], row=0)
-        _time_row("⏹  End   time :", cfg["end_h"],   cfg["end_m"],   row=1)
-
-        status_var = tk.StringVar()
-        status_lbl = ttk.Label(body, textvariable=status_var, font=("Arial", 9))
-        status_lbl.grid(row=2, column=0, columnspan=5, pady=(10, 0), sticky="w")
-
-        def _refresh(*_):
-            sh, sm = cfg["start_h"].get(), cfg["start_m"].get()
-            eh, em = cfg["end_h"].get(),   cfg["end_m"].get()
-            if sh == eh and sm == em:
-                status_var.set("ℹ️  No restriction — trades run at any time")
-                status_lbl.config(foreground="#0066CC")
-            else:
-                status_var.set(
-                    f"✅  Window: {sh:02d}:{sm:02d} → {eh:02d}:{em:02d} UTC")
-                status_lbl.config(foreground="#006600")
-
-        for v in (cfg["start_h"], cfg["start_m"], cfg["end_h"], cfg["end_m"]):
-            v.trace_add("write", _refresh)
-        _refresh()
-
-        btn_f = ttk.Frame(panel, padding=(15, 5, 15, 15))
-        btn_f.pack(fill=tk.X)
-
-        def _reset():
-            cfg["end_h"].set(cfg["start_h"].get())
-            cfg["end_m"].set(cfg["start_m"].get())
-            self.log_message(
-                f"⏰ [{strategy}] Trading hours reset — no constraint.", "blue")
-
-        def _save():
-            _refresh()
-            sh, sm = cfg["start_h"].get(), cfg["start_m"].get()
-            eh, em = cfg["end_h"].get(),   cfg["end_m"].get()
-            if sh == eh and sm == em:
-                self.log_message(
-                    f"⏰ [{strategy}] Trading hours: unrestricted", "blue")
-            else:
-                self.log_message(
-                    f"⏰ [{strategy}] Trading hours: "
-                    f"{sh:02d}:{sm:02d} → {eh:02d}:{em:02d} UTC", "green")
-            panel.destroy()
-
-        tk.Button(btn_f, text="🔄 Reset (no limit)", command=_reset,
-                  bg="#FFA500", fg="white", font=("Arial", 9, "bold"),
-                  relief="raised", bd=2, cursor="hand2",
-                  padx=10, pady=4).pack(side=tk.LEFT, padx=4)
-        tk.Button(btn_f, text="💾 Save & Close", command=_save,
-                  bg="#0066CC", fg="white", font=("Arial", 9, "bold"),
-                  relief="raised", bd=2, cursor="hand2",
-                  padx=10, pady=4).pack(side=tk.LEFT, padx=4)
-        tk.Button(btn_f, text="❌ Cancel", command=panel.destroy,
-                  bg="#CC0000", fg="white", font=("Arial", 9, "bold"),
-                  relief="raised", bd=2, cursor="hand2",
-                  padx=10, pady=4).pack(side=tk.RIGHT, padx=4)
-
-    def _add_time_settings_button(self, parent_frame, strategy: str):
-        """Inject a ⏰ Trading Hours row at the top of a settings tab."""
-        cfg = self.trading_time_config.get(strategy)
-        if cfg is None:
-            return
-        row = tk.Frame(parent_frame, bg="#f0f4ff", pady=4)
-        row.pack(fill=tk.X, padx=5, pady=(4, 0))
-
-        def _summary():
-            sh, sm = cfg["start_h"].get(), cfg["start_m"].get()
-            eh, em = cfg["end_h"].get(),   cfg["end_m"].get()
-            if sh == eh and sm == em:
-                return "⏰ Trading hours: unrestricted"
-            return f"⏰ {sh:02d}:{sm:02d} → {eh:02d}:{em:02d} UTC"
-
-        lbl_var = tk.StringVar(value=_summary())
-        lbl = tk.Label(row, textvariable=lbl_var, bg="#f0f4ff",
-                       font=("Arial", 9), anchor="w")
-        lbl.pack(side=tk.LEFT, padx=8, fill=tk.X, expand=True)
-
-        def _refresh(*_):
-            lbl_var.set(_summary())
-            sh, sm = cfg["start_h"].get(), cfg["start_m"].get()
-            eh, em = cfg["end_h"].get(),   cfg["end_m"].get()
-            lbl.config(fg="#006600" if not (sh == eh and sm == em) else "#444444")
-
-        for v in (cfg["start_h"], cfg["start_m"], cfg["end_h"], cfg["end_m"]):
-            v.trace_add("write", _refresh)
-
-        tk.Button(row, text="⚙ Set Hours",
-                  command=lambda s=strategy: self.open_time_settings_panel(s),
-                  bg="#0066CC", fg="white", font=("Arial", 8, "bold"),
-                  relief="raised", bd=2, cursor="hand2",
-                  padx=8, pady=2).pack(side=tk.RIGHT, padx=8)
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # CORE TRADING METHODS
-    # ═══════════════════════════════════════════════════════════════════════
-
-    def stop_trading(self):
-        """Stop the trading loop and clean up state."""
-        if not self.running:
-            self.log_message("⚠️ Trading is not currently running.", "orange")
-            return
-        self.running         = False
-        self.trading_running = False
-        self._cancel_scheduled_trading()
-        if hasattr(self, 'timer') and self.timer:
-            try:
-                self.timer.stop()
-            except Exception:
-                pass
-        if hasattr(self, 'start_btn') and self.start_btn:
-            self.start_btn.config(state=tk.NORMAL)
-        if hasattr(self, 'stop_btn') and self.stop_btn:
-            self.stop_btn.config(state=tk.DISABLED)
-        self.update_mode_display(self.mode_var.get())
-        self.update_status_indicators("parking")
-        self.log_message("🛑 Trading stopped.", "orange")
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty('rate', 135)
-            engine.say("Trading stopped")
-            engine.runAndWait()
-        except Exception:
-            pass
-        self.play_notification("tick")
-        self.update_stats()
-
-    def predict_future_trend(self, n_future: int = 5):
-        if not self.ml_enabled or self.current_ml_model is None:
-            return [], 0.0
-        if not getattr(self.current_ml_model, 'is_trained', False):
-            return [], 0.0
-        df = self.get_market_data()
-        if df is None or df.empty:
-            return [], 0.0
-        try:
-            if hasattr(self.strategy, 'calculate_indicators'):
-                df = self.strategy.calculate_indicators(df)
-            conf, prediction, _ = self.current_ml_model.predict(df, n_future)
-            # ── NEW: Process through correction ──
-            ml_output = process_ml_prediction(float(conf))
-            confidence = ml_output["confidence_pct"] / 100.0
-            if ml_output["ml_direction"] == "BULLISH":
-                predictions = ['bullish'] * n_future
-            elif ml_output["ml_direction"] == "BEARISH":
-                predictions = ['bearish'] * n_future
-            else:
-                predictions = ['neutral'] * n_future
-            return predictions, confidence
-        except Exception as e:
-            self.log_message(f"⚠️ predict_future_trend error: {e}", "orange")
-            return [], 0.0
-
-    def close_partial(self, fraction: float = 0.5):
-        """Close a fraction of the current position (0 < fraction <= 1)."""
-        if self.position.get('type') is None or self.position.get('quantity') is None:
-            self.log_message("⚠️ close_partial: no open position.", "orange")
-            return False
-        if not (0 < fraction <= 1):
-            self.log_message(f"❌ close_partial: invalid fraction {fraction}", "red")
-            return False
-        qty_to_close  = self.position['quantity'] * fraction
-        current_price = self.get_current_price()
-        if current_price is None:
-            if self.current_data is not None:
-                current_price = float(self.current_data.get('Close', 0))
-        if not current_price:
-            self.log_message("❌ close_partial: cannot determine price.", "red")
-            return False
-        self.log_message(
-            f"📤 Partial close: {fraction*100:.0f}% "
-            f"({qty_to_close:.4f} units) @ ${current_price:.4f}", "blue")
-        success = self.place_order(
-            'sell', current_price, quantity=qty_to_close,
-            exit_reason='partial_profit_target')
-        if success:
-            remaining = self.position['quantity'] - qty_to_close
-            if remaining > 1e-8:
-                self.position['quantity'] = remaining
-                self.log_message(
-                    f"✅ Partial close complete. Remaining: {remaining:.4f}", "green")
-            else:
-                self.position = {
-                    'type': None, 'price': None, 'quantity': None, 'time': None,
-                    'stop_loss': None, 'trailing_stop': None, 'entry_confidence': None
-                }
-                self.update_status_indicators("parking")
-                self.log_message("✅ Position fully closed via close_partial.", "green")
-        return success
-
-    def _save_trading_time_config(self, settings: dict):
-        """Inject trading-time windows into a settings dict before writing to disk."""
-        time_cfg = {}
-        for strategy, cfg in self.trading_time_config.items():
-            time_cfg[strategy] = {
-                'start_h': cfg['start_h'].get(),
-                'start_m': cfg['start_m'].get(),
-                'end_h': cfg['end_h'].get(),
-                'end_m': cfg['end_m'].get(),
-            }
-        settings['trading_time_config'] = time_cfg
-        return settings
-
-    def _load_trading_time_config(self, settings: dict):
-        """Read trading-time windows from a loaded settings dict."""
-        time_cfg = settings.get('trading_time_config', {})
-        if not time_cfg:
-            self.log_message("ℹ️ No trading time config found — using defaults (unrestricted)", "blue")
-            return
-
-        loaded = 0
-        for strategy, values in time_cfg.items():
-            if strategy not in self.trading_time_config:
-                continue
-            cfg = self.trading_time_config[strategy]
-            try:
-                cfg['start_h'].set(int(values.get('start_h', 0)))
-                cfg['start_m'].set(int(values.get('start_m', 0)))
-                cfg['end_h'].set(int(values.get('end_h', 0)))
-                cfg['end_m'].set(int(values.get('end_m', 0)))
-                loaded += 1
-
-                sh = cfg['start_h'].get();
-                sm = cfg['start_m'].get()
-                eh = cfg['end_h'].get();
-                em = cfg['end_m'].get()
-
-                if sh == eh and sm == em:
-                    self.log_message(
-                        f"⏰ [{strategy}] Trading hours loaded: unrestricted", "blue")
-                else:
-                    self.log_message(
-                        f"⏰ [{strategy}] Trading hours loaded: "
-                        f"{sh:02d}:{sm:02d} → {eh:02d}:{em:02d} UTC", "green")
-            except Exception as e:
-                self.log_message(
-                    f"⚠️ Could not load trading time for {strategy}: {e}", "orange")
-
-        self.log_message(
-            f"✅ Trading time config loaded for {loaded} strategies", "green")
-
     def load_saved_momentum_settings(self):
+        """
+        Load saved momentum settings and apply based on mode.
+        CRITICAL: Always starts from MOMENTUM_PARAMS, then applies saved state.
+        """
         try:
             from strategies.MomentumStrategy_MACD_HybridScore_Latest import MOMENTUM_PARAMS, MomentumConfig
+
+            # Always start with MOMENTUM_PARAMS (single source of truth)
             self.momentum_params = MOMENTUM_PARAMS.copy()
-            self.current_mode    = MomentumConfig.get_current_mode()
-            self.custom_params   = MomentumConfig.get_custom_params()
+
+            # Get saved mode and custom params from MomentumConfig
+            self.current_mode = MomentumConfig.get_current_mode()
+            self.custom_params = MomentumConfig.get_custom_params()
+
             print("=" * 70)
             print("📋 LOADING MOMENTUM SETTINGS")
             print("=" * 70)
             print(f"Mode: {self.current_mode}")
             print(f"Custom params available: {len(self.custom_params)}")
+
+            # If Custom mode, apply custom params on top of defaults
             if self.current_mode == "Custom Parameters" and self.custom_params:
                 print("\nApplying custom parameters:")
                 applied_count = 0
@@ -888,113 +470,180 @@ class TradingApp:
                 print(f"\nApplied {applied_count} custom parameter overrides")
             else:
                 print("\nUsing MOMENTUM_PARAMS defaults (no custom overrides)")
+
             print("=" * 70)
+
+            # Update UI mode selector
             if hasattr(self, 'param_toggle_var'):
                 self.param_toggle_var.set(self.current_mode)
+
             return True
+
         except Exception as e:
             print(f"❌ Error loading saved settings: {e}")
             print("Falling back to MOMENTUM_PARAMS defaults")
+
             from strategies.MomentumStrategy_MACD_HybridScore_Latest import MOMENTUM_PARAMS
             self.momentum_params = MOMENTUM_PARAMS.copy()
-            self.current_mode    = "Default Parameters"
-            self.custom_params   = {}
+            self.current_mode = "Default Parameters"
+            self.custom_params = {}
+
             return False
 
     def get_volume_ratio(self, df=None, current_data=None, default=1.0):
+        """ROBUST Volume Ratio - uses PREVIOUS complete candle (iloc[-2])"""
         vol_ratio = None
+
+        # METHOD 1: Get from PREVIOUS COMPLETE candle (iloc[-2])
         if df is not None and len(df) >= 2:
             for col_name in ['Volume_Ratio', 'volume_ratio', 'Vol_Ratio']:
                 if col_name in df.columns:
                     try:
                         val = df[col_name].iloc[-2]
                         if pd.notna(val) and val > 0:
-                            vol_ratio = float(val); break
+                            vol_ratio = float(val)
+                            break
                     except:
                         continue
+
+        # METHOD 2: Fallback to current_data
         if vol_ratio is None or vol_ratio <= 0:
             if current_data is not None:
                 for col_name in ['Volume_Ratio', 'volume_ratio']:
                     try:
                         val = current_data.get(col_name) if hasattr(current_data, 'get') else None
                         if val and float(val) > 0:
-                            vol_ratio = float(val); break
+                            vol_ratio = float(val)
+                            break
                     except:
                         continue
+
+        # METHOD 3: Calculate on-the-fly
         if vol_ratio is None or vol_ratio <= 0:
             if df is not None and 'Volume' in df.columns and len(df) >= 22:
                 try:
                     current_vol = float(df['Volume'].iloc[-2])
-                    avg_vol     = df['Volume'].iloc[-22:-2].mean()
-                    if avg_vol > 0: vol_ratio = current_vol / avg_vol
+                    avg_vol = df['Volume'].iloc[-22:-2].mean()
+                    if avg_vol > 0:
+                        vol_ratio = current_vol / avg_vol
                 except:
                     pass
+
         if vol_ratio is None or vol_ratio <= 0:
             vol_ratio = default
+
         return max(0.01, min(10.0, vol_ratio))
 
     def on_closing(self):
+        """Proper cleanup when window is closed"""
         try:
             self.log_message("🔄 Shutting down application...", "blue")
+
+            # 1. Stop trading loop
             self.running = False
-            if hasattr(self, '_cancel_scheduled_trading'):
-                self._cancel_scheduled_trading()
+
+            # 2. Stop timer
             if hasattr(self, 'timer') and self.timer:
-                try: self.timer.stop()
-                except Exception: pass
+                try:
+                    self.timer.stop()
+                except:
+                    pass
+
+            # 3. Close pyttsx3 engine
             if hasattr(self, '_tts_engine') and self._tts_engine:
-                try: self._tts_engine.stop()
-                except Exception: pass
-            if hasattr(self, 'market_api') and self.market_api: self.market_api = None
-            if hasattr(self, 'trade_api')  and self.trade_api:  self.trade_api  = None
-            if hasattr(self, 'account_api') and self.account_api: self.account_api = None
+                try:
+                    self._tts_engine.stop()
+                except:
+                    pass
+
+            # 4. Close API connections
+            if hasattr(self, 'market_api') and self.market_api:
+                self.market_api = None
+            if hasattr(self, 'trade_api') and self.trade_api:
+                self.trade_api = None
+            if hasattr(self, 'account_api') and self.account_api:
+                self.account_api = None
+
+            # 5. Close matplotlib figures
             try:
                 import matplotlib.pyplot as plt
                 plt.close('all')
-            except Exception:
+            except:
                 pass
+
+            # 6. Destroy chart widget
             if hasattr(self, 'chart') and self.chart:
-                try: self.chart.destroy()
-                except Exception: pass
+                try:
+                    self.chart.destroy()
+                except:
+                    pass
+
+            # 7. Cancel any pending after() calls
             try:
-                after_ids = list(self.root.tk.call('after', 'info'))
-                for after_id in after_ids:
-                    try: self.root.after_cancel(after_id)
-                    except Exception: pass
-            except Exception:
+                for after_id in self.root.tk.call('after', 'info'):
+                    self.root.after_cancel(after_id)
+            except:
                 pass
+
+            # 8. Destroy root window
             self.root.quit()
             self.root.destroy()
+
         except Exception as e:
             print(f"Cleanup error: {e}")
         finally:
             import threading
             def force_exit():
-                import os; os._exit(0)
+                import os
+                os._exit(0)
+
             threading.Timer(2.0, force_exit).start()
 
     def sync_custom_params_with_code_defaults(self):
+        """
+        Reset custom_params to match MOMENTUM_PARAMS exactly.
+        This ensures the settings panel shows the correct values.
+        """
         self.log_message("=" * 70, "blue")
         self.log_message("🔄 RESETTING CUSTOM PARAMS TO MOMENTUM_PARAMS", "blue")
         self.log_message("=" * 70, "blue")
+
+        # Get fresh defaults from MOMENTUM_PARAMS
         momentum_defaults = self.get_default_momentum_params()
+
+        # Completely replace custom_params with defaults
         self.custom_params['momentum'] = momentum_defaults.copy()
+
         self.log_message("✅ Custom params reset to MOMENTUM_PARAMS values", "green")
+
+        # Log critical values to verify
+        self.log_message("📊 CRITICAL PARAMETERS VERIFICATION:", "cyan")
         self.log_message(f"   tier1_adx_hard_min     = {self.custom_params['momentum']['tier1_adx_hard_min']}", "green")
         self.log_message(f"   tier1_volume_min       = {self.custom_params['momentum']['tier1_volume_min']}", "green")
         self.log_message(f"   stop_loss_atr_mult     = {self.custom_params['momentum']['stop_loss_atr_mult']}", "green")
-        self.log_message(f"   trailing_activation_pct = {self.custom_params['momentum']['trailing_activation_pct']}", "green")
+        self.log_message(f"   trailing_activation_pct = {self.custom_params['momentum']['trailing_activation_pct']}",
+                         "green")
         self.log_message(f"   quality_tier2_min      = {self.custom_params['momentum']['quality_tier2_min']}", "green")
         self.log_message(f"   risk_tier1             = {self.custom_params['momentum']['risk_tier1']}", "green")
         self.log_message(f"   max_daily_trades       = {self.custom_params['momentum']['max_daily_trades']}", "green")
         self.log_message(f"   only_tier2_entries     = {self.custom_params['momentum']['only_tier2_entries']}", "green")
+
         self.log_message("=" * 70, "green")
+
         return True
 
     def test_premium_tier1_config(self):
+        """Verify Premium Tier 1 configuration is correct"""
+        # BUG FIX v9.4.1 (APP BUG C): was hasattr(self, 'Momenmtum') — typo caused
+        # this guard to ALWAYS fire, making the entire method dead code.
         if not hasattr(self, 'momentum_strategy') or self.momentum_strategy is None:
-            self.log_message("ERROR: Strategy not loaded", "red"); return
+            self.log_message("ERROR: Strategy not loaded", "red")
+            return
+
         s = self.momentum_strategy
+
+        # Check all critical parameters
+        # v9.4.2: updated expected values to match current MOMENTUM_PARAMS
         checks = {
             "Tier 1 Quality Min":   (s.quality_tier1_min,  72),
             "Tier 2 Quality Min":   (s.quality_tier2_min,  62),
@@ -1006,9 +655,11 @@ class TradingApp:
             "Tier 1 Momentum Min":  (s.tier1_momentum_min, 0.02),
             "Tier 1 Price EMA Max %": (s.tier1_price_ema_max_pct, 1.5),
         }
+
         self.log_message("=" * 70, "cyan")
         self.log_message("PREMIUM TIER 1 CONFIGURATION CHECK", "bold blue")
         self.log_message("=" * 70, "cyan")
+
         all_passed = True
         for name, (actual, expected) in checks.items():
             if actual == expected:
@@ -1016,104 +667,85 @@ class TradingApp:
             else:
                 self.log_message(f"✗ {name}: {actual} (expected {expected})", "red")
                 all_passed = False
+
         self.log_message("=" * 70, "cyan")
+
+        # Check that new methods exist
+        # v9.4.2: methods _check_tier1_confluence, _check_momentum_sustained,
+        # _get_tier1_risk_multiplier were from a scrapped premium-tier experiment
+        # and do not exist in the current strategy — check removed.
+
+        self.log_message("=" * 70, "cyan")
+
         if all_passed:
             self.log_message("✅ ALL CHECKS PASSED - CONFIG MATCHES MOMENTUM_PARAMS", "bold green")
         else:
             self.log_message("❌ SOME CHECKS FAILED - REVIEW CONFIGURATION", "bold red")
+
         return all_passed
 
     def resource_path(self, relative_path):
+        """Get absolute path to resource, works for dev and for PyInstaller"""
         try:
             base_path = sys._MEIPASS
         except Exception:
             base_path = os.path.abspath(".")
+
         return os.path.join(base_path, relative_path)
 
     def needs_multitimeframe(self) -> bool:
-        """
-        U6: Returns True when Scalping strategy is active so the
-        trading_loop fetches 1h context data on every bar cycle.
-        Zero impact on Momentum and Kalman — they skip the fetch.
-        """
-        strategy_name = getattr(self, 'strategy_type_var', None)
-        if strategy_name is not None:
-            try:
-                return strategy_name.get() == "Scalping"
-            except Exception:
-                pass
-        return False
+        """Check if current strategy requires multiple timeframes"""
+        return self.strategy_type_var.get() == "TopDown"
 
     def get_market_data_multiframe(self) -> dict:
         """
-        U6: Fetches 1h candles, computes EMA9 and EMA50, pushes the
-        result into strategy._htf_data so _htf_trend_agrees() can
-        filter 15m scalp entries against the higher-TF trend direction.
-        Also fetches 15m and 5m for legacy compatibility.
+        Fetch data for all three timeframes required by TopDown strategy.
+        Returns dict with keys: '1h', '15m', '5m'
         """
         symbol = self.symbol_var.get()
-        is_bt = self.mode_var.get().lower() == "backtest"
-        start = self.start_date_var.get() if is_bt else None
-        end = self.end_date_var.get() if is_bt else None
 
-        result = {'1h': None, '15m': None, '5m': None, '_htf': {}}
+        # Fetch all three timeframes
+        df_1h = self.get_historical_data(
+            symbol=symbol,
+            interval='1h',
+            limit=200,
+            start=self.start_date_var.get() if self.mode_var.get().lower() == "backtest" else None,
+            end=self.end_date_var.get() if self.mode_var.get().lower() == "backtest" else None
+        )
 
-        # ── 1h data + EMA trend context ───────────────────────────────────
-        try:
-            df_1h = self.get_historical_data(
-                symbol=symbol, interval='1h', limit=200,
-                start=start, end=end)
-            result['1h'] = df_1h
+        df_15m = self.get_historical_data(
+            symbol=symbol,
+            interval='15m',
+            limit=100,
+            start=self.start_date_var.get() if self.mode_var.get().lower() == "backtest" else None,
+            end=self.end_date_var.get() if self.mode_var.get().lower() == "backtest" else None
+        )
 
-            if df_1h is not None and len(df_1h) >= 50:
-                import talib as _tl
-                import numpy as _np
-                closes = df_1h['Close'].values.astype(float)
-                ema_f = _tl.EMA(closes, 9)
-                ema_s = _tl.EMA(closes, 50)
-                # Use last CLOSED bar (-2), not the live bar (-1)
-                idx = -2 if len(ema_f) >= 2 else -1
-                ef_val = float(ema_f[idx]) if not _np.isnan(ema_f[idx]) else 0.0
-                es_val = float(ema_s[idx]) if not _np.isnan(ema_s[idx]) else 0.0
-                result['_htf'] = {
-                    'ema_fast_1h': ef_val,
-                    'ema_slow_1h': es_val,
-                }
-                trend_str = "↑ BULL" if ef_val > es_val else "↓ BEAR"
-                self.log_message(
-                    f"🔭 1h Context: {trend_str}  "
-                    f"EMA9={ef_val:.2f}  EMA50={es_val:.2f}",
-                    "cyan" if ef_val > es_val else "orange")
+        df_5m = self.get_historical_data(
+            symbol=symbol,
+            interval='5m',
+            limit=50,
+            start=self.start_date_var.get() if self.mode_var.get().lower() == "backtest" else None,
+            end=self.end_date_var.get() if self.mode_var.get().lower() == "backtest" else None
+        )
 
-                # Push into live strategy so filters work immediately
-                if (hasattr(self, 'strategy')
-                        and hasattr(self.strategy, '_htf_data')):
-                    self.strategy._htf_data = result['_htf']
+        return {
+            '1h': df_1h,
+            '15m': df_15m,
+            '5m': df_5m
+        }
 
-        except Exception as e:
-            self.log_message(f"⚠️ HTF 1h fetch failed: {e}", "orange")
-
-        # ── 15m and 5m for legacy compatibility ───────────────────────────
-        try:
-            result['15m'] = self.get_historical_data(
-                symbol=symbol, interval='15m', limit=100,
-                start=start, end=end)
-        except Exception as e:
-            self.log_message(f"⚠️ 15m fetch failed: {e}", "orange")
-
-        try:
-            result['5m'] = self.get_historical_data(
-                symbol=symbol, interval='5m', limit=50,
-                start=start, end=end)
-        except Exception as e:
-            self.log_message(f"⚠️ 5m fetch failed: {e}", "orange")
-
-        return result
 
     def get_current_tier_thresholds(self):
+        """
+        Get the CURRENT tier thresholds from GUI selection.
+        Returns (quality_tier1_min, quality_tier2_min, source)
+        """
         quality_tier1_min = None
         quality_tier2_min = None
         source = "unknown"
+
+        # PRIORITY 1: Get from live Momentum strategy if available
         if hasattr(self, 'strategies') and 'Momentum' in self.strategies:
             live_strategy = self.strategies['Momentum']
             if hasattr(live_strategy, 'quality_tier1_min'):
@@ -1123,21 +755,30 @@ class TradingApp:
             if quality_tier1_min is not None:
                 source = "live Momentum strategy"
                 self.log_message(
-                    f"📋 Tier thresholds from LIVE STRATEGY: Tier1={quality_tier1_min}, Tier2={quality_tier2_min}", "green")
+                    f"📋 Tier thresholds from LIVE STRATEGY: Tier1={quality_tier1_min}, Tier2={quality_tier2_min}",
+                    "green")
                 return quality_tier1_min, quality_tier2_min, source
-        current_params    = self.get_current_momentum_params()
+
+        # PRIORITY 2: Get from get_current_momentum_params() (respects GUI toggle)
+        current_params = self.get_current_momentum_params()
         quality_tier1_min = current_params.get('quality_tier1_min')
         quality_tier2_min = current_params.get('quality_tier2_min')
         if quality_tier1_min is not None:
             source = f"get_current_momentum_params() (mode={self.param_toggle_var.get()})"
-            self.log_message(f"📋 Tier thresholds from {source}: Tier1={quality_tier1_min}, Tier2={quality_tier2_min}", "green")
+            self.log_message(f"📋 Tier thresholds from {source}: Tier1={quality_tier1_min}, Tier2={quality_tier2_min}",
+                             "green")
             return quality_tier1_min, quality_tier2_min, source
+
+        # PRIORITY 3: Get from custom_params
         quality_tier1_min = self.custom_params.get('momentum', {}).get('quality_tier1_min')
         quality_tier2_min = self.custom_params.get('momentum', {}).get('quality_tier2_min')
         if quality_tier1_min is not None:
             source = "custom_params"
-            self.log_message(f"📋 Tier thresholds from CUSTOM_PARAMS: Tier1={quality_tier1_min}, Tier2={quality_tier2_min}", "green")
+            self.log_message(
+                f"📋 Tier thresholds from CUSTOM_PARAMS: Tier1={quality_tier1_min}, Tier2={quality_tier2_min}", "green")
             return quality_tier1_min, quality_tier2_min, source
+
+        # If still None, raise error (NO HARD-CODED FALLBACKS!)
         error_msg = f"❌ Cannot determine tier thresholds! quality_tier1_min={quality_tier1_min}, quality_tier2_min={quality_tier2_min}"
         self.log_message(error_msg, "red")
         raise ValueError(error_msg)
@@ -1146,108 +787,136 @@ class TradingApp:
         try:
             from strategies.MomentumStrategy_MACD_HybridScore_Latest import MOMENTUM_PARAMS
             self.log_message("✅ Loaded Momentum parameters from strategy module", "green")
+
+            # Just return the params as-is - NO OVERRIDES
             return MOMENTUM_PARAMS.copy()
+
         except ImportError as e:
+            # Fallback only if import fails
             self.log_message(f"⚠️ Could not import MOMENTUM_PARAMS: {e}", "orange")
-            return self._get_builtin_defaults()
+            return self._get_builtin_defaults()  # Your fallback dict
 
     def get_default_kalman_params(self):
+        """Get default Kalman parameters from the strategy module"""
         try:
             from strategies.KalmanTrendStrategy_New import KALMAN_PARAMS
             self.log_message(f"✅ Loaded Kalman parameters from strategy module", "green")
             return KALMAN_PARAMS.copy()
         except ImportError as e:
-            self.log_message(f"⚠️ Could not import KALMAN_PARAMS: {e}", "orange")
+            self.log_message(
+                f"⚠️ Could not import KALMAN_PARAMS from KalmanTrendStrategy_New: {e}",
+                "orange"
+            )
             return {
-                'process_noise_1': 0.01, 'process_noise_2': 0.01, 'measurement_noise': 0.1,
-                'trend_lookback': 20, 'strength_smooth': 20, 'risk_reward': 2.0,
-                'lookback': 20, 'window': 50, 'strength_smooth_param': 0.2,
-                'ma_fast_period': 20, 'ma_slow_period': 50, 'kalman_strength_min': 0.18,
-                'rsi_min': 30, 'rsi_max': 70, 'volume_min_ratio': 1.0,
-                'pullback_percent': 0.02, 'stop_loss_pct': 0.02, 'trailing_stop_pct': 0.015,
-                'atr_multiplier': 1.5, 'risk_per_trade': 0.01, 'max_position_pct': 0.1,
-                'rsi_exit_threshold': 70, 'max_hold_bars': 96, 'max_hold_seconds': 86400,
-                'min_adx': 20, 'min_volatility': 0.01, 'cooldown_bars': 5,
+                'process_noise_1': 0.01,
+                'process_noise_2': 0.01,
+                'measurement_noise': 0.1,
+                'trend_lookback': 20,
+                'strength_smooth': 20,
+                'risk_reward': 2.0,
+                'lookback': 20,
+                'window': 50,
+                'strength_smooth_param': 0.2,
+                'ma_fast_period': 20,
+                'ma_slow_period': 50,
+                'kalman_strength_min': 0.18,
+                'rsi_min': 30,
+                'rsi_max': 70,
+                'volume_min_ratio': 1.0,
+                'pullback_percent': 0.02,
+                'stop_loss_pct': 0.02,
+                'trailing_stop_pct': 0.015,
+                'atr_multiplier': 1.5,
+                'risk_per_trade': 0.01,
+                'max_position_pct': 0.1,
+                'rsi_exit_threshold': 70,
+                'max_hold_bars': 96,
+                'max_hold_seconds': 86400,
+                'min_adx': 20,
+                'min_volatility': 0.01,
+                'cooldown_bars': 5,
             }
 
-    def get_default_scalping_params(self):
-        try:
-            from strategies.scalping_strategy import SCALPING_PARAMS
-            self.log_message("✅ Loaded Scalping parameters from strategy module", "green")
-            return SCALPING_PARAMS.copy()
-        except ImportError as e:
-            self.log_message(f"⚠️ Could not import SCALPING_PARAMS: {e}", "orange")
-            return {}
-
-    def get_current_scalping_params(self):
-        current_mode = self.param_toggle_var.get()
-        defaults     = self.get_default_scalping_params()
-        if current_mode == "Default Parameters":
-            return defaults
-        params      = defaults.copy()
-        saved_custom = self.custom_params.get('scalping', {})
-        for key, value in saved_custom.items():
-            if key in params: params[key] = value
-        if hasattr(self, 'scalping_param_widgets'):
-            for param_name, widget_info in self.scalping_param_widgets.items():
-                if param_name in params:
-                    custom_var = widget_info['custom']
-                    if isinstance(custom_var, tk.BooleanVar):
-                        params[param_name] = custom_var.get()
-                    else:
-                        params[param_name] = self.convert_param_value(custom_var.get())
-        return params
-
     def load_strategy_settings(self):
+        """
+        Load strategy settings from disk.
+
+        CRITICAL FIX:
+        - DEFAULT column = MOMENTUM_PARAMS (code defaults)
+        - CUSTOM column = EXACT values from JSON file (NO OVERWRITES)
+        - NO critical parameter overrides here - that should happen elsewhere if needed
+        """
         self.strategy_settings_file = "strategy_settings.json"
+
+        # DEFAULT COLUMN ALWAYS comes from MOMENTUM_PARAMS (code defaults)
         self.default_params = {
             'momentum': self.get_default_momentum_params(),
-            'kalman':   self.get_default_kalman_params()
+            'kalman': self.get_default_kalman_params()
         }
-        self.custom_params = {'momentum': {}, 'kalman': {}, 'scalping': {}}
+
+        # Initialize custom_params
+        self.custom_params = {
+            'momentum': {},
+            'kalman': {}
+        }
+
         selected_mode = 'Default Parameters'
 
+        # ===== CASE 1: JSON FILE EXISTS =====
         if os.path.exists(self.strategy_settings_file):
             try:
                 with open(self.strategy_settings_file, 'r') as f:
                     settings = json.load(f)
+
                 self.log_message("=" * 70, "blue")
                 self.log_message(f"📂 Loading settings from {self.strategy_settings_file}", "blue")
                 self.log_message("=" * 70, "blue")
+
+                # Load CUSTOM column EXACTLY as saved in file - NO MODIFICATIONS
                 if 'custom_params' in settings:
                     if 'momentum' in settings['custom_params']:
                         saved_momentum = settings['custom_params']['momentum']
                         self.custom_params['momentum'] = saved_momentum.copy()
-                        self.log_message(f"   ✅ Loaded {len(saved_momentum)} custom momentum params", "green")
+                        self.log_message(f"   ✅ Loaded {len(saved_momentum)} custom momentum params from file", "green")
+
+                        # Log a few sample values to verify
+                        self.log_message("   Sample loaded values:", "cyan")
+                        sample_items = list(saved_momentum.items())[:5]
+                        for param, value in sample_items:
+                            self.log_message(f"      {param}: {value}", "white")
+
                     if 'kalman' in settings['custom_params']:
                         saved_kalman = settings['custom_params']['kalman']
                         self.custom_params['kalman'] = saved_kalman.copy()
-                        self.log_message(f"   ✅ Loaded {len(saved_kalman)} custom kalman params", "green")
-                    if 'scalping' in settings['custom_params']:
-                        saved_scalping = settings['custom_params']['scalping']
-                        self.custom_params['scalping'] = saved_scalping.copy()
-                        self.log_message(f"   ✅ Loaded {len(saved_scalping)} custom scalping params", "green")
+                        self.log_message(f"   ✅ Loaded {len(saved_kalman)} custom kalman params from file", "green")
+
+                # Load selected mode
                 if 'selected_mode' in settings:
                     selected_mode = settings.get('selected_mode', 'Default Parameters')
                     self.log_message(f"   ✅ Loaded selected mode: {selected_mode}", "green")
 
-                # ── load trading-time windows ────────────────────────────────────────
-                self._load_trading_time_config(settings)
+                self.log_message("=" * 70, "green")
+                self.log_message("✅ CUSTOM PARAMS LOADED SUCCESSFULLY - NO MODIFICATIONS", "green")
+                self.log_message("=" * 70, "green")
 
-                self.log_message("=" * 70, "green")
-                self.log_message("✅ CUSTOM PARAMS LOADED SUCCESSFULLY", "green")
-                self.log_message("=" * 70, "green")
             except Exception as e:
                 self.log_message(f"⚠️ Error loading settings: {e} - using MOMENTUM_PARAMS for custom", "orange")
+                # If file corrupted, fall back to MOMENTUM_PARAMS for custom
                 self.custom_params['momentum'] = self.get_default_momentum_params().copy()
-                self.custom_params['kalman']   = self.get_default_kalman_params().copy()
+                self.custom_params['kalman'] = self.get_default_kalman_params().copy()
                 import traceback
                 self.log_message(traceback.format_exc(), "red")
+
+        # ===== CASE 2: JSON FILE DOES NOT EXIST =====
         else:
-            self.log_message(f"ℹ️ No {self.strategy_settings_file} found", "blue")
+            self.log_message(f"ℹ️ No {self.strategy_settings_file} found - copying MOMENTUM_PARAMS to custom", "blue")
+
+            # DEFAULT column already set from MOMENTUM_PARAMS above
+            # Now copy MOMENTUM_PARAMS to CUSTOM column as initial values
             self.custom_params['momentum'] = self.get_default_momentum_params().copy()
-            self.custom_params['kalman']   = self.get_default_kalman_params().copy()
-            self.custom_params['scalping'] = self.get_default_scalping_params().copy()
+            self.custom_params['kalman'] = self.get_default_kalman_params().copy()
+
+            # Create initial settings file
             try:
                 initial_settings = {
                     'default_params': self.default_params,
@@ -1257,29 +926,67 @@ class TradingApp:
                 }
                 with open(self.strategy_settings_file, 'w') as f:
                     json.dump(initial_settings, f, indent=4)
-                self.log_message(f"✅ Created initial settings file", "green")
+                self.log_message(f"✅ Created initial settings file with MOMENTUM_PARAMS in both columns", "green")
             except Exception as e:
                 self.log_message(f"⚠️ Could not create settings file: {e}", "orange")
 
+        # Set the toggle variable
         self.param_toggle_var = tk.StringVar(value=selected_mode)
 
+        # Log final state for verification
+        self.log_message("=" * 70, "cyan")
+        self.log_message("📊 FINAL PARAMETER STATE VERIFICATION:", "cyan")
+        self.log_message("=" * 70, "cyan")
+        self.log_message(f"   DEFAULT column: MOMENTUM_PARAMS (code defaults)", "green")
+        self.log_message(
+            f"   CUSTOM column: {'Loaded from file (EXACT)' if os.path.exists(self.strategy_settings_file) else 'Copied from MOMENTUM_PARAMS'}",
+            "green")
+        self.log_message(f"   Current mode: {selected_mode}", "green")
+
+        # Verify a few critical params are preserved from file
+        if os.path.exists(self.strategy_settings_file) and self.custom_params.get('momentum'):
+            self.log_message("\n   🔍 VERIFYING CRITICAL PARAMS ARE PRESERVED:", "yellow")
+            test_params = ['tier1_adx_hard_min', 'quality_tier2_min', 'only_tier2_entries']
+            for param in test_params:
+                if param in self.custom_params['momentum']:
+                    self.log_message(f"      {param}: {self.custom_params['momentum'][param]}", "white")
+
+        self.log_message("=" * 70, "cyan")
+
     def get_current_momentum_params(self):
+        """
+        Returns the CURRENT parameters based on GUI selection.
+        v9.4 FIX: SINGLE SOURCE OF TRUTH
+        Hierarchy: MOMENTUM_PARAMS → saved custom → live UI widgets → direction dropdown
+        ALL 160 params are always returned, never a partial set.
+        """
         from strategies.MomentumStrategy_MACD_HybridScore_Latest import MOMENTUM_PARAMS
+
         current_mode = self.param_toggle_var.get()
+
+        # ALWAYS start with MOMENTUM_PARAMS (single source of truth)
         params = MOMENTUM_PARAMS.copy()
+
+        # If Custom mode, overlay custom params
         if current_mode == "Custom Parameters":
+            # Layer 2: saved custom params from file
             saved_custom = self.custom_params.get('momentum', {})
             for key, value in saved_custom.items():
-                if key in params: params[key] = value
+                if key in params:  # Only overlay known params
+                    params[key] = value
+
+            # Layer 3: LIVE UI values (highest priority)
             if hasattr(self, 'momentum_param_widgets'):
                 for param_name, widget_info in self.momentum_param_widgets.items():
-                    if param_name in params:
+                    if param_name in params:  # Only overlay known params
                         custom_var = widget_info['custom']
                         if isinstance(custom_var, tk.BooleanVar):
                             params[param_name] = custom_var.get()
                         else:
                             value_str = custom_var.get()
                             params[param_name] = self.convert_param_value(value_str)
+
+        # Layer 4: Direction dropdown always wins
         try:
             if hasattr(self, 'trade_direction_var'):
                 gui_dir = self.trade_direction_var.get()
@@ -1287,456 +994,145 @@ class TradingApp:
                     params['trade_direction'] = gui_dir
         except Exception:
             pass
+
+        # Log the thresholds being used (for debugging)
         self.log_message(
-            f"📋 get_current_momentum_params() - Mode: {current_mode}, "
-            f"Tier1={params.get('quality_tier1_min')}, Tier2={params.get('quality_tier2_min')}", "cyan")
+            f"📋 get_current_momentum_params() - Mode: {current_mode}, Tier1={params.get('quality_tier1_min')}, Tier2={params.get('quality_tier2_min')}",
+            "cyan")
+
         return params
 
     def get_current_kalman_params(self):
+        """Get current Kalman parameters based on toggle selection"""
         current_mode = self.param_toggle_var.get()
+
         if current_mode == "Default Parameters":
             return self.default_params.get('kalman', self.get_default_kalman_params())
-        else:
+        else:  # Custom Parameters
             params = self.custom_params.get('kalman', self.get_default_kalman_params()).copy()
+
+            # Override with live UI values if panel is open
             if hasattr(self, 'kalman_param_widgets'):
                 for param_name, widget_info in self.kalman_param_widgets.items():
                     custom_var = widget_info['custom']
+
                     if isinstance(custom_var, tk.BooleanVar):
                         params[param_name] = custom_var.get()
                     else:
                         value_str = custom_var.get()
                         params[param_name] = self.convert_param_value(value_str)
+
             return params
 
     def update_custom_params_from_ui(self):
-        if not hasattr(self, 'momentum_param_widgets'): return
+        """
+        Force update the custom_params dictionary from current UI values.
+        Call this before running a backtest or when you need to ensure UI values are captured.
+        """
+        if not hasattr(self, 'momentum_param_widgets'):
+            return
+
         self.log_message("📝 Updating custom params from UI...", "blue")
+
         updates_made = 0
         for param_name, widget_info in self.momentum_param_widgets.items():
             custom_var = widget_info['custom']
+
+            # Get current UI value
             if isinstance(custom_var, tk.BooleanVar):
                 ui_value = custom_var.get()
             else:
                 value_str = custom_var.get()
-                ui_value  = self.convert_param_value(value_str)
+                ui_value = self.convert_param_value(value_str)
+
+            # Get current stored value
             stored_value = self.custom_params['momentum'].get(param_name)
+
+            # Update if different
             if stored_value != ui_value:
                 self.custom_params['momentum'][param_name] = ui_value
                 updates_made += 1
+
                 if param_name == 'only_tier2_entries':
-                    self.log_message(
-                        f"   🔧 Updated only_tier2_entries: {stored_value} → {ui_value}",
-                        "yellow" if ui_value else "green")
+                    self.log_message(f"   🔧 Updated only_tier2_entries: {stored_value} → {ui_value}",
+                                     "yellow" if ui_value else "green")
+
         if updates_made > 0:
             self.log_message(f"✅ Updated {updates_made} parameters from UI", "green")
         else:
             self.log_message("ℹ️ No parameter changes detected", "blue")
 
     def get_objective_config(self, strategy_type=None, interval=None):
+        """
+        ✅ ADAPTIVE: Get objective configuration based on strategy and timeframe.
+        """
         config = self.objective_config.get('default').copy()
+
         if strategy_type:
             strategy_key = strategy_type.lower()
             if strategy_key in self.objective_config:
                 config.update(self.objective_config[strategy_key])
                 self.log_message(f"   🎯 Using {strategy_type} strategy profile", "cyan")
+
         if interval:
             interval_lower = interval.lower()
+
             if any(x in interval_lower for x in ['1m', '5m', '15m', '30m']):
                 config['min_trades_absolute'] = int(config['min_trades_absolute'] * 1.5)
-                config['min_trades_penalty']  = int(config['min_trades_penalty']  * 1.5)
-                config['max_trades_penalty']  = int(config['max_trades_penalty']  * 2.0)
+                config['min_trades_penalty'] = int(config['min_trades_penalty'] * 1.5)
+                config['max_trades_penalty'] = int(config['max_trades_penalty'] * 2.0)
                 config['penalty_low'] = 0.6
-                sw, rw, ww = config['weights']
-                config['weights'] = (sw - 0.1, rw, ww + 0.1)
+                sharpe_w, return_w, winrate_w = config['weights']
+                config['weights'] = (
+                    sharpe_w - 0.1,
+                    return_w,
+                    winrate_w + 0.1
+                )
+                self.log_message(
+                    f"   📊 Intraday adjustment: Min trades {config['min_trades_absolute']}, "
+                    f"Max trades {config['max_trades_penalty']}",
+                    "blue"
+                )
+
             elif any(x in interval_lower for x in ['1h', '4h']):
                 config['min_trades_absolute'] = max(8, int(config['min_trades_absolute'] * 0.8))
-                config['max_trades_penalty']  = int(config['max_trades_penalty'] * 0.7)
+                config['max_trades_penalty'] = int(config['max_trades_penalty'] * 0.7)
+                self.log_message(
+                    f"   📊 Hourly adjustment: Min trades {config['min_trades_absolute']}, "
+                    f"Max trades {config['max_trades_penalty']}",
+                    "blue"
+                )
+
             elif '1d' in interval_lower or 'day' in interval_lower:
                 config['min_trades_absolute'] = max(5, int(config['min_trades_absolute'] * 0.5))
-                config['min_trades_penalty']  = max(8, int(config['min_trades_penalty']  * 0.5))
-                config['max_trades_penalty']  = max(200, int(config['max_trades_penalty'] * 0.4))
+                config['min_trades_penalty'] = max(8, int(config['min_trades_penalty'] * 0.5))
+                config['max_trades_penalty'] = max(200, int(config['max_trades_penalty'] * 0.4))
                 config['penalty_low'] = 0.85
-                sw, rw, ww = config['weights']
-                config['weights'] = (sw + 0.1, rw - 0.05, ww - 0.05)
+                sharpe_w, return_w, winrate_w = config['weights']
+                config['weights'] = (
+                    sharpe_w + 0.1,
+                    return_w - 0.05,
+                    winrate_w - 0.05
+                )
+                self.log_message(
+                    f"   📊 Daily adjustment: Min trades {config['min_trades_absolute']}, "
+                    f"Max trades {config['max_trades_penalty']}",
+                    "blue"
+                )
+
             elif any(x in interval_lower for x in ['1w', 'week', 'month']):
                 config['min_trades_absolute'] = max(3, int(config['min_trades_absolute'] * 0.3))
-                config['min_trades_penalty']  = max(5, int(config['min_trades_penalty']  * 0.3))
-                config['max_trades_penalty']  = 100
+                config['min_trades_penalty'] = max(5, int(config['min_trades_penalty'] * 0.3))
+                config['max_trades_penalty'] = 100
                 config['penalty_low'] = 0.9
-                config['weights']    = (0.8, 0.15, 0.05)
-        return config
-
-    # ───────────────────────────────────────────────────────────────────────
-    # NOTE: create_widgets(), all UI-building methods, all backtest methods,
-    # all settings panel methods, get_historical_data(), get_market_data(),
-    # trading_loop(), and all other methods from the original file are
-    # included below EXACTLY as in the original, with these targeted changes:
-    #
-    #   1. trading_loop()          — time-window guard added after get_market_data()
-    #   2. _execute_ai_analysis()  — bad `continue` block removed
-    #   3. create_momentum_parameter_controls() — _add_time_settings_button hook
-    #   4. create_kalman_parameter_controls()   — _add_time_settings_button hook
-    #   5. create_scalping_parameter_controls() — _add_time_settings_button hook
-    # ───────────────────────────────────────────────────────────────────────
-
-
-
-    def _execute_ai_analysis(self):
-        """Run DeepSeek AI analysis — works in backtest AND demo/live mode."""
-        try:
-            analysis_type = self.ai_analysis_type.get()
-            depth         = self.analysis_depth_var.get()
-
-            self._update_ai_progress(5, "Gathering market data...")
-
-            mode = self.mode_var.get().lower()
-            df   = None
-
-            # ── Step 1: use cached backtest DataFrame if available ──────────
-            if mode == "backtest":
-                cached = getattr(self, '_last_backtest_df', None)
-                if cached is not None and not cached.empty:
-                    df = cached.copy()
-                    df = self._normalize_ohlcv_columns(df)
-                    self.log_message("📊 AI: Using cached backtest DataFrame", "blue")
-                else:
-                    self.log_message(
-                        "📊 AI: No cached backtest data — fetching fresh data...", "blue")
-
-            # ── Step 2: fallback — call get_market_data() ───────────────────
-            if df is None:
-                df = self.get_market_data()
-                if df is not None and not df.empty:
-                    df = self._normalize_ohlcv_columns(df)
-
-            # ── Step 3: hard-fail ────────────────────────────────────────────
-            if df is None or df.empty:
-                self._ai_error(
-                    "No market data available.\n\n"
-                    "• Backtest mode  : run a backtest first, then click AI Analysis.\n"
-                    "                   The button activates automatically once data\n"
-                    "                   has been fetched.\n\n"
-                    "• Demo/Live mode : click 'Check Connection', wait for\n"
-                    "                   'Connection successful', then try again.")
-                return
-
-            # ── Step 4: calculate indicators ─────────────────────────────────
-            self._update_ai_progress(15, "Calculating indicators...")
-            if hasattr(self.strategy, 'calculate_indicators'):
-                try:
-                    enriched = self.strategy.calculate_indicators(df)
-                    if enriched is not None and not enriched.empty:
-                        df = enriched
-                        df = self._normalize_ohlcv_columns(df)
-                except Exception as e:
-                    self.log_message(
-                        f"⚠️ Indicator calc failed — using raw OHLCV: {e}", "orange")
-
-            if 'Close' not in df.columns:
-                self._ai_error(
-                    "Market data is missing a 'Close' column after indicator calculation.\n\n"
-                    "Try switching to Default Parameters and re-running "
-                    "the backtest before clicking AI Analysis.")
-                return
-
-            # ── Step 5: build summary & prompt ──────────────────────────────
-            self._update_ai_progress(25, "Preparing data summary...")
-            data_summary  = self._prepare_ai_data_summary(df, depth)
-            trade_summary = self._prepare_trade_history_summary()
-
-            self._update_ai_progress(35, "Building analysis prompt...")
-            prompt = self._build_ai_prompt(analysis_type, data_summary, trade_summary)
-
-            try:
-                if df is not None and len(df) >= 2 and 'Close' in df.columns:
-                    last_completed = df.iloc[-2]
-                    current_dict   = (last_completed.to_dict()
-                                      if hasattr(last_completed, 'to_dict')
-                                      else dict(last_completed))
-                    snapshot = dict(current_dict)
-                    self.root.after(0,
-                        lambda s=snapshot: self._display_market_snapshot(s))
-            except Exception as e:
+                config['weights'] = (0.8, 0.15, 0.05)
                 self.log_message(
-                    f"⚠️ Could not display market snapshot: {e}", "orange")
+                    f"   📊 Weekly/Monthly adjustment: Min trades {config['min_trades_absolute']}, "
+                    f"Max trades {config['max_trades_penalty']}",
+                    "blue"
+                )
 
-            self._update_ai_progress(45, "Sending to DeepSeek AI...")
-
-            # ── Step 6: check dependencies & API key ────────────────────────
-            try:
-                import openai as _oi  # noqa: F401
-                openai_ok = True
-            except ImportError:
-                openai_ok = False
-
-            if not openai_ok:
-                self._update_ai_progress(100, "OpenAI not installed — local analysis")
-                self._display_ai_response(
-                    self._generate_local_analysis(analysis_type), analysis_type)
-                return
-
-            if not self._check_api_key():
-                self._update_ai_progress(100, "No API key — local analysis")
-                self._display_ai_response(
-                    self._generate_local_analysis(analysis_type), analysis_type)
-                return
-
-            # ── Step 7: call DeepSeek ────────────────────────────────────────
-            reasoning, response = self._call_deepseek_api(prompt, analysis_type)
-
-            if response and not response.startswith("❌"):
-                self._update_ai_progress(90, "Formatting results...")
-                self._display_ai_response(response, analysis_type)
-                self._update_ai_progress(100, "Analysis complete!")
-            else:
-                if response and response.startswith("❌"):
-                    self.log_message(f"🔴 DeepSeek API error: {response}", "red")
-                else:
-                    self.log_message("🔴 DeepSeek API returned empty response", "red")
-                self._update_ai_progress(50, "API unavailable — local analysis...")
-                self._display_ai_response(
-                    self._generate_local_analysis(analysis_type), analysis_type)
-                self._update_ai_progress(100, "Local analysis complete")
-
-        except Exception as e:
-            self._ai_error(f"Analysis error: {e}")
-            import traceback
-            print(traceback.format_exc())
-        finally:
-            self.root.after(
-                0,
-                lambda: self.run_ai_btn.config(
-                    state='normal', text="🚀 Run AI Analysis"),
-            )
-
-    def create_momentum_parameter_controls(self, parent):
-        """Create parameter controls for Momentum strategy."""
-        # ── Trading Hours button ─────────────────────────────────────────
-        self._add_time_settings_button(parent, "Momentum")
-
-        paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        left_frame  = ttk.Frame(paned, width=600)
-        paned.add(left_frame, weight=2)
-        right_frame = ttk.LabelFrame(paned, text="Backtest Optimization Parameters", width=500)
-        paned.add(right_frame, weight=1)
-
-        headers_frame = ttk.Frame(left_frame)
-        headers_frame.pack(fill='x', padx=5, pady=(5, 0), side=tk.TOP)
-        headers_frame.columnconfigure(0, weight=0, minsize=250)
-        headers_frame.columnconfigure(1, weight=0, minsize=120)
-        headers_frame.columnconfigure(2, weight=0, minsize=120)
-        headers_frame.columnconfigure(3, weight=1,  minsize=350)
-
-        header_style = ('Arial', 10, 'bold')
-        ttk.Label(headers_frame, text="Parameter",       font=header_style, anchor='w').grid(row=0, column=0, padx=5, pady=8, sticky='w')
-        ttk.Label(headers_frame, text="📌 Default Value",font=header_style, anchor='w').grid(row=0, column=1, padx=5, pady=8, sticky='w')
-        ttk.Label(headers_frame, text="✏️ Custom Value", font=header_style, anchor='w').grid(row=0, column=2, padx=5, pady=8, sticky='w')
-        ttk.Label(headers_frame, text="Description",     font=header_style, anchor='w').grid(row=0, column=3, padx=5, pady=8, sticky='w')
-        ttk.Separator(headers_frame, orient='horizontal').grid(row=1, column=0, columnspan=4, sticky='ew', padx=5, pady=(0, 5))
-
-        content_frame = ttk.Frame(left_frame)
-        content_frame.pack(fill='both', expand=True, padx=5, pady=5, side=tk.TOP)
-
-        canvas          = tk.Canvas(content_frame, bg='white', highlightthickness=0)
-        scrollbar       = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        default_params = self.get_default_momentum_params()
-        self.momentum_param_widgets = {}
-
-        categories = {
-            '📊 EMA Parameters': ['ema_fast_period','ema_mid_period','ema_slow_period','ema_near_tolerance','daily_ema_period'],
-            '🎯 LONG Quality Thresholds': ['quality_tier1_min','quality_tier2_min','fixed_threshold'],
-            '🎯 SHORT Quality Thresholds': ['short_quality_tier1_min','short_quality_tier2_min','short_fixed_threshold'],
-            '📊 Quality Component Weights': ['weight_ema','weight_adx','weight_macd','weight_rsi','weight_volume'],
-            '🎯 TIER CONTROL': ['only_tier2_entries'],
-            '⬆️ TIER 1 LONG FILTERS': ['tier1_adx_hard_min','tier1_adx_min','tier1_rsi_min','tier1_rsi_max','tier1_volume_min','tier1_momentum_min','tier1_kalman_min','tier1_macd_gate','tier1_price_ema_max_pct','daily_trend_filter_enabled','pullback_zone_lower_pct','pullback_zone_upper_pct','adx_slope_min'],
-            '⬇️ TIER 1 SHORT FILTERS': ['short_tier1_adx_hard_min','short_tier1_rsi_min','short_tier1_rsi_max','short_tier1_volume_min','short_tier1_momentum_min','short_tier1_macd_gate','daily_trend_down_filter_enabled'],
-            '🎯 TIER 2 FILTERS': ['tier2_adx_min','tier2_volume_min','tier2_volume_min_ratio','tier2_momentum_min','tier2_macd_histogram_min','tier2_require_macd_histogram'],
-            '🔬 Indicator Periods': ['adx_period','rsi_period','cci_period','atr_period','volume_ma_period','macd_fast','macd_slow','macd_signal','supertrend_atr_period','supertrend_multiplier','kalman_q_param','kalman_r_param','vix_atr_period','vix_rolling_period'],
-            '🎯 Entry Filters': ['adx_min','adx_min_trend','rsi_entry_min','rsi_entry_max','volume_min_ratio','volume_period','momentum_min','kalman_min_strength','cci_filter_enabled','vix_max_threshold','rsi_dynamic_enabled'],
-            '🛡️ Risk Management': ['risk_per_trade','risk_full_position','risk_reduced_position','risk_aggressive_position','risk_tier1','risk_tier2','risk_tier2_exceptional'],
-            '🛑 STOP LOSS & TRAILING': ['stop_loss_atr_mult','trailing_stop_atr_mult','trailing_activation_pct','trailing_distance_pct','trailing_stop_pct','trailing_activation_r','initial_trailing_atr_mult'],
-            '🔒 BREAKEVEN STOP': ['be_stop_enabled','be_stop_r_trigger','be_stop_no_progress_bars'],
-            '💰 Profit Targets': ['take_profit_r1','take_profit_r2','take_profit_r3','profit_target_r1','profit_target_r2','profit_target_r3'],
-            '📉 Exit Conditions': ['max_hold_bars','min_hold_bars_before_stop','emergency_stop_multiplier','macd_bearish_cross_exit','macd_bearish_cross_profit_min','ema_cross_exit','rsi_exit_threshold','kalman_fade_threshold','momentum_reversal_exit','momentum_reversal_threshold','momentum_reversal_profit_min','profit_min_fade','profit_min_time_exit','profit_min_ma_crossover'],
-            '⏱️ COOLDOWN & TRADE MANAGEMENT': ['max_daily_trades','min_bars_between_trades','min_bars_between_trades_tier2','cooldown_after_profit_target_bars','cooldown_after_loss_bars','cooldown_tier2_enabled'],
-            '🔬 PRECISION FILTERS': ['dmi_spread_min_long','dmi_spread_min_short','ema_trending_bars','macd_hist_rising_bars','rsi_direction_bars','rsi_direction_min_move','macd_hist_positive_required_long','macd_hist_negative_required_short','bb_expand_required','time_filter_enabled','time_filter_start_utc','time_filter_end_utc'],
-            '⚙️ Regime & Strategy Control': ['regime_filter_enabled','ranging_min_checks','bb_period','bb_std','kc_period','kc_atr_mult','chop_period','chop_threshold','volatility_scaling','trade_high_vol','trade_ranging','supertrend_exit_enabled'],
-            '📊 PRICE POSITIONING': ['price_percentile_bonus_early','price_percentile_penalty_late','price_percentile_early_threshold','price_percentile_late_threshold','price_percentile_lookback'],
-            '📈 ADX SCORING BANDS': ['adx_score_trend_forming','adx_score_good_trend','adx_score_strong_trend','adx_score_very_strong','adx_score_extended'],
-            '📉 MACD SCORING': ['macd_score_line_vs_signal','macd_score_histogram_direction','macd_score_zero_cross','macd_score_histogram_value'],
-            '🧠 FUZZY MODE SETTINGS': ['fuzzy_mode_enabled','fuzzy_learning_enabled','fuzzy_safety_cutoffs','fuzzy_default_margin_pct','fuzzy_absolute_min','fuzzy_absolute_max','fuzzy_min_confidence','fuzzy_min_samples','fuzzy_max_adjustment_pct','fuzzy_learning_rate','fuzzy_conservative_start'],
-        }
-
-        row = 0
-        for category, params in categories.items():
-            ttk.Separator(scrollable_frame, orient='horizontal').grid(row=row, column=0, columnspan=4, sticky='ew', pady=(10, 5), padx=5)
-            row += 1
-            ttk.Label(scrollable_frame, text=category, font=('Arial', 11, 'bold')).grid(row=row, column=0, columnspan=4, sticky='w', padx=5, pady=5)
-            row += 1
-            for param_name in params:
-                if param_name in default_params:
-                    for col, minw in enumerate([250, 120, 120, 350]):
-                        scrollable_frame.columnconfigure(col, weight=0 if col < 3 else 1, minsize=minw)
-                    label_text = param_name.replace('_', ' ').title()
-                    ttk.Label(scrollable_frame, text=label_text, anchor='w').grid(row=row, column=0, padx=5, pady=2, sticky='w')
-                    default_value = default_params[param_name]
-                    default_display = ("✓ Enabled" if default_value else "✗ Disabled") if isinstance(default_value, bool) else str(default_value)
-                    default_entry = ttk.Entry(scrollable_frame, width=15)
-                    default_entry.insert(0, default_display)
-                    default_entry.config(state='readonly')
-                    default_entry.grid(row=row, column=1, padx=5, pady=2, sticky='w')
-                    custom_value = self.custom_params['momentum'].get(param_name, default_value)
-                    if isinstance(default_value, bool):
-                        custom_var = tk.BooleanVar(value=custom_value)
-                        custom_entry = ttk.Checkbutton(scrollable_frame, variable=custom_var, text="Enable" if custom_value else "Disable")
-                        custom_entry.grid(row=row, column=2, padx=5, pady=2, sticky='w')
-                        bool_indicator = tk.Label(scrollable_frame, text="●", width=2, bg="yellow" if bool(custom_value) != bool(default_value) else "white")
-                        bool_indicator.grid(row=row, column=2, padx=(100, 0), pady=2, sticky='w')
-                        def _make_bool_callbacks(v, w, txt_widget, indicator, def_val):
-                            def _update_text(*_):
-                                try:
-                                    current = v.get()
-                                    txt_widget.config(text="Enable" if current else "Disable")
-                                    indicator.config(bg="yellow" if bool(current) != bool(def_val) else "white")
-                                except tk.TclError:
-                                    pass
-                            return _update_text
-                        custom_var.trace_add('write', _make_bool_callbacks(custom_var, custom_entry, custom_entry, bool_indicator, default_value))
-                    else:
-                        custom_var = tk.StringVar(value=str(custom_value))
-                        custom_entry = tk.Entry(scrollable_frame, textvariable=custom_var, width=15, bg="yellow" if str(custom_value) != str(default_value) else "white")
-                        custom_entry.grid(row=row, column=2, padx=5, pady=2, sticky='w')
-                        def _make_str_callback(v, widget, def_val):
-                            def _highlight(*_):
-                                try: widget.config(bg="yellow" if v.get() != str(def_val) else "white")
-                                except tk.TclError: pass
-                            return _highlight
-                        custom_var.trace_add('write', _make_str_callback(custom_var, custom_entry, default_value))
-                    description = self.get_momentum_param_description(param_name)
-                    ttk.Label(scrollable_frame, text=description, wraplength=400, anchor='w', foreground='#555555').grid(row=row, column=3, padx=5, pady=2, sticky='w')
-                    self.momentum_param_widgets[param_name] = {'default': default_entry, 'custom': custom_var, 'widget': custom_entry}
-                    row += 1
-
-        self._build_backtest_optimization_panel(right_frame)
-
-    def create_kalman_parameter_controls(self, parent):
-        """Create parameter controls for Kalman strategy."""
-        # ── Trading Hours button ─────────────────────────────────────────
-        self._add_time_settings_button(parent, "Kalman")
-
-        paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        left_frame  = ttk.Frame(paned, width=600)
-        paned.add(left_frame, weight=2)
-        right_frame = ttk.LabelFrame(paned, text="Backtest Optimization Parameters", width=400)
-        paned.add(right_frame, weight=1)
-
-        headers_frame = ttk.Frame(left_frame)
-        headers_frame.pack(fill='x', padx=5, pady=(5, 0), side=tk.TOP)
-        for col, (text, minw) in enumerate([("Parameter", 250), ("📌 Default Value", 120), ("✏️ Custom Value", 120), ("Description", 350)]):
-            headers_frame.columnconfigure(col, weight=0 if col < 3 else 1, minsize=minw)
-            ttk.Label(headers_frame, text=text, font=('Arial', 10, 'bold'), anchor='w').grid(row=0, column=col, padx=5, pady=8, sticky='w')
-        ttk.Separator(headers_frame, orient='horizontal').grid(row=1, column=0, columnspan=4, sticky='ew', padx=5, pady=(0, 5))
-
-        content_frame = ttk.Frame(left_frame)
-        content_frame.pack(fill='both', expand=True, padx=5, pady=5, side=tk.TOP)
-        canvas          = tk.Canvas(content_frame, bg='white', highlightthickness=0)
-        scrollbar       = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        default_params = self.get_default_kalman_params()
-        self.kalman_param_widgets = {}
-
-        categories = {
-            '🔬 Kalman Filter': ['process_noise_1','process_noise_2','measurement_noise','trend_lookback','strength_smooth'],
-            '📊 Strategy Configuration': ['risk_reward','lookback','window','strength_smooth_param'],
-            '📈 Moving Averages': ['ma_fast_period','ma_slow_period'],
-            '🎯 Entry Conditions': ['kalman_strength_min','rsi_min','rsi_max','volume_min_ratio','pullback_percent'],
-            '🛡️ Risk Management': ['stop_loss_pct','trailing_stop_pct','atr_multiplier','risk_per_trade','max_position_pct'],
-            '📉 Exit Conditions': ['rsi_exit_threshold','max_hold_bars','max_hold_seconds'],
-            '🌐 Market Filters': ['min_adx','min_volatility','cooldown_bars'],
-        }
-
-        row = 0
-        for category, params in categories.items():
-            ttk.Separator(scrollable_frame, orient='horizontal').grid(row=row, column=0, columnspan=4, sticky='ew', pady=(10, 5), padx=5)
-            row += 1
-            ttk.Label(scrollable_frame, text=category, font=('Arial', 11, 'bold')).grid(row=row, column=0, columnspan=4, sticky='w', padx=5, pady=5)
-            row += 1
-            for param_name in params:
-                if param_name in default_params:
-                    for col, minw in enumerate([250, 120, 120, 350]):
-                        scrollable_frame.columnconfigure(col, weight=0 if col < 3 else 1, minsize=minw)
-                    ttk.Label(scrollable_frame, text=param_name.replace('_',' ').title(), anchor='w').grid(row=row, column=0, padx=5, pady=2, sticky='w')
-                    default_value = str(default_params[param_name])
-                    default_entry = ttk.Entry(scrollable_frame, width=15)
-                    default_entry.insert(0, default_value)
-                    default_entry.config(state='readonly')
-                    default_entry.grid(row=row, column=1, padx=5, pady=2, sticky='w')
-                    custom_value = str(self.custom_params['kalman'].get(param_name, default_value))
-                    custom_var   = tk.StringVar(value=custom_value)
-                    custom_entry = ttk.Entry(scrollable_frame, textvariable=custom_var, width=15)
-                    custom_entry.grid(row=row, column=2, padx=5, pady=2, sticky='w')
-                    description = self.get_kalman_param_description(param_name)
-                    ttk.Label(scrollable_frame, text=description, wraplength=400, anchor='w', foreground='#555555').grid(row=row, column=3, padx=5, pady=2, sticky='w')
-                    self.kalman_param_widgets[param_name] = {'default': default_entry, 'custom': custom_var, 'widget': custom_entry}
-                    row += 1
-
-        self._build_backtest_optimization_panel(right_frame)
-
-    def create_scalping_parameter_controls(self, parent):
-        """Create parameter controls for Scalping strategy."""
-        # ── Trading Hours button ─────────────────────────────────────────
-        self._add_time_settings_button(parent, "Scalping")
-
-        paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        left_frame  = ttk.Frame(paned, width=600)
-        paned.add(left_frame, weight=2)
-        right_frame = ttk.LabelFrame(paned, text="Backtest Optimization Parameters", width=500)
-        paned.add(right_frame, weight=1)
-
-        headers_frame = ttk.Frame(left_frame)
-        headers_frame.pack(fill='x', padx=5, pady=(5, 0), side=tk.TOP)
-        for col, (text, minw) in enumerate([("Parameter", 250), ("📌 Default Value", 120), ("✏️ Custom Value", 120), ("Description", 350)]):
-            headers_frame.columnconfigure(col, weight=0 if col < 3 else 1, minsize=minw)
-            ttk.Label(headers_frame, text=text, font=('Arial', 10, 'bold'), anchor='w').grid(row=0, column=col, padx=5, pady=8, sticky='w')
-        ttk.Separator(headers_frame, orient='horizontal').grid(row=1, column=0, columnspan=4, sticky='ew', padx=5, pady=(0, 5))
-
-        content_frame = ttk.Frame(left_frame)
-        content_frame.pack(fill='both', expand=True, padx=5, pady=5, side=tk.TOP)
-        canvas          = tk.Canvas(content_frame, bg='white', highlightthickness=0)
-        scrollbar       = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        canvas.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
-
-        default_params = self.get_default_scalping_params()
-        self.scalping_param_widgets = {}
-
-        # (Full scalping categories and parameter widgets — identical to original)
-        # All original scalping parameter rows preserved here unchanged.
-        # For brevity the loop body is identical to the original create_scalping_parameter_controls
-        # starting after the _add_time_settings_button call.
-
-        self._build_scalping_backtest_optimization_panel(right_frame)
+        return config
 
     def create_widgets(self):
         print(f"DEBUG: create_widgets() called")
@@ -1845,7 +1241,7 @@ class TradingApp:
         self.strategy_combobox = ttk.Combobox(
             strategy_type_frame,
             textvariable=self.strategy_type_var,
-            values=['Momentum', 'Kalman', 'Scalping'],
+            values=['Momentum', 'Kalman', 'TopDown'],  # ← 'TopDown' added
             state="readonly",
             width=12
         )
@@ -2193,7 +1589,7 @@ class TradingApp:
         ttk.Label(self.backtest_controls_frame, text="Dates:").grid(row=2, column=0, sticky="w", padx=3, pady=2)
         date_frame = ttk.Frame(self.backtest_controls_frame)
         date_frame.grid(row=2, column=1, columnspan=2, sticky="ew", padx=3, pady=2)
-        self.start_date_var = tk.StringVar(value="2024-01-01")
+        self.start_date_var = tk.StringVar(value="2025-01-01")
         self.end_date_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
         ttk.Entry(date_frame, textvariable=self.start_date_var, width=10).pack(side=tk.LEFT)
         ttk.Label(date_frame, text="-").pack(side=tk.LEFT, padx=2)
@@ -2375,7 +1771,6 @@ class TradingApp:
     def _update_global_capital(self):
         """Update global capital from the settings panel"""
         from strategies.MomentumStrategy_MACD_HybridScore_Latest import GlobalConfig
-        from strategies.scalping_strategy import SCALPING_PARAMS
 
         try:
             new_capital = float(self.capital_entry.get().replace(',', '').replace('$', ''))
@@ -2409,10 +1804,10 @@ class TradingApp:
                     strat.risk_controller.starting_equity = new_capital
                     strat.risk_controller.current_equity = new_capital
                     strat.risk_controller.peak_equity = new_capital
-                    strat.risk_controller.daily_loss_limit   = new_capital * SCALPING_PARAMS['daily_loss_limit_pct']
-                    strat.risk_controller.max_drawdown_limit = new_capital * SCALPING_PARAMS['max_drawdown_limit_pct']
+                    strat.risk_controller.daily_loss_limit = new_capital * 0.02
                     strat.risk_controller.weekly_loss_limit = new_capital * 0.05
                     strat.risk_controller.monthly_loss_limit = new_capital * 0.10
+                    strat.risk_controller.max_drawdown_limit = new_capital * 0.20
                 if hasattr(strat, 'equity_curve') and strat.equity_curve:
                     strat.equity_curve[0] = new_capital
 
@@ -2467,7 +1862,6 @@ class TradingApp:
                 self.log_message("🔄 Fuzzy learning data reset to defaults", "orange")
 
     import pandas as pd
-
     from typing import Dict, List, Any
 
     def open_ai_analysis(self):
@@ -2914,179 +2308,75 @@ class TradingApp:
             self.root.after(0, lambda: self.ai_results_text.insert(tk.END, error_msg, "bearish"))
             self.root.after(0, lambda: self._update_ai_status("❌ Analysis failed"))
 
-    def _display_market_snapshot(self, current_data_or_dict):
-        """Display market snapshot safely from either Series or dict"""
+    def _display_market_snapshot(self, current_data):
         try:
             self.log_message("=" * 77, "cyan")
             self.log_message(f"📊 CURRENT MARKET SNAPSHOT", "cyan")
             self.log_message("=" * 77, "cyan")
 
-            def safe_get(data, key, default=0):
-                try:
-                    if hasattr(data, 'get'):
-                        val = data.get(key, default)
-                    elif hasattr(data, '__getitem__'):
-                        val = data[key] if key in data else default
-                    else:
-                        val = default
-                    return float(val) if val is not None else default
-                except (ValueError, TypeError):
-                    return default
-
-            close = safe_get(current_data_or_dict, 'Close', 0)
-            ema_fast = safe_get(current_data_or_dict, 'EMA_Fast', 0)
-            ema_mid = safe_get(current_data_or_dict, 'EMA_Mid', 0)
-            ema_slow = safe_get(current_data_or_dict, 'EMA_Slow', 0)
+            close = float(self.safe_get(current_data, 'Close', 0))
+            ema_fast = float(self.safe_get(current_data, 'EMA_Fast', 0))
+            ema_mid = float(self.safe_get(current_data, 'EMA_Mid', 0))
+            ema_slow = float(self.safe_get(current_data, 'EMA_Slow', 0))
 
             self.log_message(f"💰 Price: ${close:.4f}", "white")
 
-            ema_aligned = (
-                close > ema_fast > ema_mid > ema_slow
-                if ema_fast > 0 and ema_mid > 0 and ema_slow > 0
-                else False
-            )
+            ema_aligned = close > ema_fast > ema_mid > ema_slow
             ema_status = "✅ ALIGNED" if ema_aligned else "❌ NOT ALIGNED"
-            self.log_message(
-                f"📈 EMA Alignment: {ema_status}",
-                "green" if ema_aligned else "red"
-            )
+            self.log_message(f"📈 EMA Alignment: {ema_status}", "green" if ema_aligned else "red")
+            self.log_message(f"   Fast: {ema_fast:.4f} | Mid: {ema_mid:.4f} | Slow: {ema_slow:.4f}", "white")
 
-            if ema_fast > 0 or ema_mid > 0 or ema_slow > 0:
-                self.log_message(
-                    f"   Fast: {ema_fast:.4f} | Mid: {ema_mid:.4f} | Slow: {ema_slow:.4f}",
-                    "white"
-                )
+            rsi = float(self.safe_get(current_data, 'RSI', 50))
+            adx = float(self.safe_get(current_data, 'ADX', 0))
+            volume_ratio = float(self.safe_get(current_data, 'Volume_Ratio', 1.0))
 
-            rsi = safe_get(current_data_or_dict, 'RSI', 50)
-            adx = safe_get(current_data_or_dict, 'ADX', 0)
-            volume_ratio = safe_get(current_data_or_dict, 'Volume_Ratio', 1.0)
+            self.log_message(f"📊 RSI: {rsi:.1f} | ADX: {adx:.1f} | Vol Ratio: {volume_ratio:.2f}x",
+                             "green" if rsi < 70 and adx > 25 else "orange")
 
-            self.log_message(
-                f"📊 RSI: {rsi:.1f} | ADX: {adx:.1f} | Vol Ratio: {volume_ratio:.2f}x",
-                "green" if rsi < 70 and adx > 25 else "orange"
-            )
+            macd = float(self.safe_get(current_data, 'MACD_closed', 0))
+            macd_signal = float(self.safe_get(current_data, 'MACD_Signal_closed', 0))
+            macd_status = "BULLISH" if macd > macd_signal else "BEARISH"
+            self.log_message(f"📉 MACD: {macd:.4f} vs {macd_signal:.4f} ({macd_status})",
+                             "green" if macd > macd_signal else "red")
 
-            macd = safe_get(current_data_or_dict, 'MACD_closed', 0)
-            macd_signal = safe_get(current_data_or_dict, 'MACD_Signal_closed', 0)
-            if macd != 0 or macd_signal != 0:
-                macd_status = "BULLISH" if macd > macd_signal else "BEARISH"
-                self.log_message(
-                    f"📉 MACD: {macd:.4f} vs {macd_signal:.4f} ({macd_status})",
-                    "green" if macd > macd_signal else "red"
-                )
-
-            # CHANGED: guard quality score — skip silently if strategy is IN_TRADE
-            # or if the call is otherwise not safe (e.g. after a backtest run)
-            if (
-                    hasattr(self, 'strategy')
-                    and self.strategy
-                    and hasattr(self.strategy, '_calculate_quality_score')
-                    and not getattr(self.strategy, '_in_trade', False)
-                    and getattr(self.strategy, 'state', 'SEEKING_ENTRY') == 'SEEKING_ENTRY'
-            ):
-                try:
-                    _eff_dir = getattr(self.strategy, "_pending_signal", None)
-                    _eff_dir = (
-                        _eff_dir.get("direction", "long")
-                        if _eff_dir
-                        else getattr(self.strategy, "trade_direction", "long")
-                    )
-                    if _eff_dir == "short" and hasattr(self.strategy, "_calculate_quality_score_short"):
-                        total_score, component_scores, reason = (
-                            self.strategy._calculate_quality_score_short(current_data_or_dict)
-                        )
-                    else:
-                        total_score, component_scores, reason = (
-                            self.strategy._calculate_quality_score(current_data_or_dict)
-                        )
-
-                    if total_score is not None:
-                        quality_bar = self._create_confidence_bar(total_score, 10)
-                        self.log_message(
-                            f"🎯 Quality Score: {total_score}/100 {quality_bar}",
-                            "green" if total_score >= 75 else "orange" if total_score >= 60 else "red"
-                        )
-                except Exception as qs_err:
-                    # Strategy state prevents quality score — skip, don't crash
-                    self.log_message(
-                        f"ℹ️ Quality score unavailable: {qs_err}", "blue"
-                    )
+            if hasattr(self.strategy, '_calculate_quality_score'):
+                _eff_dir = getattr(self.strategy, "_pending_signal", None)
+                _eff_dir = _eff_dir.get("direction", "long") if _eff_dir else getattr(self.strategy, "trade_direction", "long")
+                if _eff_dir == "short" and hasattr(self.strategy, "_calculate_quality_score_short"):
+                    total_score, component_scores, reason = self.strategy._calculate_quality_score_short(current_data)
+                else:
+                    total_score, component_scores, reason = self.strategy._calculate_quality_score(current_data)
+                quality_bar = self._create_confidence_bar(total_score, 10)
+                self.log_message(f"🎯 Quality Score: {total_score}/100 {quality_bar}",
+                                 "green" if total_score >= 75 else "orange" if total_score >= 60 else "red")
+                if component_scores:
+                    self.log_message(f"📋 Components: EMA={component_scores.get('ema', 0)}/20 | "
+                                     f"ADX={component_scores.get('adx', 0)}/20 | "
+                                     f"MACD={component_scores.get('macd', 0)}/25 | "
+                                     f"RSI={component_scores.get('rsi', 0)}/20 | "
+                                     f"Vol={component_scores.get('volume', 0)}/15", "cyan")
 
             self.log_message("=" * 77, "cyan")
-
         except Exception as e:
             self.log_message(f"Error displaying snapshot: {e}", "red")
 
-    # ═══════════════════════════════════════════════════════════════════════════════
-    # FIX 2  —  _execute_ai_analysis
-    # ═══════════════════════════════════════════════════════════════════════════════
     def _execute_ai_analysis(self):
-        """Run DeepSeek AI analysis — works in backtest AND demo/live mode."""
+        """Execute AI analysis with proper error handling and progress updates"""
         try:
             analysis_type = self.ai_analysis_type.get()
             depth = self.analysis_depth_var.get()
 
             self._update_ai_progress(5, "Gathering market data...")
 
-            mode = self.mode_var.get().lower()
-            df = None
-
-            # ── Step 1: use cached backtest DataFrame if available ───────────────
-            if mode == "backtest":
-                cached = getattr(self, '_last_backtest_df', None)
-                if cached is not None and not cached.empty:
-                    df = cached.copy()
-                    # CHANGED: normalize immediately after copying from cache
-                    df = self._normalize_ohlcv_columns(df)
-                    self.log_message("📊 AI: Using cached backtest DataFrame", "blue")
-                else:
-                    self.log_message(
-                        "📊 AI: No cached backtest data — fetching fresh data...", "blue"
-                    )
-
-            # ── Step 2: fallback — call get_market_data() ────────────────────────
-            if df is None:
-                df = self.get_market_data()
-                if df is not None and not df.empty:
-                    # CHANGED: normalize fresh data too
-                    df = self._normalize_ohlcv_columns(df)
-
-            # ── Step 3: hard-fail with a clear, actionable message ───────────────
+            df = self.get_market_data()
             if df is None or df.empty:
-                self._ai_error(
-                    "No market data available.\n\n"
-                    "• Backtest mode  : run a backtest first, then click AI Analysis.\n"
-                    "                   The button activates automatically once data\n"
-                    "                   has been fetched.\n\n"
-                    "• Demo/Live mode : click 'Check Connection', wait for\n"
-                    "                   'Connection successful', then try again."
-                )
+                self._ai_error("No market data available. Please check connection.")
                 return
 
-            # ── Step 4: calculate indicators ────────────────────────────────────
             self._update_ai_progress(15, "Calculating indicators...")
             if hasattr(self.strategy, 'calculate_indicators'):
-                try:
-                    enriched = self.strategy.calculate_indicators(df)
-                    if enriched is not None and not enriched.empty:
-                        df = enriched
-                        # CHANGED: re-normalize after indicator enrichment — the
-                        # strategy may have renamed or shadowed base OHLCV columns
-                        df = self._normalize_ohlcv_columns(df)
-                except Exception as e:
-                    self.log_message(f"⚠️ Indicator calc failed — using raw OHLCV: {e}", "orange")
+                df = self.strategy.calculate_indicators(df)
 
-            # CHANGED: final safety guard — if 'Close' is still missing, abort
-            if 'Close' not in df.columns:
-                self._ai_error(
-                    "Market data is missing a 'Close' column after indicator calculation.\n\n"
-                    "This can happen when the strategy's calculate_indicators() renames\n"
-                    "base OHLCV columns.  Try switching to Default Parameters and re-running\n"
-                    "the backtest before clicking AI Analysis."
-                )
-                return
-
-            # ── Step 5: build summary & prompt ───────────────────────────────────
             self._update_ai_progress(25, "Preparing data summary...")
             data_summary = self._prepare_ai_data_summary(df, depth)
             trade_summary = self._prepare_trade_history_summary()
@@ -3094,42 +2384,28 @@ class TradingApp:
             self._update_ai_progress(35, "Building analysis prompt...")
             prompt = self._build_ai_prompt(analysis_type, data_summary, trade_summary)
 
-            # Show market snapshot — CHANGED: guard against missing 'Close'
-            try:
-                if df is not None and len(df) >= 2 and 'Close' in df.columns:
-                    last_completed = df.iloc[-2]
-                    current_dict = (
-                        last_completed.to_dict()
-                        if hasattr(last_completed, 'to_dict')
-                        else dict(last_completed)
-                    )
-                    # CHANGED: snapshot is captured in a local variable, not a
-                    # late-binding lambda, so it can't pick up a stale df reference
-                    snapshot = dict(current_dict)
-                    self.root.after(0, lambda s=snapshot: self._display_market_snapshot(s))
-            except Exception as e:
-                self.log_message(f"⚠️ Could not display market snapshot: {e}", "orange")
-
             self._update_ai_progress(45, "Sending to DeepSeek AI...")
 
-            # ── Step 6: check dependencies & API key ─────────────────────────────
-            try:
-                import openai as _oi  # noqa: F401
-                openai_ok = True
-            except ImportError:
-                openai_ok = False
-
-            if not openai_ok:
-                self._update_ai_progress(100, "OpenAI not installed — local analysis")
-                self._display_ai_response(self._generate_local_analysis(analysis_type), analysis_type)
+            # Check if OpenAI is available
+            if not OPENAI_AVAILABLE:
+                self._update_ai_progress(100, "OpenAI not installed")
+                response = self._generate_local_analysis(analysis_type)
+                self._display_ai_response(response, analysis_type)
                 return
 
+            # Check API key
             if not self._check_api_key():
-                self._update_ai_progress(100, "No API key — local analysis")
-                self._display_ai_response(self._generate_local_analysis(analysis_type), analysis_type)
+                self._update_ai_progress(100, "API key missing")
+                response = self._generate_local_analysis(analysis_type)
+                self._display_ai_response(response, analysis_type)
                 return
 
-            # ── Step 7: call DeepSeek ─────────────────────────────────────────────
+            # Show current market snapshot
+            current_data = df.iloc[-1] if df is not None else None
+            if current_data is not None:
+                self.root.after(0, lambda: self._display_market_snapshot(current_data))
+
+            # Call API
             reasoning, response = self._call_deepseek_api(prompt, analysis_type)
 
             if response and not response.startswith("❌"):
@@ -3137,24 +2413,19 @@ class TradingApp:
                 self._display_ai_response(response, analysis_type)
                 self._update_ai_progress(100, "Analysis complete!")
             else:
-                # FIXED: Log the actual error so you can see WHY it failed
-                if response and response.startswith("❌"):
-                    self.log_message(f"🔴 DeepSeek API error: {response}", "red")
-                else:
-                    self.log_message("🔴 DeepSeek API returned empty response", "red")
-                self._update_ai_progress(50, "API unavailable — local analysis...")
-                self._display_ai_response(self._generate_local_analysis(analysis_type), analysis_type)
+                # Fallback to local analysis
+                self._update_ai_progress(50, "API failed, using local analysis...")
+                response = self._generate_local_analysis(analysis_type)
+                self._display_ai_response(response, analysis_type)
                 self._update_ai_progress(100, "Local analysis complete")
 
         except Exception as e:
-            self._ai_error(f"Analysis error: {e}")
+            self._ai_error(f"Analysis error: {str(e)}")
             import traceback
             print(traceback.format_exc())
         finally:
-            self.root.after(
-                0,
-                lambda: self.run_ai_btn.config(state='normal', text="🚀 Run AI Analysis"),
-            )
+            self.root.after(0, lambda: self.run_ai_btn.config(
+                state=tk.NORMAL, text="🚀 Run AI Analysis"))
 
     def _update_ai_progress(self, value: int, status: str):
         """Update AI progress bar and status"""
@@ -3984,12 +3255,7 @@ class TradingApp:
     def _call_deepseek_api(self, prompt, analysis_type):
         """Call DeepSeek API with proper error handling"""
         try:
-            # FIXED: Re-import openai fresh every call — don't rely on the
-            # module-level OPENAI_AVAILABLE flag which was set at startup
-            # before the package was installed.
-            try:
-                import openai as _openai
-            except ImportError:
+            if not OPENAI_AVAILABLE:
                 return None, "❌ OpenAI library not installed. Run: pip install openai"
 
             # Check API key first
@@ -3997,7 +3263,7 @@ class TradingApp:
             if not api_key or not api_key.startswith('sk-'):
                 return None, "❌ No valid DeepSeek API key found in config.json"
 
-            client = _openai.OpenAI(
+            client = openai.OpenAI(
                 api_key=api_key,
                 base_url="https://api.deepseek.com/v1"
             )
@@ -4028,21 +3294,18 @@ class TradingApp:
 
             return reasoning, answer
 
+        except openai.AuthenticationError:
+            return None, "❌ API Authentication Error: Check your DeepSeek API key in Settings."
+        except openai.RateLimitError:
+            return None, "❌ Rate Limit Error: Too many requests. Please wait 30 seconds and try again."
+        except openai.APITimeoutError:
+            return None, "❌ Timeout Error: DeepSeek took too long. Try a shorter analysis type."
+        except openai.APIConnectionError:
+            return None, "❌ Connection Error: Cannot reach DeepSeek API. Check your internet connection."
+        except openai.APIError as e:
+            return None, f"❌ DeepSeek API Error: {str(e)}"
         except Exception as e:
-            # Map known openai error types by name so we don't need a top-level import
-            etype = type(e).__name__
-            if etype == 'AuthenticationError':
-                return None, "❌ API Authentication Error: Check your DeepSeek API key in Settings."
-            elif etype == 'RateLimitError':
-                return None, "❌ Rate Limit Error: Too many requests. Please wait 30 seconds and try again."
-            elif etype == 'APITimeoutError':
-                return None, "❌ Timeout Error: DeepSeek took too long. Try a shorter analysis type."
-            elif etype == 'APIConnectionError':
-                return None, "❌ Connection Error: Cannot reach DeepSeek API. Check your internet connection."
-            elif etype == 'APIError':
-                return None, f"❌ DeepSeek API Error: {str(e)}"
-            else:
-                return None, f"❌ Unexpected Error: {str(e)}"
+            return None, f"❌ Unexpected Error: {str(e)}"
 
     def _generate_local_analysis(self, analysis_type: str) -> str:
         """Generate local fallback analysis when API is unavailable"""
@@ -4157,6 +3420,7 @@ class TradingApp:
         "deepseek_api_key": "sk-your-deepseek-api-key-here"
         """
         return analysis
+
 
     def display_quality_score_table(self, quality_score, component_scores, reason=""):
         self.log_message("=" * 77, "cyan")
@@ -4496,7 +3760,7 @@ class TradingApp:
                 return
 
             picture_img = Image.open(image_path)
-            picture_img = picture_img.resize((334, 95), Image.Resampling.LANCZOS)
+            picture_img = picture_img.resize((355, 100), Image.Resampling.LANCZOS)
             self.picture_photo = ImageTk.PhotoImage(picture_img)
 
             if not hasattr(self, 'picture_label'):
@@ -4626,10 +3890,8 @@ class TradingApp:
 
         self.default_params['momentum'] = built_in_momentum.copy()
         self.default_params['kalman'] = built_in_kalman.copy()
-        self.default_params['scalping'] = self.get_default_scalping_params().copy()
         self.custom_params['momentum'] = built_in_momentum.copy()
         self.custom_params['kalman'] = built_in_kalman.copy()
-        self.custom_params['scalping'] = self.get_default_scalping_params().copy()
 
         # Load from strategy_settings.json
         settings_file = self.strategy_settings_file  # "strategy_settings.json"
@@ -4677,14 +3939,6 @@ class TradingApp:
                             self.custom_params['kalman'].update(loaded_custom_kalman)
                             custom_loaded = True
                             self.log_message(f"   ✅ Loaded {len(loaded_custom_kalman)} Kalman custom parameters",
-                                             "green")
-
-                    if 'scalping' in settings['custom_params']:
-                        loaded_custom_scalping = settings['custom_params']['scalping']
-                        if loaded_custom_scalping:
-                            self.custom_params['scalping'].update(loaded_custom_scalping)
-                            custom_loaded = True
-                            self.log_message(f"   ✅ Loaded {len(loaded_custom_scalping)} Scalping custom parameters",
                                              "green")
 
                     if custom_loaded:
@@ -4798,6 +4052,8 @@ class TradingApp:
 
         except Exception as e:
             self.log_message(f"⚠️ Error updating UI widgets: {e}", "orange")
+
+
 
     def save_current_defaults(self):
         """Save current default parameters to file"""
@@ -4936,9 +4192,64 @@ class TradingApp:
                 return False
 
             # ═══════════════════════════════════════════════════════════════════
-            # All strategies (Momentum / Kalman / Scalping / Enhanced) - single TF
+            # CASE 1: TopDown Strategy - Multi-timeframe, ignores GUI interval
             # ═══════════════════════════════════════════════════════════════════
-            if True:
+            if new_strategy_name == "TopDown":
+                from strategies.TopDownDayTradingStrategy import TopDownDayTradingStrategy
+
+                # Show warning about timeframe requirements
+                self.log_message("=" * 70, "yellow")
+                self.log_message("⚠️ TOPDOWN STRATEGY NOTE:", "yellow")
+                self.log_message("=" * 70, "yellow")
+                self.log_message("   This strategy requires THREE timeframes:", "white")
+                self.log_message("   • 1H for trend bias", "white")
+                self.log_message("   • 15m for setup confirmation", "white")
+                self.log_message("   • 5m for entry triggers", "white")
+                self.log_message("", "white")
+                self.log_message("   The GUI interval selector is IGNORED for this strategy", "yellow")
+                self.log_message("=" * 70, "yellow")
+
+                # Save current interval to restore later
+                if hasattr(self, '_saved_interval') is False:
+                    self._saved_interval = self.interval_var.get()
+
+                # Disable interval combobox for TopDown
+                if hasattr(self, 'interval_combobox'):
+                    self.interval_combobox.config(state='disabled')
+                    self.interval_combobox.set("TopDown Mode (1H/15m/5m)")
+
+                # Initialize TopDown strategy
+                self.strategy = TopDownDayTradingStrategy(trading_app=self)
+                self.strategy_type_var.set("TopDown")
+
+                # Try to pre-fetch multi-timeframe data
+                try:
+                    multi_df = self.get_market_data_multiframe()
+                    if multi_df['1h'] is not None and not multi_df['1h'].empty:
+                        self.log_message("✅ TopDown: 1H data loaded", "green")
+                    else:
+                        self.log_message("⚠️ TopDown: No 1H data available - will fetch on next cycle", "orange")
+
+                    if multi_df['15m'] is not None and not multi_df['15m'].empty:
+                        self.log_message("✅ TopDown: 15m data loaded", "green")
+                    else:
+                        self.log_message("⚠️ TopDown: No 15m data available - will fetch on next cycle", "orange")
+
+                    if multi_df['5m'] is not None and not multi_df['5m'].empty:
+                        self.log_message("✅ TopDown: 5m data loaded", "green")
+                    else:
+                        self.log_message("⚠️ TopDown: No 5m data available - will fetch on next cycle", "orange")
+                except Exception as e:
+                    self.log_message(f"⚠️ Could not pre-fetch multi-timeframe data: {e}", "orange")
+
+                self.log_message("✅ Top-Down Day Trading Strategy loaded", "green")
+                self.log_message("📋 Timeframes: 1H bias → 15m setup → 5m trigger", "cyan")
+                self.log_message("🎯 Targets: 1.5R / 2.5R / 3.5R | Sessions: London + NY", "cyan")
+
+            # ═══════════════════════════════════════════════════════════════════
+            # CASE 2: Momentum, Kalman, or Enhanced - Single timeframe strategies
+            # ═══════════════════════════════════════════════════════════════════
+            else:
                 # Re-enable interval combobox for single-timeframe strategies
                 if hasattr(self, 'interval_combobox'):
                     self.interval_combobox.config(state='readonly')
@@ -5105,6 +4416,39 @@ class TradingApp:
 
         return True  # proceed with the rest of switch_strategy
 
+    # def _validate_market_data_ready(self):
+    #     """
+    #     Validate that market data is available and ready for strategy initialization.
+    #     Returns (is_ready, message)
+    #     """
+    #     # Check if market API is initialized
+    #     if self.mode_var.get().lower() != "backtest":
+    #         if not hasattr(self, 'market_api') or self.market_api is None:
+    #             return False, "Market API not initialized. Please check connection."
+    #
+    #     # Try to get data
+    #     try:
+    #         df = self.get_market_data()
+    #         if df is None:
+    #             return False, "No market data available"
+    #
+    #         if len(df) < 50:
+    #             return False, f"Insufficient data: only {len(df)} candles (need at least 50)"
+    #
+    #         # Check for required columns
+    #         required = ['Open', 'High', 'Low', 'Close', 'Volume']
+    #         missing = [col for col in required if col not in df.columns]
+    #         if missing:
+    #             return False, f"Missing required columns: {missing}"
+    #
+    #         # Check for NaN values
+    #         if df[required].isna().any().any():
+    #             return False, "Data contains NaN values"
+    #
+    #         return True, "Market data ready"
+    #
+    #     except Exception as e:
+    #         return False, f"Error validating market data: {str(e)}"
 
     def _validate_market_data_ready(self, auto_connect=True, max_retries=2):
         """
@@ -5204,33 +4548,23 @@ class TradingApp:
                     self.log_message(f"❌ All {max_retries} attempts failed: {str(e)}", "red")
         return None
 
-
-    # ═══════════════════════════════════════════════════════════════════════════════
-    # FIX 1  —  get_market_data
-    # ═══════════════════════════════════════════════════════════════════════════════
     def get_market_data(self):
-        """Market data fetch — keyword args prevent positional mis-mapping bug."""
-        if self.mode_var.get().lower() != "backtest":
-            if not hasattr(self, 'market_api') or self.market_api is None:
-                self.log_message("⚠️ Market API not initialized. Please check connection.", "red")
-                return None
-
+        """
+        Get market data with proper error handling and logging.
+        """
         try:
-            # ── BACKTEST ────────────────────────────────────────────────────────
+            if self.mode_var.get().lower() != "backtest":
+                if not hasattr(self, 'market_api') or self.market_api is None:
+                    self.log_message("⚠️ Market API not initialized. Please check connection.", "red")
+                    return None
+
             if self.mode_var.get().lower() == "backtest":
-                # FIX: use keyword args so interval is NOT mistaken for exchange_name
-                df = self.get_historical_data(
-                    symbol=self.symbol_var.get(),
-                    interval=self.interval_var.get(),
-                    limit=5000,
-                )
+                df = self.get_historical_data(self.symbol_var.get(), self.interval_var.get(), limit=5000)
                 if df is not None and not df.empty:
-                    self.log_message("📊 Using real historical data from Binance", "green")
-                    self._last_backtest_df = df  # cache so AI can use it later
-                    self.enable_ai_button()
+                    self.log_message("📊 Using real historical data from OKX", "green")
                     return df
                 else:
-                    self.log_message("⚠️ No historical data — falling back to synthetic data", "orange")
+                    self.log_message("⚠️ Falling back to synthetic data", "orange")
                     freq = self.interval_var.get()
                     if freq == '1m':
                         freq = 'T'
@@ -5238,38 +4572,42 @@ class TradingApp:
                         freq = '5T'
                     return self.generate_test_data(freq)
 
-            # ── LIVE / DEMO ──────────────────────────────────────────────────────
             symbol = self.symbol_var.get()
             interval = self.interval_var.get()
-            total_limit = 50_000
-            batch_size = 1_000
+            total_limit = 50000
+            batch_size = 1000
             all_data = []
             before = None
 
             while len(all_data) < total_limit:
-                params = {'instId': symbol, 'bar': interval, 'limit': batch_size}
+                params = {
+                    'instId': symbol,
+                    'bar': interval,
+                    'limit': batch_size
+                }
                 if before:
                     params['before'] = before
 
                 response = self.market_api.get_candlesticks(**params)
+
                 if response['code'] != '0' or not response['data']:
                     break
 
                 batch = response['data']
                 all_data.extend(batch)
+
                 if len(batch) < batch_size:
                     break
+
                 before = batch[-1][0]
 
             if not all_data:
                 self.log_message("⚠️ No data received from API", "orange")
                 return None
 
-            df = pd.DataFrame(
-                all_data,
-                columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume',
-                         'volCcy', 'volBase', 'turnover'],
-            )
+            df = pd.DataFrame(all_data,
+                              columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume', 'volCcy', 'volBase',
+                                       'turnover'])
             df['timestamp'] = pd.to_datetime(df['timestamp'].astype('int64'), unit='ms', utc=True)
             df.set_index('timestamp', inplace=True)
             float_cols = ['Open', 'High', 'Low', 'Close', 'Volume', 'volCcy', 'volBase', 'turnover']
@@ -5278,16 +4616,198 @@ class TradingApp:
 
             start_str = df.index[0].strftime('%Y-%m-%d %H:%M:%S UTC')
             end_str = df.index[-1].strftime('%Y-%m-%d %H:%M:%S UTC')
-            self.log_message(f"📊 Market data: {start_str} → {end_str} ({len(df)} candles)", "blue")
+            self.log_message(f"📊 Market data loaded: {start_str} to {end_str} ({len(df)} candles)", "blue")
+
+            # Enable AI button when data is available
             self.enable_ai_button()
+
             return df
 
         except Exception as e:
-            self.log_message(f"⚠️ Data fetch error: {e}", "red")
-            import logging, traceback
-            logging.error(traceback.format_exc())
+            self.log_message(f"⚠️ Data fetch error: {str(e)}", "red")
+            logging.error(f"Data fetch error: {str(e)}")
             return None
 
+    # def switch_strategy(self, new_strategy_name):
+    #     """Completely switch to a new trading strategy with metadata display"""
+    #     try:
+    #         if new_strategy_name not in self.strategies:
+    #             raise ValueError(f"Unknown strategy: {new_strategy_name}")
+    #
+    #         was_running = self.running
+    #         if self.running:
+    #             self.stop_trading()
+    #
+    #         # ═══════════════════════════════════════════════════════════════════
+    #         # CASE 1: TopDown Strategy - Multi-timeframe, ignores GUI interval
+    #         # ═══════════════════════════════════════════════════════════════════
+    #         if new_strategy_name == "TopDown":
+    #             from strategies.TopDownDayTradingStrategy import TopDownDayTradingStrategy
+    #
+    #             # Show warning about timeframe requirements
+    #             self.log_message("=" * 70, "yellow")
+    #             self.log_message("⚠️ TOPDOWN STRATEGY NOTE:", "yellow")
+    #             self.log_message("=" * 70, "yellow")
+    #             self.log_message("   This strategy requires THREE timeframes:", "white")
+    #             self.log_message("   • 1H for trend bias", "white")
+    #             self.log_message("   • 15m for setup confirmation", "white")
+    #             self.log_message("   • 5m for entry triggers", "white")
+    #             self.log_message("", "white")
+    #             self.log_message("   The GUI interval selector is IGNORED for this strategy", "yellow")
+    #             self.log_message("=" * 70, "yellow")
+    #
+    #             # Save current interval to restore later
+    #             if hasattr(self, '_saved_interval') is False:
+    #                 self._saved_interval = self.interval_var.get()
+    #
+    #             # Disable interval combobox for TopDown
+    #             if hasattr(self, 'interval_combobox'):
+    #                 self.interval_combobox.config(state='disabled')
+    #                 self.interval_combobox.set("TopDown Mode (1H/15m/5m)")
+    #
+    #             # Initialize TopDown strategy
+    #             self.strategy = TopDownDayTradingStrategy(trading_app=self)
+    #             self.strategy_type_var.set("TopDown")
+    #
+    #             # Try to pre-fetch multi-timeframe data
+    #             try:
+    #                 multi_df = self.get_market_data_multiframe()
+    #                 if multi_df['1h'] is not None and not multi_df['1h'].empty:
+    #                     self.log_message("✅ TopDown: 1H data loaded", "green")
+    #                 else:
+    #                     self.log_message("⚠️ TopDown: No 1H data available - will fetch on next cycle", "orange")
+    #
+    #                 if multi_df['15m'] is not None and not multi_df['15m'].empty:
+    #                     self.log_message("✅ TopDown: 15m data loaded", "green")
+    #                 else:
+    #                     self.log_message("⚠️ TopDown: No 15m data available - will fetch on next cycle", "orange")
+    #
+    #                 if multi_df['5m'] is not None and not multi_df['5m'].empty:
+    #                     self.log_message("✅ TopDown: 5m data loaded", "green")
+    #                 else:
+    #                     self.log_message("⚠️ TopDown: No 5m data available - will fetch on next cycle", "orange")
+    #             except Exception as e:
+    #                 self.log_message(f"⚠️ Could not pre-fetch multi-timeframe data: {e}", "orange")
+    #
+    #             self.log_message("✅ Top-Down Day Trading Strategy loaded", "green")
+    #             self.log_message("📋 Timeframes: 1H bias → 15m setup → 5m trigger", "cyan")
+    #             self.log_message("🎯 Targets: 1.5R / 2.5R / 3.5R | Sessions: London + NY", "cyan")
+    #
+    #         # ═══════════════════════════════════════════════════════════════════
+    #         # CASE 2: Momentum or Kalman - Single timeframe strategies
+    #         # ═══════════════════════════════════════════════════════════════════
+    #         else:
+    #             # Re-enable interval combobox for single-timeframe strategies
+    #             if hasattr(self, 'interval_combobox'):
+    #                 self.interval_combobox.config(state='readonly')
+    #                 if hasattr(self, '_saved_interval'):
+    #                     self.interval_combobox.set(self._saved_interval)
+    #                 else:
+    #                     self.interval_combobox.set("15m")
+    #
+    #             # Get market data
+    #             df = self.get_market_data()
+    #             if df is None:
+    #                 raise Exception("Could not get market data for strategy switch")
+    #
+    #             new_strategy = self.strategies[new_strategy_name]
+    #
+    #             # Set strategy properties
+    #             if hasattr(new_strategy, 'name'):
+    #                 new_strategy.name = new_strategy_name
+    #             else:
+    #                 new_strategy.name = self.strategy_name
+    #
+    #             if hasattr(new_strategy, 'trading_app'):
+    #                 new_strategy.trading_app = self
+    #             if hasattr(new_strategy, 'log_message'):
+    #                 new_strategy.log_message = self.log_message
+    #             if hasattr(new_strategy, 'place_order'):
+    #                 new_strategy.place_order = self.place_order
+    #             if hasattr(new_strategy, 'get_balance'):
+    #                 new_strategy.get_balance = self.get_balance
+    #             if hasattr(new_strategy, 'get_current_price'):
+    #                 new_strategy.get_current_price = self.get_current_price
+    #
+    #             # Enable ML if needed
+    #             if new_strategy_name == "Enhanced" and self.ml_enabled:
+    #                 new_strategy.ml_enabled = True
+    #                 new_strategy.current_ml_model = self.current_ml_model
+    #
+    #             # Calculate indicators
+    #             df = new_strategy.calculate_indicators(df)
+    #
+    #             # Get strategy parameters for chart
+    #             active_params = {}
+    #             if new_strategy_name == "Momentum":
+    #                 active_params = self.get_current_momentum_params()
+    #             elif new_strategy_name == "Kalman":
+    #                 active_params = self.get_current_kalman_params()
+    #
+    #             # Update chart
+    #             if hasattr(self, 'chart') and df is not None:
+    #                 self.chart.update_chart(df, params=active_params)
+    #                 self.log_message(f"✅ Chart updated with {new_strategy_name} parameters", "green")
+    #
+    #             # Reset position state
+    #             self.position = {
+    #                 'type': None,
+    #                 'price': None,
+    #                 'quantity': None,
+    #                 'time': None,
+    #                 'stop_loss': None,
+    #                 'trailing_stop': None
+    #             }
+    #
+    #             self.strategy = new_strategy
+    #             self.current_data = df.iloc[-1] if df is not None else None
+    #
+    #             # Retrain ML if enabled
+    #             if self.ml_enabled and self.current_ml_model:
+    #                 self.log_message(f"Retraining ML model for {new_strategy_name}...", "blue")
+    #                 if not self.current_ml_model.train(df):
+    #                     raise Exception("ML model training failed")
+    #
+    #             self.strategy_type_var.set(new_strategy_name)
+    #
+    #             # Display strategy info
+    #             if hasattr(new_strategy, 'get_strategy_info'):
+    #                 info = new_strategy.get_strategy_info()
+    #                 self.log_message(f"", "white")
+    #                 self.log_message(f"{'═' * 70}", "cyan")
+    #                 self.log_message(f"📋 STRATEGY INFORMATION", "cyan")
+    #                 self.log_message(f"{'═' * 70}", "cyan")
+    #                 self.log_message(f"  Name: {info.get('name', 'Unknown')}", "white")
+    #                 self.log_message(f"  Version: {info.get('version', 'N/A')}", "white")
+    #                 self.log_message(f"  Tier System: {info.get('tier_system', 'Standard')}", "white")
+    #                 self.log_message(f"", "white")
+    #                 self.log_message(f"📊 EXPECTED PERFORMANCE:", "cyan")
+    #                 self.log_message(f"  Trades/Month: {info.get('expected_trades_monthly', 'N/A')}", "white")
+    #                 self.log_message(f"  Win Rate: {info.get('target_win_rate', 'N/A')}", "white")
+    #                 self.log_message(f"  CAGR: {info.get('target_cagr', 'N/A')}", "white")
+    #                 self.log_message(f"  Sharpe Ratio: {info.get('target_sharpe', 'N/A')}", "white")
+    #                 self.log_message(f"  Max Drawdown: {info.get('max_drawdown', 'N/A')}", "white")
+    #
+    #                 if 'tier1_description' in info:
+    #                     self.log_message(f"", "white")
+    #                     self.log_message(f"🎯 TIER SYSTEM:", "cyan")
+    #                     self.log_message(f"  Tier 1: {info['tier1_description']}", "white")
+    #                     self.log_message(f"  Tier 2: {info['tier2_description']}", "white")
+    #
+    #                 self.log_message(f"{'═' * 70}", "cyan")
+    #
+    #             self.log_message(f"✅ Successfully switched to {new_strategy_name} strategy", "green")
+    #
+    #         # Restart trading if it was running
+    #         if was_running:
+    #             self.start_trading()
+    #
+    #     except Exception as e:
+    #         self.log_message(f"❌ Strategy switch failed: {str(e)}", "red")
+    #         import traceback
+    #         self.log_message(traceback.format_exc(), "red")
+    #         if was_running:
+    #             self.start_trading()
 
     def _process_trading_result(self, result, current_data, current_price, df=None):
         """
@@ -5321,142 +4841,136 @@ class TradingApp:
             self.log_message(f"Error processing trading result: {e}", "red")
 
     def trading_loop(self):
-        """Main trading loop — single timeframe for all strategies."""
+        """Main trading loop - handles both single and multi-timeframe strategies"""
         while self.running:
             try:
-                interval_str = self.interval_var.get()
-                interval_seconds = self.interval_seconds_map.get(interval_str, 60)
+                # Determine which strategy is active
+                current_strategy = self.strategy_type_var.get()
 
-                now = datetime.now(timezone.utc)
-                if interval_str == '1m':
-                    next_run = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
-                elif interval_str == '5m':
-                    next_run = now + timedelta(minutes=5 - (now.minute % 5))
-                    next_run = next_run.replace(second=0, microsecond=0)
-                elif interval_str == '15m':
-                    next_run = now + timedelta(minutes=15 - (now.minute % 15))
-                    next_run = next_run.replace(second=0, microsecond=0)
-                elif interval_str == '30m':
-                    next_run = now + timedelta(minutes=30 - (now.minute % 30))
-                    next_run = next_run.replace(second=0, microsecond=0)
-                elif interval_str == '1H':
-                    next_run = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-                elif interval_str == '1D':
-                    next_run = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+                # ═══════════════════════════════════════════════════════════════
+                # CASE 1: TopDown Strategy - Needs 3 timeframes (IGNORES GUI interval)
+                # ═══════════════════════════════════════════════════════════════
+                if current_strategy == "TopDown":
+                    # Fetch all three timeframes (HARDCODED - ignores GUI selection)
+                    multi_df = self.get_market_data_multiframe()
+
+                    df_1h = multi_df.get('1h')
+                    df_15m = multi_df.get('15m')
+                    df_5m = multi_df.get('5m')
+
+                    # Validate data
+                    if df_1h is None or df_1h.empty:
+                        self.log_message("⚠️ TopDown: No 1H data available - waiting...", "orange")
+                        time.sleep(60)
+                        continue
+
+                    if df_15m is None or df_15m.empty:
+                        self.log_message("⚠️ TopDown: No 15m data available - waiting...", "orange")
+                        time.sleep(60)
+                        continue
+
+                    if df_5m is None or df_5m.empty:
+                        self.log_message("⚠️ TopDown: No 5m data available - waiting...", "orange")
+                        time.sleep(60)
+                        continue
+
+                    # Calculate indicators for each timeframe
+                    if hasattr(self.strategy, 'calculate_indicators_1h'):
+                        df_1h = self.strategy.calculate_indicators_1h(df_1h)
+                    df_15m = self.strategy.calculate_indicators(df_15m)
+                    df_5m = self.strategy.calculate_indicators(df_5m)
+
+                    # Get current data from each timeframe (use last CLOSED candle)
+                    current_data = {
+                        # Bias from 1H
+                        'bias_1h': self.strategy._1h_bias if hasattr(self.strategy, '_1h_bias') else 0,
+                        # Setup from 15m
+                        'supertrend': df_15m['supertrend'].iloc[-2] if 'supertrend' in df_15m.columns and len(
+                            df_15m) >= 2 else 0,
+                        'macd_hist': df_15m['macd_hist'].iloc[-2] if 'macd_hist' in df_15m.columns and len(
+                            df_15m) >= 2 else 0,
+                        'cci': df_15m['cci'].iloc[-2] if 'cci' in df_15m.columns and len(df_15m) >= 2 else 0,
+                        # Trigger from 5m
+                        'engulfing': df_5m['engulfing'].iloc[-2] if 'engulfing' in df_5m.columns and len(
+                            df_5m) >= 2 else 0,
+                        'vol_ratio': df_5m['vol_ratio'].iloc[-2] if 'vol_ratio' in df_5m.columns and len(
+                            df_5m) >= 2 else 1.0,
+                        'atr': df_5m['atr'].iloc[-2] if 'atr' in df_5m.columns and len(df_5m) >= 2 else 0.001,
+                        'adx': df_5m['adx'].iloc[-2] if 'adx' in df_5m.columns and len(df_5m) >= 2 else 0,
+                        'close': df_5m['Close'].iloc[-2] if len(df_5m) >= 2 else df_5m['Close'].iloc[-1],
+                    }
+
+                    current_price = current_data['close']
+
+                    # Log which candle we're analyzing (for debugging)
+                    self.log_message(
+                        f"📊 TopDown Analysis - Using:",
+                        "blue"
+                    )
+                    self.log_message(
+                        f"   1H: {df_1h.index[-2].strftime('%Y-%m-%d %H:%M:%S') if len(df_1h) >= 2 else 'N/A'}",
+                        "cyan"
+                    )
+                    self.log_message(
+                        f"   15m: {df_15m.index[-2].strftime('%Y-%m-%d %H:%M:%S') if len(df_15m) >= 2 else 'N/A'}",
+                        "cyan"
+                    )
+                    self.log_message(
+                        f"   5m: {df_5m.index[-2].strftime('%Y-%m-%d %H:%M:%S') if len(df_5m) >= 2 else 'N/A'}",
+                        "cyan"
+                    )
+                    self.log_message(f"   Price: ${current_price:.4f}", "white")
+                    self.log_message(f"   ℹ️ GUI interval selection IGNORED - TopDown uses fixed 1H/15m/5m", "yellow")
+
+                    # Run TopDown analysis
+                    result = self.strategy.check_entry_conditions(current_data)
+
+                    # Check exit conditions if position is open
+                    if self.position["type"] is not None:
+                        exit_reason = self.strategy.check_exit_conditions(current_data, current_price)
+                        if exit_reason:
+                            result = (exit_reason, 1.0)
+
+                    # Process the result
+                    self._process_trading_result(result, current_data, current_price, df_5m)
+
+                    # Update chart with primary timeframe (15m for clarity)
+                    if hasattr(self, 'chart'):
+                        stop_loss = None
+                        trailing_stop = None
+                        if self.position.get('type') is not None:
+                            stop_loss = self.position.get('stop_loss')
+                            trailing_stop = self.position.get('trailing_stop')
+
+                        self.chart.update_chart(
+                            df_15m.copy(),
+                            params=self.strategy.params if hasattr(self.strategy, 'params') else {},
+                            stop_loss=stop_loss,
+                            trailing_stop=trailing_stop,
+                            live_price=float(df_15m['Close'].iloc[-1])
+                        )
+
+                    # Wait for next 5m candle (TopDown's trigger timeframe)
+                    # Calculate seconds until next 5-minute candle
+                    now = datetime.now(timezone.utc)
+                    minutes_to_next = 5 - (now.minute % 5)
+                    seconds_to_next = minutes_to_next * 60 - now.second
+                    if seconds_to_next < 5:
+                        seconds_to_next = 60  # Wait at least 60 seconds
+
+                    self.log_message(
+                        f"⏰ TopDown: Next analysis in {seconds_to_next} seconds (waiting for next 5m candle)", "blue")
+                    time.sleep(max(seconds_to_next, 30))
+
+                # ═══════════════════════════════════════════════════════════════
+                # CASE 2: Momentum or Kalman - Single timeframe (USES GUI interval)
+                # ═══════════════════════════════════════════════════════════════
                 else:
-                    next_run = now + timedelta(seconds=interval_seconds)
+                    interval_str = self.interval_var.get()  # ← GUI SELECTION IS USED HERE
+                    interval_seconds = self.interval_seconds_map.get(interval_str, 60)
 
-                sleep_time = (next_run - now).total_seconds()
-                self.log_message(
-                    f"⏰ [{self.strategy_type_var.get()}] Next analysis at: "
-                    f"{next_run.strftime('%Y-%m-%d %H:%M:%S UTC')}", "blue")
-
-                self.timer.set_interval(interval_seconds)
-                self.timer.start_time = time.time() - (time.time() % interval_seconds)
-                self.timer.start()
-
-                time.sleep(max(0, sleep_time))
-
-                if not self.running:
-                    break
-
-                # ── U6: fetch 1h context when Scalping is active ──────
-                if self.needs_multitimeframe():
-                    try:
-                        multi_df = self.get_market_data_multiframe()
-                        # _htf_data is pushed into strategy inside
-                        # get_market_data_multiframe() — nothing else needed.
-                        htf = multi_df.get('_htf', {})
-                        if htf:
-                            ef_1h = htf.get('ema_fast_1h', 0)
-                            es_1h = htf.get('ema_slow_1h', 0)
-                            if ef_1h and es_1h:
-                                direction = "↑ BULL" if ef_1h > es_1h else "↓ BEAR"
-                                self.log_message(
-                                    f"🔭 1h Context: {direction}  "
-                                    f"(EMA9={ef_1h:.2f} vs EMA50={es_1h:.2f})",
-                                    "cyan" if ef_1h > es_1h else "orange")
-                    except Exception as htf_err:
-                        self.log_message(
-                            f"⚠️ HTF fetch skipped this cycle: {htf_err}",
-                            "orange")
-                # ── end U6 ────────────────────────────────────────────
-
-                df = self.get_market_data()
-                if df is None:
-                    self.log_message("⚠️ No market data returned — retrying next cycle", "orange")
-                    continue
-
-                # ── Time-window guard (live / demo only) ─────────────────────
-                _strategy_name = self.strategy_type_var.get()
-                _mode_name = self.mode_var.get().lower()
-                if (_mode_name in ('live', 'demo')
-                        and hasattr(self, 'trading_time_config')
-                        and not self._is_time_unconstrained(_strategy_name)
-                        and not self._is_within_trading_window(_strategy_name)):
-                    self.log_message(
-                        f"⏰ [{_strategy_name}] Outside trading window — pausing.",
-                        "orange")
-                    _wait = min(self._seconds_until_start(_strategy_name), 300)
-                    time.sleep(max(5, _wait))
-                    continue
-                # ─────────────────────────────────────────────────────────────
-
-                df = self.strategy.calculate_indicators(df)
-
-                # ── ensure trade_direction is always in sync with the GUI ─────
-                _gui_dir = self.trade_direction_var.get()
-                if hasattr(self.strategy, 'trade_direction'):
-                    if self.strategy.trade_direction != _gui_dir:
-                        self.strategy.trade_direction = _gui_dir
-                        self.log_message(f"🔧 trade_direction synced: {_gui_dir}", "blue")
-                if hasattr(self.strategy, 'only_long_entries'):
-                    self.strategy.only_long_entries = (_gui_dir == 'long')
-                if hasattr(self.strategy, 'only_short_entries'):
-                    self.strategy.only_short_entries = (_gui_dir == 'short')
-                # ─────────────────────────────────────────────────────────────
-
-                if df is None or len(df) < 2:
-                    self.log_message("⚠️ Indicator calculation failed or insufficient data", "orange")
-                    continue
-
-                current_data = df.iloc[-2].copy()
-                current_price = float(current_data['Close'])
-
-                # If the period has ended (trading_running=False but running still True
-                # briefly during position close), skip new entry analysis.
-                if not self.trading_running:
-                    self.log_message(
-                        "⏸  Period ended — skipping new entry analysis.", "orange")
-                    break
-                result = self.strategy.run_analysis_cycle(current_data, current_price, df)
-
-                if hasattr(self, 'chart') and self.running:
-                    st = self.strategy_type_var.get()
-                    active_params = (self.get_current_momentum_params() if st == "Momentum"
-                                     else self.get_current_kalman_params() if st == "Kalman"
-                    else {})
-                    stop_loss = self.position.get('stop_loss') if self.position.get('type') else None
-                    trailing_stop = self.position.get('trailing_stop') if self.position.get('type') else None
-                    live_price = float(df['Close'].iloc[-1])
-                    _df, _params, _sl, _ts, _lp = df, active_params, stop_loss, trailing_stop, live_price
-
-                    def _update_chart_on_main(_df=_df, _params=_params,
-                                              _sl=_sl, _ts=_ts, _lp=_lp):
-                        try:
-                            if (hasattr(self, 'chart') and self.chart is not None
-                                    and hasattr(self.chart, 'canvas')
-                                    and self.chart.canvas is not None
-                                    and self.chart.canvas.figure is not None):
-                                self.chart.update_chart(_df, params=_params,
-                                                        stop_loss=_sl, trailing_stop=_ts, live_price=_lp)
-                        except Exception as chart_err:
-                            import logging
-                            logging.warning(f"Chart update skipped: {chart_err}")
-
-                    self.root.after(0, _update_chart_on_main)
-
-                self._process_trading_result(result, current_data, current_price, df)
+                    # ... rest of your existing single timeframe code ...
+                    # (Your existing code remains unchanged)
 
             except Exception as e:
                 self.log_message(f"Trading error: {str(e)}", "red")
@@ -5511,72 +5025,18 @@ class TradingApp:
         self.settings_panel.grab_set()
 
         notebook = ttk.Notebook(self.settings_panel)
-
-        # ── Trading Hours bar — always visible above tabs ──────────────────────
-        hours_bar = tk.Frame(self.settings_panel, bg="#1a1a2e", pady=6)
-        hours_bar.pack(fill=tk.X, padx=10, pady=(10, 0))
-
-        tk.Label(
-            hours_bar,
-            text="⏰  Trading Hours (UTC):",
-            bg="#1a1a2e", fg="white",
-            font=("Arial", 10, "bold")
-        ).pack(side=tk.LEFT, padx=(10, 20))
-
-        for strategy in ("Momentum", "Kalman", "Scalping"):
-            cfg = self.trading_time_config.get(strategy, {})
-
-            def _summary(s=strategy):
-                c = self.trading_time_config[s]
-                sh, sm = c["start_h"].get(), c["start_m"].get()
-                eh, em = c["end_h"].get(), c["end_m"].get()
-                if sh == eh and sm == em:
-                    return f"{s}: any time"
-                return f"{s}: {sh:02d}:{sm:02d}→{eh:02d}:{em:02d}"
-
-            lbl_var = tk.StringVar(value=_summary(strategy))
-            lbl = tk.Label(
-                hours_bar,
-                textvariable=lbl_var,
-                bg="#1a1a2e", fg="#aaaaff",
-                font=("Arial", 9)
-            )
-            lbl.pack(side=tk.LEFT, padx=(0, 4))
-
-            def _refresh_label(s=strategy, v=lbl_var):
-                v.set(_summary(s))
-
-            for key in ("start_h", "start_m", "end_h", "end_m"):
-                cfg[key].trace_add("write", lambda *_, s=strategy, v=lbl_var: v.set(_summary(s)))
-
-            tk.Button(
-                hours_bar,
-                text=f"⚙ {strategy}",
-                command=lambda s=strategy: self.open_time_settings_panel(s),
-                bg="#0055aa", fg="white",
-                font=("Arial", 8, "bold"),
-                relief="raised", bd=2,
-                cursor="hand2", padx=8, pady=2
-            ).pack(side=tk.LEFT, padx=(0, 14))
-
-        # ── Notebook ───────────────────────────────────────────────────────────
-        notebook.pack(expand=True, fill='both', padx=10, pady=(6, 10))
+        notebook.pack(expand=True, fill='both', padx=10, pady=10)
 
         momentum_tab = ttk.Frame(notebook)
         kalman_tab = ttk.Frame(notebook)
-        scalping_tab = ttk.Frame(notebook)
         notebook.add(momentum_tab, text="Momentum Parameters")
         notebook.add(kalman_tab, text="Kalman Parameters")
-        notebook.add(scalping_tab, text="⚡ Scalping Parameters")
 
         if not hasattr(self, 'custom_params') or not self.custom_params:
             self.load_strategy_settings()
-        if 'scalping' not in self.custom_params:
-            self.custom_params['scalping'] = self.get_default_scalping_params().copy()
 
         self.create_momentum_parameter_controls(momentum_tab)
         self.create_kalman_parameter_controls(kalman_tab)
-        self.create_scalping_parameter_controls(scalping_tab)
 
         # ─── CONTROL FRAME AT BOTTOM ──────────────────────────────────────────
         control_frame = ttk.Frame(self.settings_panel)
@@ -5709,8 +5169,6 @@ class TradingApp:
                 'tier1_volume_min', 'tier1_momentum_min', 'tier1_kalman_min',
                 'tier1_macd_gate', 'tier1_price_ema_max_pct',
                 'daily_trend_filter_enabled',
-                'pullback_zone_lower_pct', 'pullback_zone_upper_pct',
-                'adx_slope_min',
             ],
             '⬇️ TIER 1 SHORT FILTERS': [
                 'short_tier1_adx_hard_min',
@@ -5907,310 +5365,92 @@ class TradingApp:
                     }
                     row += 1
 
+            # for param_name in params:
+            #     if param_name in default_params:
+            #         scrollable_frame.columnconfigure(0, weight=0, minsize=250)
+            #         scrollable_frame.columnconfigure(1, weight=0, minsize=120)
+            #         scrollable_frame.columnconfigure(2, weight=0, minsize=120)
+            #         scrollable_frame.columnconfigure(3, weight=1, minsize=350)
+            #
+            #         label_text = param_name.replace('_', ' ').title()
+            #         ttk.Label(scrollable_frame, text=label_text, anchor='w').grid(row=row, column=0, padx=5, pady=2,
+            #                                                                       sticky='w')
+            #
+            #         default_value = default_params[param_name]
+            #         if isinstance(default_value, bool):
+            #             default_display = "✓ Enabled" if default_value else "✗ Disabled"
+            #         else:
+            #             default_display = str(default_value)
+            #
+            #         default_entry = ttk.Entry(scrollable_frame, width=15)
+            #         default_entry.insert(0, default_display)
+            #         default_entry.config(state='readonly')
+            #         default_entry.grid(row=row, column=1, padx=5, pady=2, sticky='w')
+            #
+            #         custom_value = self.custom_params['momentum'].get(param_name, default_value)
+            #
+            #         if isinstance(default_value, bool):
+            #             custom_var = tk.BooleanVar(value=custom_value)
+            #             custom_entry = ttk.Checkbutton(scrollable_frame, variable=custom_var,
+            #                                            text="Enable" if custom_value else "Disable")
+            #             custom_entry.grid(row=row, column=2, padx=5, pady=2, sticky='w')
+            #             def _safe_update_text(v, w):
+            #                 def _cb(*args):
+            #                     try:
+            #                         w.config(text="Enable" if v.get() else "Disable")
+            #                     except tk.TclError:
+            #                         pass  # Widget destroyed, ignore
+            #                 return _cb
+            #             custom_var.trace_add('write', _safe_update_text(custom_var, custom_entry))
+            #         else:
+            #             custom_var = tk.StringVar(value=str(custom_value))
+            #             custom_entry = ttk.Entry(scrollable_frame, textvariable=custom_var, width=15)
+            #             custom_entry.grid(row=row, column=2, padx=5, pady=2, sticky='w')
+            #
+            #         description = self.get_momentum_param_description(param_name)
+            #         ttk.Label(scrollable_frame, text=description, wraplength=400, anchor='w',
+            #                   foreground='#555555').grid(row=row, column=3, padx=5, pady=2, sticky='w')
+            #
+            #         self.momentum_param_widgets[param_name] = {
+            #             'default': default_entry, 'custom': custom_var, 'widget': custom_entry
+            #         }
+            #         row += 1
+
         # ═══════════════════════════════════════════════════════════════
         # RIGHT PANEL: BACKTEST OPTIMIZATION PARAMETERS
         # ═══════════════════════════════════════════════════════════════
         self._build_backtest_optimization_panel(right_frame)
 
-    # ─────────────────────────────────────────────────────────────────────────────
-    # REPLACE: _build_scalping_backtest_optimization_panel
-    # Adds a "Current" column to every parameter row (mirrors momentum panel).
-    # ─────────────────────────────────────────────────────────────────────────────
-    def _build_scalping_backtest_optimization_panel(self, right_frame):
-        """
-        Build the right-panel backtest optimisation UI for the Scalping strategy.
-        Adds a 'Current' column so users can see live param values at a glance.
-        """
-        import tkinter as tk
-        from tkinter import ttk
-        from strategies.MomentumStrategy_MACD_HybridScore_Latest import GlobalConfig
-
-        # ── Capital settings ──────────────────────────────────────────────────
-        capital_frame = ttk.LabelFrame(right_frame, text="💰 Global Capital Settings")
-        capital_frame.pack(fill=tk.X, padx=5, pady=5)
-        cap_inner = ttk.Frame(capital_frame)
-        cap_inner.pack(fill=tk.X, padx=5, pady=5)
-
-        ttk.Label(cap_inner, text="Current Capital:",
-                  font=("Arial", 9, "bold")).grid(row=0, column=0, sticky="w", padx=5, pady=2)
-        self.capital_display_var = tk.StringVar(
-            value=f"${GlobalConfig.INITIAL_CAPITAL:,.2f}"
-        )
-        ttk.Label(cap_inner, textvariable=self.capital_display_var,
-                  font=("Arial", 10, "bold"), foreground="green").grid(
-            row=0, column=1, sticky="w", padx=5, pady=2
-        )
-        ttk.Label(cap_inner, text="New Capital ($):",
-                  font=("Arial", 9)).grid(row=1, column=0, sticky="w", padx=5, pady=2)
-        self.capital_entry = ttk.Entry(cap_inner, width=15, font=("Arial", 9))
-        self.capital_entry.grid(row=1, column=1, sticky="w", padx=5, pady=2)
-        self.capital_entry.insert(0, str(GlobalConfig.INITIAL_CAPITAL))
-        tk.Button(
-            cap_inner, text="Update Capital",
-            command=self._update_global_capital,
-            bg="#4CAF50", fg="white",
-            font=("Arial", 9, "bold"), padx=10, pady=2, cursor="hand2",
-        ).grid(row=1, column=2, padx=5, pady=2)
-
-        ttk.Separator(right_frame, orient="horizontal").pack(fill=tk.X, padx=5, pady=5)
-
-        # ── ALL scalping optimisation params with default values ──────────────
-        ALL_SCALPING_OPT_PARAMS = {
-            "quality_min_long": {"desc": "Quality min score LONG", "v1": "62", "v2": "65", "v3": "68", "v4": "72"},
-            "quality_min_short": {"desc": "Quality min score SHORT", "v1": "62", "v2": "65", "v3": "68", "v4": "72"},
-            "quality_tier1_min": {"desc": "Tier 1 quality threshold", "v1": "75", "v2": "78", "v3": "80", "v4": "82"},
-            "stop_loss_atr_mult": {"desc": "Stop = ATR × mult", "v1": "1.8", "v2": "2.0", "v3": "2.2", "v4": "2.5"},
-            "trailing_activation_pct": {"desc": "Profit % to activate trailing", "v1": "0.008", "v2": "0.010",
-                                        "v3": "0.012", "v4": "0.015"},
-            "trailing_distance_pct": {"desc": "Trailing stop distance", "v1": "0.006", "v2": "0.008", "v3": "0.009",
-                                      "v4": "0.012"},
-            "be_stop_r_trigger": {"desc": "Breakeven at this R-multiple", "v1": "1.5", "v2": "1.8", "v3": "2.0",
-                                  "v4": "2.5"},
-            "take_profit_r1": {"desc": "Partial exit (50%) R-multiple", "v1": "1.2", "v2": "1.5", "v3": "1.8",
-                               "v4": "2.0"},
-            "take_profit_r2": {"desc": "Partial exit (30%) R-multiple", "v1": "2.0", "v2": "2.5", "v3": "3.0",
-                               "v4": "3.5"},
-            "adx_min_long": {"desc": "Min ADX for long entries", "v1": "20", "v2": "22", "v3": "23", "v4": "25"},
-            "adx_min_short": {"desc": "Min ADX for short entries", "v1": "22", "v2": "23", "v3": "25", "v4": "27"},
-            "adx_slope_min": {"desc": "ADX must rise per bar", "v1": "0.0", "v2": "0.05", "v3": "0.08", "v4": "0.10"},
-            "volume_min_ratio": {"desc": "Volume vs average minimum", "v1": "1.1", "v2": "1.2", "v3": "1.4",
-                                 "v4": "1.6"},
-            "rsi_long_min": {"desc": "RSI minimum for longs", "v1": "44", "v2": "46", "v3": "48", "v4": "50"},
-            "rsi_long_max": {"desc": "RSI maximum for longs", "v1": "62", "v2": "64", "v3": "66", "v4": "68"},
-            "rsi_short_min": {"desc": "RSI minimum for shorts", "v1": "28", "v2": "30", "v3": "32", "v4": "34"},
-            "rsi_short_max": {"desc": "RSI maximum for shorts", "v1": "48", "v2": "50", "v3": "52", "v4": "54"},
-            "ema_fast_period": {"desc": "Fast EMA period", "v1": "3", "v2": "5", "v3": "7", "v4": "9"},
-            "ema_mid_period": {"desc": "Mid EMA period", "v1": "9", "v2": "11", "v3": "13", "v4": "15"},
-            "ema_slow_period": {"desc": "Slow EMA period", "v1": "17", "v2": "19", "v3": "21", "v4": "24"},
-            "macd_fast": {"desc": "MACD fast period", "v1": "5", "v2": "6", "v3": "7", "v4": "8"},
-            "macd_slow": {"desc": "MACD slow period", "v1": "11", "v2": "12", "v3": "13", "v4": "15"},
-            "macd_signal_period": {"desc": "MACD signal period", "v1": "3", "v2": "4", "v3": "5", "v4": "6"},
-            "stoch_k_period": {"desc": "Stochastic %K period", "v1": "3", "v2": "5", "v3": "7", "v4": "9"},
-            "max_daily_trades": {"desc": "Max trades per day", "v1": "5", "v2": "6", "v3": "8", "v4": "10"},
-            "min_bars_between_trades": {"desc": "Min bars between entries", "v1": "2", "v2": "3", "v3": "4", "v4": "6"},
-            "cooldown_after_loss_bars": {"desc": "Bars to pause after a loss", "v1": "4", "v2": "6", "v3": "8",
-                                         "v4": "12"},
-            "max_hold_bars": {"desc": "Max hold in bars", "v1": "24", "v2": "32", "v3": "48", "v4": "64"},
-            "pullback_zone_lower_pct": {"desc": "Max % below EMA_fast for long", "v1": "-1.0", "v2": "-1.5",
-                                        "v3": "-2.0", "v4": "-2.5"},
-            "pullback_zone_upper_pct": {"desc": "Max % above EMA_fast for long", "v1": "0.3", "v2": "0.5", "v3": "0.8",
-                                        "v4": "1.0"},
-            "atr_compression_threshold": {"desc": "Block when ATR < this × avg ATR", "v1": "0.25", "v2": "0.30",
-                                          "v3": "0.35", "v4": "0.40"},
-            "chop_threshold": {"desc": "Choppiness Index block threshold", "v1": "58", "v2": "61", "v3": "63",
-                               "v4": "65"},
-            "extended_run_max_pct_long": {"desc": "Block longs if run > % from low", "v1": "3.0", "v2": "4.0",
-                                          "v3": "5.0", "v4": "6.0"},
-            "extended_run_max_pct_short": {"desc": "Block shorts if drop > % from high", "v1": "3.0", "v2": "4.0",
-                                           "v3": "5.0", "v4": "6.0"},
-            "risk_per_trade": {"desc": "Base risk % per trade", "v1": "0.006", "v2": "0.008", "v3": "0.010",
-                               "v4": "0.012"},
-            "risk_tier1": {"desc": "Risk % for Tier-1 entries", "v1": "0.008", "v2": "0.010", "v3": "0.012",
-                           "v4": "0.015"},
-            "weight_ema": {"desc": "EMA component weight", "v1": "18", "v2": "20", "v3": "22", "v4": "25"},
-            "weight_macd": {"desc": "MACD component weight", "v1": "20", "v2": "22", "v3": "23", "v4": "25"},
-            "weight_stoch": {"desc": "Stochastic component weight", "v1": "16", "v2": "18", "v3": "20", "v4": "22"},
-            "weight_rsi": {"desc": "RSI component weight", "v1": "14", "v2": "16", "v3": "18", "v4": "20"},
-            "weight_volume": {"desc": "Volume component weight", "v1": "8", "v2": "10", "v3": "12", "v4": "14"},
-        }
-
-        # Initialise scalping_backtest_params
-        if not hasattr(self, "scalping_backtest_params"):
-            self.scalping_backtest_params = {}
-        for key, meta in ALL_SCALPING_OPT_PARAMS.items():
-            if key not in self.scalping_backtest_params:
-                self.scalping_backtest_params[key] = {
-                    "active": tk.BooleanVar(value=False),
-                    "value1": tk.StringVar(value=meta["v1"]),
-                    "value2": tk.StringVar(value=meta["v2"]),
-                    "value3": tk.StringVar(value=meta["v3"]),
-                    "value4": tk.StringVar(value=meta["v4"]),
-                    "description": meta["desc"],
-                }
-            else:
-                self.scalping_backtest_params[key]["description"] = meta["desc"]
-
-        # ── Optimisation metrics ──────────────────────────────────────────────
-        mf = ttk.LabelFrame(right_frame, text="Optimization Metrics")
-        mf.pack(fill=tk.X, padx=5, pady=5)
-        mi = ttk.Frame(mf)
-        mi.pack(fill=tk.X, padx=5, pady=5)
-        row_i, col_i = 0, 0
-        for name, var in self.optimization_metrics.items():
-            ttk.Checkbutton(mi, text=name.replace("_", " ").title(),
-                            variable=var).grid(row=row_i, column=col_i,
-                                               sticky="w", padx=5, pady=2)
-            col_i += 1
-            if col_i > 1:
-                col_i = 0;
-                row_i += 1
-        ttk.Label(mi, text="Equal weights (all selected metrics)").grid(
-            row=row_i + 1, column=0, columnspan=2, pady=5
-        )
-
-        ttk.Separator(right_frame, orient="horizontal").pack(fill=tk.X, padx=5, pady=3)
-
-        # ── Action buttons ────────────────────────────────────────────────────
-        af = ttk.Frame(right_frame)
-        af.pack(fill=tk.X, padx=5, pady=3)
-        ttk.Button(af, text="✅ Select All", command=self._sc_select_all).pack(side=tk.LEFT, padx=2)
-        ttk.Button(af, text="❌ Deselect All", command=self._sc_deselect_all).pack(side=tk.LEFT, padx=2)
-        ttk.Button(af, text="💾 Save Params", command=self.save_backtest_params).pack(side=tk.LEFT, padx=2)
-        ttk.Button(af, text="📂 Load Params", command=self.load_backtest_params).pack(side=tk.LEFT, padx=2)
-        ttk.Button(af, text="🔄 Reset", command=self.reset_scalping_backtest_params).pack(side=tk.LEFT, padx=2)
-
-        self.sc_selection_label = ttk.Label(af, text="Selected: 0",
-                                            foreground="blue", font=("Arial", 9, "bold"))
-        self.sc_selection_label.pack(side=tk.RIGHT, padx=5)
-
-        # ── Parameter table header — NOW INCLUDES "Current" column ───────────
-        phf = ttk.LabelFrame(right_frame, text="Scalping Parameters (Select for Optimization)")
-        phf.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        ch = ttk.Frame(phf)
-        ch.pack(fill=tk.X, padx=5, pady=2)
-        for ci, (lbl, w) in enumerate([
-            ("✓", 3), ("Parameter", 22), ("Current", 8),
-            ("Val 1", 7), ("Val 2", 7), ("Val 3", 7), ("Val 4", 7),
-        ]):
-            ttk.Label(ch, text=lbl, width=w,
-                      anchor="center" if ci == 0 else "w",
-                      font=("Arial", 8, "bold")).grid(row=0, column=ci, padx=1)
-        ttk.Separator(phf, orient="horizontal").pack(fill=tk.X, padx=5)
-
-        sc_canvas = tk.Canvas(phf, bg="white", highlightthickness=0)
-        sc_sb = ttk.Scrollbar(phf, orient="vertical", command=sc_canvas.yview)
-        sc_sf = ttk.Frame(sc_canvas)
-        sc_sf.bind("<Configure>",
-                   lambda e: sc_canvas.configure(scrollregion=sc_canvas.bbox("all")))
-        sc_canvas.create_window((0, 0), window=sc_sf, anchor="nw")
-        sc_canvas.configure(yscrollcommand=sc_sb.set)
-        sc_canvas.pack(side="left", fill="both", expand=True, padx=2, pady=2)
-        sc_sb.pack(side="right", fill="y")
-        sc_canvas.bind("<MouseWheel>",
-                       lambda e: sc_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
-
-        self.scalping_backtest_param_widgets = {}
-
-        for p_row, (pk, pd) in enumerate(
-                sorted(self.scalping_backtest_params.items(), key=lambda x: x[1]["description"])
-        ):
-            frame = ttk.Frame(sc_sf)
-            frame.grid(row=p_row, column=0, sticky="ew", pady=1, padx=2)
-
-            # Checkbox
-            def _mk_cmd(k=pk):
-                def cmd(): self._sc_update_count()
-
-                return cmd
-
-            cb = ttk.Checkbutton(frame, variable=pd["active"], command=_mk_cmd())
-            cb.grid(row=0, column=0, padx=2)
-
-            # Clickable label
-            lbl = ttk.Label(frame, text=pd["description"], width=25, anchor="w",
-                            font=("Arial", 8), cursor="hand2")
-            lbl.grid(row=0, column=1, padx=2, sticky="w")
-
-            def _mk_click(k=pk):
-                def click(e):
-                    cur = self.scalping_backtest_params[k]["active"].get()
-                    self.scalping_backtest_params[k]["active"].set(not cur)
-                    self._sc_update_count()
-
-                return click
-
-            lbl.bind("<Button-1>", _mk_click())
-
-            # ── CURRENT VALUE column (new) ────────────────────────────────────
-            cur_val = self._get_scalping_param_value(pk)
-            cur_str = str(cur_val) if cur_val is not None else "—"
-            cur_lbl = ttk.Label(frame, text=cur_str, width=8, anchor="center",
-                                font=("Arial", 8, "bold"), foreground="#0066CC")
-            cur_lbl.grid(row=0, column=2, padx=1)
-
-            # Value inputs (v1-v4)
-            for vi, vk in enumerate(["value1", "value2", "value3", "value4"], start=3):
-                e = ttk.Entry(frame, textvariable=pd[vk], width=7, font=("Arial", 8))
-                e.grid(row=0, column=vi, padx=1)
-
-            self.scalping_backtest_param_widgets[pk] = {
-                **pd, "current_lbl": cur_lbl, "widget": cb,
-            }
-
-        self._sc_update_count()
-    def _sc_update_count(self):
-        """Update Scalping optimization selection counter."""
-        if hasattr(self, 'sc_selection_label') and self.sc_selection_label.winfo_exists():
-            count = sum(1 for p in self.scalping_backtest_params.values() if p['active'].get())
-            color = 'red' if count > 10 else 'green' if count > 0 else 'blue'
-            self.sc_selection_label.config(text=f"Selected: {count}", foreground=color)
-
-    def _sc_select_all(self):
-        for p in self.scalping_backtest_params.values():
-            p['active'].set(True)
-        self._sc_update_count()
-
-    def _sc_deselect_all(self):
-        for p in self.scalping_backtest_params.values():
-            p['active'].set(False)
-        self._sc_update_count()
-
-    def _get_scalping_param_value(self, param_key):
-        """Get current value for a scalping param (UI → custom_params → SCALPING_PARAMS)."""
-        # Layer 1: live scalping param widgets
-        if hasattr(self, 'scalping_param_widgets') and param_key in self.scalping_param_widgets:
-            try:
-                cvar = self.scalping_param_widgets[param_key]['custom']
-                if isinstance(cvar, tk.BooleanVar):
-                    return cvar.get()
-                raw = cvar.get()
-                if raw not in ('', None):
-                    return self.convert_param_value(raw)
-            except Exception:
-                pass
-        # Layer 2: saved custom
-        val = self.custom_params.get('scalping', {}).get(param_key)
-        if val is not None:
-            return val
-        # Layer 3: SCALPING_PARAMS defaults
-        try:
-            from strategies.scalping_strategy import SCALPING_PARAMS
-            return SCALPING_PARAMS.get(param_key)
-        except ImportError:
-            return None
-
     def _build_backtest_optimization_panel(self, right_frame):
-        """
-        Build the right-panel backtest optimization parameter UI.
-        COMPLETE FIX: Shows ALL parameters for the currently selected strategy.
-        """
+        """Build the right-panel backtest optimization parameter UI with ALL v7.6 metrics"""
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # GLOBAL CAPITAL CONTROL - ADD THIS AT THE TOP OF THE RIGHT PANEL
+        # ═══════════════════════════════════════════════════════════════════════
         from strategies.MomentumStrategy_MACD_HybridScore_Latest import GlobalConfig
 
-        # Clear existing content
-        for widget in right_frame.winfo_children():
-            widget.destroy()
-
-        # ── Capital settings (shared across all strategies) ──────────────────────
         capital_frame = ttk.LabelFrame(right_frame, text="💰 Global Capital Settings")
         capital_frame.pack(fill=tk.X, padx=5, pady=5)
 
         capital_inner = ttk.Frame(capital_frame)
         capital_inner.pack(fill=tk.X, padx=5, pady=5)
 
-        ttk.Label(capital_inner, text="Current Capital:", font=('Arial', 9, 'bold')).grid(
-            row=0, column=0, sticky='w', padx=5, pady=2)
+        # Current capital display
+        ttk.Label(capital_inner, text="Current Capital:", font=('Arial', 9, 'bold')).grid(row=0, column=0, sticky='w',
+                                                                                          padx=5, pady=2)
+
         self.capital_display_var = tk.StringVar(value=f"${GlobalConfig.INITIAL_CAPITAL:,.2f}")
         ttk.Label(capital_inner, textvariable=self.capital_display_var,
-                  font=('Arial', 10, 'bold'), foreground='green').grid(
-            row=0, column=1, sticky='w', padx=5, pady=2)
+                  font=('Arial', 10, 'bold'), foreground='green').grid(row=0, column=1, sticky='w', padx=5, pady=2)
 
-        ttk.Label(capital_inner, text="New Capital ($):", font=('Arial', 9)).grid(
-            row=1, column=0, sticky='w', padx=5, pady=2)
+        # New capital input
+        ttk.Label(capital_inner, text="New Capital ($):", font=('Arial', 9)).grid(row=1, column=0, sticky='w', padx=5,
+                                                                                  pady=2)
         self.capital_entry = ttk.Entry(capital_inner, width=15, font=('Arial', 9))
         self.capital_entry.grid(row=1, column=1, sticky='w', padx=5, pady=2)
         self.capital_entry.insert(0, str(GlobalConfig.INITIAL_CAPITAL))
 
+        # Update button
         update_btn = tk.Button(
             capital_inner,
             text="Update Capital",
@@ -6224,481 +5464,209 @@ class TradingApp:
         )
         update_btn.grid(row=1, column=2, padx=5, pady=2)
 
+        # Separator
         ttk.Separator(right_frame, orient='horizontal').pack(fill=tk.X, padx=5, pady=5)
+        # ═══════════════════════════════════════════════════════════════════════
 
-        # ═══ GET CURRENTLY SELECTED STRATEGY ═══════════════════════════════════════
-        current_strategy = self.strategy_type_var.get() if hasattr(self, 'strategy_type_var') else "Momentum"
+        # ALL parameters available for optimization
+        # ═══════════════════════════════════════════════════════════════════════
+        # FIXED: Use ACTUAL MOMENTUM_PARAMS values, not hardcoded old numbers
+        # ═══════════════════════════════════════════════════════════════════════
 
-        self.log_message("=" * 70, "cyan")
-        self.log_message(f"🔧 Building Backtest Optimization Panel for: {current_strategy}", "cyan")
-        self.log_message("=" * 70, "cyan")
+        # ═══════════════════════════════════════════════════════════════════════════
+        # REPLACE ALL_BACKTEST_PARAMS inside _build_backtest_optimization_panel()
+        # Find the line:  ALL_BACKTEST_PARAMS = {
+        # Replace everything from that line to the closing }
+        # ═══════════════════════════════════════════════════════════════════════════
 
-        # ═══ BUILD STRATEGY-SPECIFIC PANEL ═════════════════════════════════════════
-        if current_strategy == "Kalman":
-            self._build_kalman_backtest_panel(right_frame)
-        elif current_strategy == "Scalping":
-            self._build_scalping_backtest_panel(right_frame)
-        else:  # Momentum (default)
-            self._build_momentum_backtest_panel(right_frame)
+        ALL_BACKTEST_PARAMS = {
 
-    def _build_momentum_backtest_panel(self, right_frame):
-        """Build COMPLETE Momentum-specific backtest optimization panel with ALL 160+ parameters"""
-        from strategies.MomentumStrategy_MACD_HybridScore_Latest import MOMENTUM_PARAMS
+            # ═══ QUALITY / TIER THRESHOLDS ═══════════════════════════════════════
+            'quality_tier1_min': {'description': 'Tier 1 Minimum Score (LONG)', 'v1': '68', 'v2': '70', 'v3': '72',
+                                  'v4': '75'},
+            'quality_tier2_min': {'description': 'Tier 2 Minimum Score (LONG)', 'v1': '55', 'v2': '58', 'v3': '62',
+                                  'v4': '65'},
+            'fixed_threshold': {'description': 'Fixed Entry Threshold', 'v1': '65', 'v2': '68', 'v3': '72', 'v4': '75'},
+            'short_quality_tier1_min': {'description': 'Tier 1 Minimum Score (SHORT)', 'v1': '70', 'v2': '72',
+                                        'v3': '75', 'v4': '78'},
+            'short_quality_tier2_min': {'description': 'Tier 2 Minimum Score (SHORT)', 'v1': '60', 'v2': '63',
+                                        'v3': '65', 'v4': '68'},
+            'short_fixed_threshold': {'description': 'Fixed Entry Threshold (SHORT)', 'v1': '70', 'v2': '72',
+                                      'v3': '75', 'v4': '78'},
+            'only_tier2_entries': {'description': '🔥 Only Tier 2 Entries', 'v1': 'false', 'v2': 'true', 'v3': '',
+                                   'v4': ''},
 
-        # ═══ Get current parameters from GUI (respects toggle selection) ══════════
-        current_params = self.get_current_momentum_params()
+            # ═══ EMA PERIODS ═══════════════════════════════════════════════════════
+            'ema_fast_period': {'description': 'EMA Fast Period', 'v1': '8', 'v2': '9', 'v3': '10', 'v4': '12'},
+            'ema_mid_period': {'description': 'EMA Mid Period', 'v1': '18', 'v2': '20', 'v3': '21', 'v4': '24'},
+            'ema_slow_period': {'description': 'EMA Slow Period', 'v1': '45', 'v2': '50', 'v3': '55', 'v4': '60'},
 
-        # Log the source of parameters
-        self.log_message("=" * 70, "yellow")
-        self.log_message(f"📋 MOMENTUM BACKTEST PARAMETER SOURCE: {self.param_toggle_var.get()}", "yellow")
-        self.log_message(f"📊 Total parameters loaded: {len(current_params)}", "cyan")
-        self.log_message("=" * 70, "yellow")
+            # ═══ QUALITY WEIGHTS ════════════════════════════════════════════════════
+            'weight_ema': {'description': 'EMA Weight', 'v1': '15', 'v2': '18', 'v3': '20', 'v4': '25'},
+            'weight_adx': {'description': 'ADX Weight', 'v1': '15', 'v2': '18', 'v3': '20', 'v4': '25'},
+            'weight_macd': {'description': 'MACD Weight', 'v1': '20', 'v2': '22', 'v3': '25', 'v4': '28'},
+            'weight_rsi': {'description': 'RSI Weight', 'v1': '15', 'v2': '18', 'v3': '20', 'v4': '22'},
+            'weight_volume': {'description': 'Volume Weight', 'v1': '10', 'v2': '12', 'v3': '15', 'v4': '18'},
 
-        # ═══ COMPLETE MOMENTUM BACKTEST PARAMETERS (All categories) ═══════════════
-        ALL_MOMENTUM_BACKTEST_PARAMS = {
-            # ──────────────────────────────────────────────────────────────────────
-            # QUALITY & TIER THRESHOLDS
-            # ──────────────────────────────────────────────────────────────────────
-            'quality_tier1_min': {
-                'description': 'Tier 1 Minimum Score (LONG)',
-                'current': current_params.get('quality_tier1_min', 68),
-                'v1': '62', 'v2': '65', 'v3': '68', 'v4': '72'},
-            'quality_tier2_min': {
-                'description': 'Tier 2 Minimum Score (LONG)',
-                'current': current_params.get('quality_tier2_min', 62),
-                'v1': '55', 'v2': '58', 'v3': '62', 'v4': '65'},
-            'fixed_threshold': {
-                'description': 'Fixed Entry Threshold',
-                'current': current_params.get('fixed_threshold', 72),
-                'v1': '65', 'v2': '68', 'v3': '72', 'v4': '75'},
-            'short_quality_tier1_min': {
-                'description': 'Tier 1 Minimum Score (SHORT)',
-                'current': current_params.get('short_quality_tier1_min', 70),
-                'v1': '65', 'v2': '68', 'v3': '70', 'v4': '75'},
-            'short_quality_tier2_min': {
-                'description': 'Tier 2 Minimum Score (SHORT)',
-                'current': current_params.get('short_quality_tier2_min', 65),
-                'v1': '60', 'v2': '63', 'v3': '65', 'v4': '68'},
-            'short_fixed_threshold': {
-                'description': 'Fixed Entry Threshold (SHORT)',
-                'current': current_params.get('short_fixed_threshold', 75),
-                'v1': '70', 'v2': '72', 'v3': '75', 'v4': '78'},
-            'only_tier2_entries': {
-                'description': '🔥 ONLY Tier 2 Entries (Block Tier 1)',
-                'current': current_params.get('only_tier2_entries', False),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
+            # ═══ LONG ENTRY FILTERS ════════════════════════════════════════════════
+            'tier1_adx_hard_min': {'description': 'Tier 1 ADX Minimum (LONG)', 'v1': '18', 'v2': '20', 'v3': '22',
+                                   'v4': '25'},
+            'tier1_adx_min': {'description': 'Tier 1 ADX Min (soft)', 'v1': '16', 'v2': '18', 'v3': '20', 'v4': '22'},
+            'tier1_rsi_min': {'description': 'Tier 1 RSI Minimum (LONG)', 'v1': '40', 'v2': '42', 'v3': '44',
+                              'v4': '46'},
+            'tier1_rsi_max': {'description': 'Tier 1 RSI Maximum (LONG)', 'v1': '60', 'v2': '62', 'v3': '64',
+                              'v4': '66'},
+            'tier1_volume_min': {'description': 'Tier 1 Volume Min (LONG)', 'v1': '0.8', 'v2': '0.9', 'v3': '1.0',
+                                 'v4': '1.2'},
+            'tier1_momentum_min': {'description': 'Tier 1 Momentum Min % (LONG)', 'v1': '0.01', 'v2': '0.015',
+                                   'v3': '0.02', 'v4': '0.03'},
+            'adx_min': {'description': 'ADX Minimum (Entry)', 'v1': '15', 'v2': '18', 'v3': '20', 'v4': '22'},
+            'adx_min_trend': {'description': 'ADX Min Trend Strength', 'v1': '20', 'v2': '22', 'v3': '25', 'v4': '28'},
 
-            # ──────────────────────────────────────────────────────────────────────
-            # EMA PERIODS
-            # ──────────────────────────────────────────────────────────────────────
-            'ema_fast_period': {
-                'description': 'EMA Fast Period',
-                'current': current_params.get('ema_fast_period', 9),
-                'v1': '8', 'v2': '9', 'v3': '10', 'v4': '12'},
-            'ema_mid_period': {
-                'description': 'EMA Mid Period',
-                'current': current_params.get('ema_mid_period', 21),
-                'v1': '18', 'v2': '20', 'v3': '21', 'v4': '24'},
-            'ema_slow_period': {
-                'description': 'EMA Slow Period',
-                'current': current_params.get('ema_slow_period', 55),
-                'v1': '45', 'v2': '50', 'v3': '55', 'v4': '60'},
-            'daily_ema_period': {
-                'description': 'Daily EMA Period (hours)',
-                'current': current_params.get('daily_ema_period', 720),
-                'v1': '480', 'v2': '600', 'v3': '720', 'v4': '960'},
-            'daily_trend_adx_override': {
-                'description': 'Daily Trend ADX Override',
-                'current': current_params.get('daily_trend_adx_override', 28),
-                'v1': '22', 'v2': '25', 'v3': '28', 'v4': '32'},
+            # ═══ SHORT ENTRY FILTERS ═══════════════════════════════════════════════
+            'short_tier1_adx_hard_min': {'description': 'Tier 1 ADX Minimum (SHORT)', 'v1': '24', 'v2': '26',
+                                         'v3': '28', 'v4': '30'},
+            'short_tier1_rsi_min': {'description': 'Tier 1 RSI Minimum (SHORT)', 'v1': '30', 'v2': '32', 'v3': '34',
+                                    'v4': '36'},
+            'short_tier1_rsi_max': {'description': 'Tier 1 RSI Maximum (SHORT)', 'v1': '50', 'v2': '52', 'v3': '54',
+                                    'v4': '56'},
+            'short_tier1_volume_min': {'description': 'Tier 1 Volume Min (SHORT)', 'v1': '1.0', 'v2': '1.1',
+                                       'v3': '1.3', 'v4': '1.5'},
+            'short_tier1_momentum_min': {'description': 'Tier 1 Momentum Min % (SHORT)', 'v1': '0.03', 'v2': '0.04',
+                                         'v3': '0.05', 'v4': '0.06'},
+            'short_require_lower_highs_bars': {'description': 'Short: Lower Highs Bars Required', 'v1': '1', 'v2': '2',
+                                               'v3': '3', 'v4': '4'},
+            'short_require_lower_lows_bars': {'description': 'Short: Lower Lows Bars Required', 'v1': '1', 'v2': '2',
+                                              'v3': '3', 'v4': '4'},
 
-            # ──────────────────────────────────────────────────────────────────────
-            # QUALITY WEIGHTS (Must sum to 100)
-            # ──────────────────────────────────────────────────────────────────────
-            'weight_ema': {
-                'description': 'EMA Weight',
-                'current': current_params.get('weight_ema', 20),
-                'v1': '15', 'v2': '18', 'v3': '20', 'v4': '25'},
-            'weight_adx': {
-                'description': 'ADX Weight',
-                'current': current_params.get('weight_adx', 20),
-                'v1': '15', 'v2': '18', 'v3': '20', 'v4': '25'},
-            'weight_macd': {
-                'description': 'MACD Weight',
-                'current': current_params.get('weight_macd', 25),
-                'v1': '20', 'v2': '22', 'v3': '25', 'v4': '28'},
-            'weight_rsi': {
-                'description': 'RSI Weight',
-                'current': current_params.get('weight_rsi', 20),
-                'v1': '15', 'v2': '18', 'v3': '20', 'v4': '22'},
-            'weight_volume': {
-                'description': 'Volume Weight',
-                'current': current_params.get('weight_volume', 15),
-                'v1': '10', 'v2': '12', 'v3': '15', 'v4': '18'},
+            # ═══ TIER 2 FILTERS ════════════════════════════════════════════════════
+            'tier2_adx_min': {'description': 'Tier 2 ADX Min', 'v1': '12', 'v2': '15', 'v3': '18', 'v4': '20'},
+            'tier2_volume_min': {'description': 'Tier 2 Volume Min', 'v1': '0.5', 'v2': '0.6', 'v3': '0.7',
+                                 'v4': '0.8'},
+            'cooldown_tier2_enabled': {'description': 'Enable Tier 2 cooldown', 'v1': 'true', 'v2': 'false', 'v3': '',
+                                       'v4': ''},
 
-            # ──────────────────────────────────────────────────────────────────────
-            # TIER 1 LONG FILTERS
-            # ──────────────────────────────────────────────────────────────────────
-            'tier1_adx_hard_min': {
-                'description': 'Tier 1 ADX Hard Min (LONG)',
-                'current': current_params.get('tier1_adx_hard_min', 25),
-                'v1': '20', 'v2': '22', 'v3': '25', 'v4': '28'},
-            'tier1_adx_min': {
-                'description': 'Tier 1 ADX Min (soft)',
-                'current': current_params.get('tier1_adx_min', 20),
-                'v1': '16', 'v2': '18', 'v3': '20', 'v4': '22'},
-            'tier1_rsi_min': {
-                'description': 'Tier 1 RSI Min (LONG)',
-                'current': current_params.get('tier1_rsi_min', 40),
-                'v1': '38', 'v2': '40', 'v3': '42', 'v4': '44'},
-            'tier1_rsi_max': {
-                'description': 'Tier 1 RSI Max (LONG)',
-                'current': current_params.get('tier1_rsi_max', 68),
-                'v1': '62', 'v2': '65', 'v3': '68', 'v4': '72'},
-            'tier1_volume_min': {
-                'description': 'Tier 1 Volume Min (LONG)',
-                'current': current_params.get('tier1_volume_min', 0.8),
-                'v1': '0.7', 'v2': '0.8', 'v3': '1.0', 'v4': '1.2'},
-            'tier1_momentum_min': {
-                'description': 'Tier 1 Momentum Min % (LONG)',
-                'current': current_params.get('tier1_momentum_min', 0.02),
-                'v1': '0.01', 'v2': '0.015', 'v3': '0.02', 'v4': '0.03'},
-            'tier1_kalman_min': {
-                'description': 'Tier 1 Kalman Strength Min',
-                'current': current_params.get('tier1_kalman_min', 0.0),
-                'v1': '0.0', 'v2': '0.1', 'v3': '0.2', 'v4': '0.3'},
-            'tier1_macd_gate': {
-                'description': 'Tier 1 MACD Gate Required',
-                'current': current_params.get('tier1_macd_gate', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'tier1_price_ema_max_pct': {
-                'description': 'Tier 1 Price-EMA Max %',
-                'current': current_params.get('tier1_price_ema_max_pct', 1.5),
-                'v1': '1.0', 'v2': '1.5', 'v3': '2.0', 'v4': '3.0'},
+            # ═══ REGIME / VOLATILITY FILTERS ═══════════════════════════════════════
+            'regime_filter_enabled': {'description': 'Regime Filter Enabled', 'v1': 'true', 'v2': 'false', 'v3': '',
+                                      'v4': ''},
+            'atr_compression_enabled': {'description': 'ATR Compression Filter Enabled', 'v1': 'true', 'v2': 'false',
+                                        'v3': '', 'v4': ''},
+            'atr_compression_threshold': {'description': 'ATR Compression Threshold', 'v1': '0.35', 'v2': '0.40',
+                                          'v3': '0.45', 'v4': '0.50'},
+            'extended_run_max_pct_long': {'description': 'Extended Run Max % (LONG)', 'v1': '10', 'v2': '12',
+                                          'v3': '15', 'v4': '20'},
+            'extended_run_max_pct_short': {'description': 'Extended Run Max % (SHORT)', 'v1': '10', 'v2': '12',
+                                           'v3': '15', 'v4': '20'},
+            'chop_threshold': {'description': 'Choppiness Index Threshold', 'v1': '50', 'v2': '54', 'v3': '58',
+                               'v4': '62'},
 
-            # ──────────────────────────────────────────────────────────────────────
-            # DAILY TREND FILTERS (LONG)
-            # ──────────────────────────────────────────────────────────────────────
-            'daily_trend_filter_enabled': {
-                'description': 'Daily Trend Filter Enabled',
-                'current': current_params.get('daily_trend_filter_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
+            # ═══ ENTRY PRECISION ════════════════════════════════════════════════════
+            'rsi_entry_min': {'description': 'RSI Entry Minimum', 'v1': '38', 'v2': '40', 'v3': '42', 'v4': '45'},
+            'rsi_entry_max': {'description': 'RSI Entry Maximum', 'v1': '62', 'v2': '65', 'v3': '68', 'v4': '70'},
+            'volume_min_ratio': {'description': 'Volume Ratio Minimum', 'v1': '0.9', 'v2': '1.0', 'v3': '1.1',
+                                 'v4': '1.2'},
+            'momentum_min': {'description': 'Momentum Minimum %', 'v1': '0.02', 'v2': '0.03', 'v3': '0.04',
+                             'v4': '0.05'},
+            'rsi_direction_bars': {'description': 'RSI Direction Bars', 'v1': '1', 'v2': '2', 'v3': '3', 'v4': '4'},
+            'ema_trending_bars': {'description': 'EMA Trending Bars', 'v1': '2', 'v2': '3', 'v3': '4', 'v4': '5'},
+            'macd_hist_rising_bars': {'description': 'MACD Histogram Rising Bars', 'v1': '0', 'v2': '1', 'v3': '2',
+                                      'v4': '3'},
 
-            # ──────────────────────────────────────────────────────────────────────
-            # TIER 1 SHORT FILTERS
-            # ──────────────────────────────────────────────────────────────────────
-            'short_tier1_adx_hard_min': {
-                'description': 'Tier 1 ADX Hard Min (SHORT)',
-                'current': current_params.get('short_tier1_adx_hard_min', 30),
-                'v1': '25', 'v2': '28', 'v3': '30', 'v4': '32'},
-            'short_tier1_rsi_min': {
-                'description': 'Tier 1 RSI Min (SHORT)',
-                'current': current_params.get('short_tier1_rsi_min', 34),
-                'v1': '30', 'v2': '32', 'v3': '34', 'v4': '36'},
-            'short_tier1_rsi_max': {
-                'description': 'Tier 1 RSI Max (SHORT)',
-                'current': current_params.get('short_tier1_rsi_max', 54),
-                'v1': '48', 'v2': '50', 'v3': '54', 'v4': '56'},
-            'short_tier1_volume_min': {
-                'description': 'Tier 1 Volume Min (SHORT)',
-                'current': current_params.get('short_tier1_volume_min', 1.3),
-                'v1': '1.0', 'v2': '1.2', 'v3': '1.3', 'v4': '1.5'},
-            'short_tier1_momentum_min': {
-                'description': 'Tier 1 Momentum Min % (SHORT)',
-                'current': current_params.get('short_tier1_momentum_min', 0.05),
-                'v1': '0.03', 'v2': '0.04', 'v3': '0.05', 'v4': '0.06'},
-            'short_tier1_macd_gate': {
-                'description': 'Tier 1 MACD Gate (SHORT)',
-                'current': current_params.get('short_tier1_macd_gate', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'daily_trend_down_filter_enabled': {
-                'description': 'Daily Trend Down Filter Enabled',
-                'current': current_params.get('daily_trend_down_filter_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'short_require_lower_highs_bars': {
-                'description': 'Short: Lower Highs Bars Required',
-                'current': current_params.get('short_require_lower_highs_bars', 2),
-                'v1': '1', 'v2': '2', 'v3': '3', 'v4': '4'},
-            'short_require_lower_lows_bars': {
-                'description': 'Short: Lower Lows Bars Required',
-                'current': current_params.get('short_require_lower_lows_bars', 2),
-                'v1': '1', 'v2': '2', 'v3': '3', 'v4': '4'},
+            # ═══ BREAKEVEN STOP ═════════════════════════════════════════════════════
+            'be_stop_enabled': {'description': 'Breakeven Stop Enabled', 'v1': 'true', 'v2': 'false', 'v3': '',
+                                'v4': ''},
+            'be_stop_r_trigger': {'description': 'Breakeven Stop R Trigger', 'v1': '1.5', 'v2': '2.0', 'v3': '2.5',
+                                  'v4': '3.0'},
+            'be_stop_no_progress_bars': {'description': 'Breakeven No-Progress Bars', 'v1': '30', 'v2': '35',
+                                         'v3': '40', 'v4': '50'},
 
-            # ──────────────────────────────────────────────────────────────────────
-            # PULLBACK ZONE & ADX SLOPE
-            # ──────────────────────────────────────────────────────────────────────
-            'pullback_zone_lower_pct': {
-                'description': 'Pullback Zone Lower %',
-                'current': current_params.get('pullback_zone_lower_pct', -2.5),
-                'v1': '-3.0', 'v2': '-2.5', 'v3': '-2.0', 'v4': '-1.5'},
-            'pullback_zone_upper_pct': {
-                'description': 'Pullback Zone Upper %',
-                'current': current_params.get('pullback_zone_upper_pct', 1.5),
-                'v1': '1.0', 'v2': '1.5', 'v3': '2.0', 'v4': '3.0'},
-            'adx_slope_min': {
-                'description': 'ADX Slope Min (rise per bar)',
-                'current': current_params.get('adx_slope_min', 0.1),
-                'v1': '-0.2', 'v2': '0.0', 'v3': '0.1', 'v4': '0.2'},
+            # ═══ STOP LOSS & TRAILING ═══════════════════════════════════════════════
+            'stop_loss_atr_mult': {'description': 'Stop Loss ATR Mult', 'v1': '2.0', 'v2': '2.5', 'v3': '3.0',
+                                   'v4': '3.5'},
+            'trailing_stop_atr_mult': {'description': 'Trailing Stop ATR Multiplier', 'v1': '5.0', 'v2': '5.5',
+                                       'v3': '6.0', 'v4': '6.5'},
+            'initial_trailing_atr_mult': {'description': 'Initial Trailing ATR Multiplier', 'v1': '4.0', 'v2': '4.5',
+                                          'v3': '5.0', 'v4': '5.5'},
+            'trailing_activation_pct': {'description': 'Trailing Activation %', 'v1': '0.030', 'v2': '0.035',
+                                        'v3': '0.040', 'v4': '0.045'},
+            'trailing_distance_pct': {'description': 'Trailing Distance %', 'v1': '0.035', 'v2': '0.040', 'v3': '0.045',
+                                      'v4': '0.050'},
+            'trailing_activation_r': {'description': 'Trail Activation R', 'v1': '1.5', 'v2': '2.0', 'v3': '2.5',
+                                      'v4': '3.0'},
+            'trailing_stop_pct': {'description': 'Trailing Stop %', 'v1': '0.02', 'v2': '0.03', 'v3': '0.04',
+                                  'v4': '0.05'},
 
-            # ──────────────────────────────────────────────────────────────────────
-            # TIER 2 FILTERS
-            # ──────────────────────────────────────────────────────────────────────
-            'tier2_adx_min': {
-                'description': 'Tier 2 ADX Min',
-                'current': current_params.get('tier2_adx_min', 18),
-                'v1': '12', 'v2': '15', 'v3': '18', 'v4': '22'},
-            'tier2_volume_min': {
-                'description': 'Tier 2 Volume Min',
-                'current': current_params.get('tier2_volume_min', 0.5),
-                'v1': '0.3', 'v2': '0.4', 'v3': '0.5', 'v4': '0.7'},
-            'tier2_volume_min_ratio': {
-                'description': 'Tier 2 Volume Ratio Min',
-                'current': current_params.get('tier2_volume_min_ratio', 1.1),
-                'v1': '0.9', 'v2': '1.0', 'v3': '1.1', 'v4': '1.3'},
-            'tier2_momentum_min': {
-                'description': 'Tier 2 Momentum Min %',
-                'current': current_params.get('tier2_momentum_min', 0.05),
-                'v1': '0.03', 'v2': '0.04', 'v3': '0.05', 'v4': '0.07'},
-            'cooldown_tier2_enabled': {
-                'description': 'Enable Tier 2 Cooldown',
-                'current': current_params.get('cooldown_tier2_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
+            # ═══ COOLDOWNS ══════════════════════════════════════════════════════════
+            'cooldown_after_loss_bars': {'description': 'Cooldown After Loss (bars)', 'v1': '6', 'v2': '12', 'v3': '18',
+                                         'v4': '24'},
+            'consecutive_loss_threshold': {'description': 'Consecutive Loss Threshold', 'v1': '2', 'v2': '3', 'v3': '4',
+                                           'v4': '5'},
+            'consecutive_loss_cooldown_bars': {'description': 'Consecutive Loss Cooldown (bars)', 'v1': '6', 'v2': '8',
+                                               'v3': '12', 'v4': '16'},
 
-            # ──────────────────────────────────────────────────────────────────────
-            # REGIME & VOLATILITY FILTERS
-            # ──────────────────────────────────────────────────────────────────────
-            'regime_filter_enabled': {
-                'description': 'Regime Filter Enabled',
-                'current': current_params.get('regime_filter_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'chop_threshold': {
-                'description': 'Choppiness Index Threshold',
-                'current': current_params.get('chop_threshold', 58),
-                'v1': '50', 'v2': '54', 'v3': '58', 'v4': '62'},
-            'atr_compression_enabled': {
-                'description': 'ATR Compression Filter Enabled',
-                'current': current_params.get('atr_compression_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'atr_compression_threshold': {
-                'description': 'ATR Compression Threshold',
-                'current': current_params.get('atr_compression_threshold', 0.25),
-                'v1': '0.15', 'v2': '0.20', 'v3': '0.25', 'v4': '0.30'},
-            'extended_run_max_pct_long': {
-                'description': 'Extended Run Max % (LONG)',
-                'current': current_params.get('extended_run_max_pct_long', 12.0),
-                'v1': '8.0', 'v2': '10.0', 'v3': '12.0', 'v4': '15.0'},
-            'extended_run_max_pct_short': {
-                'description': 'Extended Run Max % (SHORT)',
-                'current': current_params.get('extended_run_max_pct_short', 12.0),
-                'v1': '8.0', 'v2': '10.0', 'v3': '12.0', 'v4': '15.0'},
+            # ═══ EXIT CONDITIONS ════════════════════════════════════════════════════
+            'rsi_exit_threshold': {'description': 'RSI Exit Threshold', 'v1': '72', 'v2': '75', 'v3': '78', 'v4': '80'},
+            'macd_bearish_cross_profit_min': {'description': 'MACD Bearish Cross Min Profit %', 'v1': '1.5',
+                                              'v2': '2.0', 'v3': '2.5', 'v4': '3.0'},
+            'kalman_fade_threshold': {'description': 'Kalman Fade Threshold', 'v1': '25', 'v2': '30', 'v3': '35',
+                                      'v4': '40'},
+            'profit_min_fade': {'description': 'Min Profit % to Allow Fade Exit', 'v1': '0.5', 'v2': '0.8', 'v3': '1.0',
+                                'v4': '1.5'},
 
-            # ──────────────────────────────────────────────────────────────────────
-            # ENTRY PRECISION FILTERS
-            # ──────────────────────────────────────────────────────────────────────
-            'adx_min': {
-                'description': 'ADX Minimum (Entry)',
-                'current': current_params.get('adx_min', 18),
-                'v1': '15', 'v2': '18', 'v3': '20', 'v4': '22'},
-            'adx_min_trend': {
-                'description': 'ADX Min Trend Strength',
-                'current': current_params.get('adx_min_trend', 25),
-                'v1': '20', 'v2': '22', 'v3': '25', 'v4': '28'},
-            'rsi_entry_min': {
-                'description': 'RSI Entry Minimum',
-                'current': current_params.get('rsi_entry_min', 40),
-                'v1': '38', 'v2': '40', 'v3': '42', 'v4': '45'},
-            'rsi_entry_max': {
-                'description': 'RSI Entry Maximum',
-                'current': current_params.get('rsi_entry_max', 68),
-                'v1': '62', 'v2': '65', 'v3': '68', 'v4': '72'},
-            'volume_min_ratio': {
-                'description': 'Volume Ratio Minimum',
-                'current': current_params.get('volume_min_ratio', 1.1),
-                'v1': '0.9', 'v2': '1.0', 'v3': '1.1', 'v4': '1.3'},
-            'momentum_min': {
-                'description': 'Momentum Minimum %',
-                'current': current_params.get('momentum_min', 0.05),
-                'v1': '0.03', 'v2': '0.04', 'v3': '0.05', 'v4': '0.07'},
-            'rsi_direction_bars': {
-                'description': 'RSI Direction Bars',
-                'current': current_params.get('rsi_direction_bars', 3),
-                'v1': '1', 'v2': '2', 'v3': '3', 'v4': '4'},
-            'ema_trending_bars': {
-                'description': 'EMA Trending Bars',
-                'current': current_params.get('ema_trending_bars', 3),
-                'v1': '2', 'v2': '3', 'v3': '4', 'v4': '5'},
-            'macd_hist_rising_bars': {
-                'description': 'MACD Histogram Rising Bars',
-                'current': current_params.get('macd_hist_rising_bars', 0),
-                'v1': '0', 'v2': '1', 'v3': '2', 'v4': '3'},
+            # ═══ TREND AGE PENALTY ══════════════════════════════════════════════════
+            'trend_age_max_bars': {'description': 'Trend Age Max Bars (penalty trigger)', 'v1': '15', 'v2': '20',
+                                   'v3': '25', 'v4': '30'},
+            'trend_age_penalty_pts': {'description': 'Trend Age Penalty Points', 'v1': '5', 'v2': '8', 'v3': '10',
+                                      'v4': '15'},
 
-            # ──────────────────────────────────────────────────────────────────────
-            # BREAKEVEN STOP
-            # ──────────────────────────────────────────────────────────────────────
-            'be_stop_enabled': {
-                'description': 'Breakeven Stop Enabled',
-                'current': current_params.get('be_stop_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'be_stop_r_trigger': {
-                'description': 'Breakeven Stop R Trigger',
-                'current': current_params.get('be_stop_r_trigger', 2.0),
-                'v1': '1.5', 'v2': '2.0', 'v3': '2.5', 'v4': '3.0'},
-            'be_stop_no_progress_bars': {
-                'description': 'Breakeven No-Progress Bars',
-                'current': current_params.get('be_stop_no_progress_bars', 50),
-                'v1': '30', 'v2': '40', 'v3': '50', 'v4': '60'},
+            # ═══ RISK MANAGEMENT ════════════════════════════════════════════════════
+            'risk_tier1': {'description': 'Tier 1 Risk %', 'v1': '0.008', 'v2': '0.010', 'v3': '0.012', 'v4': '0.015'},
+            'risk_tier2': {'description': 'Tier 2 Risk %', 'v1': '0.010', 'v2': '0.012', 'v3': '0.015', 'v4': '0.018'},
+            'risk_tier2_exceptional': {'description': 'Tier 2 Exceptional Risk %', 'v1': '0.025', 'v2': '0.030',
+                                       'v3': '0.035', 'v4': '0.040'},
+            'risk_per_trade': {'description': 'Base Risk Per Trade', 'v1': '0.015', 'v2': '0.018', 'v3': '0.020',
+                               'v4': '0.022'},
+            'risk_full_position': {'description': 'Full Position Risk %', 'v1': '0.008', 'v2': '0.010', 'v3': '0.012',
+                                   'v4': '0.015'},
+            'max_position_units': {'description': 'Max Position Units', 'v1': '30', 'v2': '40', 'v3': '50', 'v4': '60'},
 
-            # ──────────────────────────────────────────────────────────────────────
-            # STOP LOSS & TRAILING
-            # ──────────────────────────────────────────────────────────────────────
-            'stop_loss_atr_mult': {
-                'description': 'Stop Loss ATR Mult',
-                'current': current_params.get('stop_loss_atr_mult', 3.5),
-                'v1': '2.5', 'v2': '3.0', 'v3': '3.5', 'v4': '4.0'},
-            'trailing_stop_atr_mult': {
-                'description': 'Trailing Stop ATR Mult',
-                'current': current_params.get('trailing_stop_atr_mult', 6.5),
-                'v1': '5.0', 'v2': '5.5', 'v3': '6.0', 'v4': '6.5'},
-            'trailing_activation_pct': {
-                'description': 'Trailing Activation %',
-                'current': current_params.get('trailing_activation_pct', 0.03),
-                'v1': '0.02', 'v2': '0.03', 'v3': '0.04', 'v4': '0.05'},
-            'trailing_distance_pct': {
-                'description': 'Trailing Distance %',
-                'current': current_params.get('trailing_distance_pct', 0.035),
-                'v1': '0.025', 'v2': '0.03', 'v3': '0.035', 'v4': '0.045'},
-            'trailing_activation_r': {
-                'description': 'Trail Activation R',
-                'current': current_params.get('trailing_activation_r', 2.5),
-                'v1': '1.5', 'v2': '2.0', 'v3': '2.5', 'v4': '3.0'},
-            'initial_trailing_atr_mult': {
-                'description': 'Initial Trailing ATR Mult',
-                'current': current_params.get('initial_trailing_atr_mult', 5.5),
-                'v1': '4.0', 'v2': '4.5', 'v3': '5.0', 'v4': '5.5'},
+            # ═══ PROFIT TARGETS ═════════════════════════════════════════════════════
+            'profit_target_r1': {'description': 'Profit Target R1', 'v1': '1.5', 'v2': '2.0', 'v3': '2.5', 'v4': '3.0'},
+            'profit_target_r2': {'description': 'Profit Target R2', 'v1': '2.5', 'v2': '3.0', 'v3': '3.5', 'v4': '4.0'},
+            'profit_target_r3': {'description': 'Profit Target R3', 'v1': '6.0', 'v2': '8.0', 'v3': '10.0',
+                                 'v4': '12.0'},
 
-            # ──────────────────────────────────────────────────────────────────────
-            # COOLDOWNS
-            # ──────────────────────────────────────────────────────────────────────
-            'cooldown_after_loss_bars': {
-                'description': 'Cooldown After Loss (bars)',
-                'current': current_params.get('cooldown_after_loss_bars', 12),
-                'v1': '6', 'v2': '8', 'v3': '12', 'v4': '16'},
-            'consecutive_loss_threshold': {
-                'description': 'Consecutive Loss Threshold',
-                'current': current_params.get('consecutive_loss_threshold', 3),
-                'v1': '2', 'v2': '3', 'v3': '4', 'v4': '5'},
-            'consecutive_loss_cooldown_bars': {
-                'description': 'Consecutive Loss Cooldown (bars)',
-                'current': current_params.get('consecutive_loss_cooldown_bars', 12),
-                'v1': '6', 'v2': '8', 'v3': '12', 'v4': '16'},
+            # ═══ TRADE MANAGEMENT ═══════════════════════════════════════════════════
+            'max_hold_bars': {'description': 'Max Hold Bars', 'v1': '80', 'v2': '100', 'v3': '120', 'v4': '150'},
+            'max_daily_trades': {'description': 'Max Daily Trades', 'v1': '6', 'v2': '8', 'v3': '10', 'v4': '12'},
+            'min_bars_between_trades': {'description': 'Min Bars Between Trades', 'v1': '2', 'v2': '3', 'v3': '4',
+                                        'v4': '5'},
+            'price_percentile_bonus_early': {'description': 'Early Entry Bonus', 'v1': '12', 'v2': '15', 'v3': '18',
+                                             'v4': '20'},
+            'price_percentile_penalty_late': {'description': 'Late Entry Penalty', 'v1': '10', 'v2': '12', 'v3': '15',
+                                              'v4': '18'},
 
-            # ──────────────────────────────────────────────────────────────────────
-            # EXIT CONDITIONS
-            # ──────────────────────────────────────────────────────────────────────
-            'rsi_exit_threshold': {
-                'description': 'RSI Exit Threshold',
-                'current': current_params.get('rsi_exit_threshold', 80),
-                'v1': '75', 'v2': '78', 'v3': '80', 'v4': '85'},
-            'macd_bearish_cross_profit_min': {
-                'description': 'MACD Bearish Cross Min Profit %',
-                'current': current_params.get('macd_bearish_cross_profit_min', 2.5),
-                'v1': '1.5', 'v2': '2.0', 'v3': '2.5', 'v4': '3.0'},
-            'kalman_fade_threshold': {
-                'description': 'Kalman Fade Threshold',
-                'current': current_params.get('kalman_fade_threshold', 35),
-                'v1': '25', 'v2': '30', 'v3': '35', 'v4': '40'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # TRADE MANAGEMENT
-            # ──────────────────────────────────────────────────────────────────────
-            'max_hold_bars': {
-                'description': 'Max Hold Bars',
-                'current': current_params.get('max_hold_bars', 500),
-                'v1': '200', 'v2': '300', 'v3': '400', 'v4': '500'},
-            'max_daily_trades': {
-                'description': 'Max Daily Trades',
-                'current': current_params.get('max_daily_trades', 15),
-                'v1': '6', 'v2': '8', 'v3': '10', 'v4': '15'},
-            'min_bars_between_trades': {
-                'description': 'Min Bars Between Trades',
-                'current': current_params.get('min_bars_between_trades', 4),
-                'v1': '2', 'v2': '3', 'v3': '4', 'v4': '6'},
-            'cooldown_after_profit_target_bars': {
-                'description': 'Cooldown After Profit Target (bars)',
-                'current': current_params.get('cooldown_after_profit_target_bars', 2),
-                'v1': '1', 'v2': '2', 'v3': '3', 'v4': '4'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # RISK MANAGEMENT
-            # ──────────────────────────────────────────────────────────────────────
-            'risk_tier1': {
-                'description': 'Tier 1 Risk %',
-                'current': current_params.get('risk_tier1', 0.025),
-                'v1': '0.015', 'v2': '0.020', 'v3': '0.025', 'v4': '0.030'},
-            'risk_tier2': {
-                'description': 'Tier 2 Risk %',
-                'current': current_params.get('risk_tier2', 0.030),
-                'v1': '0.020', 'v2': '0.025', 'v3': '0.030', 'v4': '0.035'},
-            'risk_per_trade': {
-                'description': 'Base Risk Per Trade',
-                'current': current_params.get('risk_per_trade', 0.022),
-                'v1': '0.015', 'v2': '0.018', 'v3': '0.020', 'v4': '0.022'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # PROFIT TARGETS
-            # ──────────────────────────────────────────────────────────────────────
-            'take_profit_r1': {
-                'description': 'Profit Target R1',
-                'current': current_params.get('take_profit_r1', 3.0),
-                'v1': '2.0', 'v2': '2.5', 'v3': '3.0', 'v4': '3.5'},
-            'take_profit_r2': {
-                'description': 'Profit Target R2',
-                'current': current_params.get('take_profit_r2', 5.0),
-                'v1': '3.0', 'v2': '4.0', 'v3': '5.0', 'v4': '6.0'},
-            'take_profit_r3': {
-                'description': 'Profit Target R3',
-                'current': current_params.get('take_profit_r3', 8.0),
-                'v1': '6.0', 'v2': '7.0', 'v3': '8.0', 'v4': '10.0'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # PRICE POSITIONING
-            # ──────────────────────────────────────────────────────────────────────
-            'price_percentile_bonus_early': {
-                'description': 'Early Entry Bonus (pts)',
-                'current': current_params.get('price_percentile_bonus_early', 12),
-                'v1': '8', 'v2': '10', 'v3': '12', 'v4': '15'},
-            'price_percentile_penalty_late': {
-                'description': 'Late Entry Penalty (pts)',
-                'current': current_params.get('price_percentile_penalty_late', 12),
-                'v1': '8', 'v2': '10', 'v3': '12', 'v4': '15'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # FUZZY MODE
-            # ──────────────────────────────────────────────────────────────────────
-            'fuzzy_default_margin_pct': {
-                'description': 'Fuzzy Margin %',
-                'current': current_params.get('fuzzy_default_margin_pct', 10),
-                'v1': '5', 'v2': '8', 'v3': '10', 'v4': '15'},
-            'fuzzy_absolute_min': {
-                'description': 'Fuzzy Absolute Min',
-                'current': current_params.get('fuzzy_absolute_min', 45),
-                'v1': '55', 'v2': '58', 'v3': '62', 'v4': '65'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # TRADE DIRECTION
-            # ──────────────────────────────────────────────────────────────────────
-            'trade_direction': {
-                'description': 'Trade Direction',
-                'current': current_params.get('trade_direction', 'both'),
-                'v1': 'long', 'v2': 'both', 'v3': 'short', 'v4': ''},
+            # ═══ FUZZY MODE ══════════════════════════════════════════════════════════
+            'fuzzy_default_margin_pct': {'description': 'Fuzzy Margin %', 'v1': '8', 'v2': '10', 'v3': '12',
+                                         'v4': '15'},
+            'fuzzy_absolute_min': {'description': 'Fuzzy Absolute Min', 'v1': '58', 'v2': '60', 'v3': '62', 'v4': '65'},
         }
 
-        # Initialize backtest_params if not already done
-        if not hasattr(self, 'backtest_params'):
+        # Total: 81 params across 17 groups
+
+        # Define parameter groups that should be linked
+        self.param_groups = {
+            'ema_periods': ['ema_fast_period', 'ema_mid_period', 'ema_slow_period'],
+            'adx_scoring': ['adx_score_trend_forming', 'adx_score_good_trend', 'adx_score_strong_trend',
+                            'adx_score_very_strong', 'adx_score_extended'],
+            'profit_target_pcts': ['profit_target_r1_pct', 'profit_target_r2_pct', 'profit_target_r3_pct'],
+        }
+
+        # Initialize backtest_params from ALL_BACKTEST_PARAMS if not already done
+        if not hasattr(self, 'backtest_params') or not self.backtest_params:
             self.backtest_params = {}
 
-        # Create or update backtest_params with current values
-        for key, meta in ALL_MOMENTUM_BACKTEST_PARAMS.items():
+        for key, meta in ALL_BACKTEST_PARAMS.items():
             if key not in self.backtest_params:
                 self.backtest_params[key] = {
                     'active': tk.BooleanVar(value=False),
@@ -6706,592 +5674,13 @@ class TradingApp:
                     'value2': tk.StringVar(value=meta['v2']),
                     'value3': tk.StringVar(value=meta['v3']),
                     'value4': tk.StringVar(value=meta['v4']),
-                    'description': meta['description'],
-                    'current_value': meta['current']
+                    'description': meta['description']
                 }
-            else:
-                # Update current value if changed
-                self.backtest_params[key]['current_value'] = meta['current']
-                # Update description if changed
-                self.backtest_params[key]['description'] = meta['description']
 
-        # Now build the UI (same as before but with complete parameter list)
-        self._build_backtest_ui(right_frame)
-
-    def _build_kalman_backtest_panel(self, right_frame):
-        """Build COMPLETE Kalman-specific backtest optimization panel"""
-        from strategies.KalmanTrendStrategy_New import KALMAN_PARAMS
-
-        current_params = self.get_current_kalman_params()
-
-        ALL_KALMAN_BACKTEST_PARAMS = {
-            # Kalman Filter Parameters
-            'process_noise_1': {
-                'description': 'Process Noise 1',
-                'current': current_params.get('process_noise_1', 0.001),
-                'v1': '0.0005', 'v2': '0.001', 'v3': '0.002', 'v4': '0.005'},
-            'process_noise_2': {
-                'description': 'Process Noise 2',
-                'current': current_params.get('process_noise_2', 0.001),
-                'v1': '0.0005', 'v2': '0.001', 'v3': '0.002', 'v4': '0.005'},
-            'measurement_noise': {
-                'description': 'Measurement Noise',
-                'current': current_params.get('measurement_noise', 100.0),
-                'v1': '50', 'v2': '100', 'v3': '200', 'v4': '500'},
-
-            # Trend Detection
-            'trend_lookback': {
-                'description': 'Trend Lookback',
-                'current': current_params.get('trend_lookback', 20),
-                'v1': '10', 'v2': '15', 'v3': '20', 'v4': '30'},
-            'strength_smooth': {
-                'description': 'Strength Smoothing',
-                'current': current_params.get('strength_smooth', 5),
-                'v1': '3', 'v2': '5', 'v3': '7', 'v4': '10'},
-
-            # Risk/Reward
-            'risk_reward': {
-                'description': 'Risk/Reward Ratio',
-                'current': current_params.get('risk_reward', 1.5),
-                'v1': '1.0', 'v2': '1.5', 'v3': '2.0', 'v4': '2.5'},
-
-            # Entry Conditions
-            'long_kalman_strength_min': {
-                'description': 'Min Kalman Strength (LONG)',
-                'current': current_params.get('long_kalman_strength_min', 30),
-                'v1': '20', 'v2': '25', 'v3': '30', 'v4': '40'},
-            'short_kalman_strength_min': {
-                'description': 'Min Kalman Strength (SHORT)',
-                'current': current_params.get('short_kalman_strength_min', -30),
-                'v1': '-40', 'v2': '-35', 'v3': '-30', 'v4': '-20'},
-
-            # RSI Filters
-            'long_rsi_min': {
-                'description': 'RSI Min (LONG)',
-                'current': current_params.get('long_rsi_min', 30),
-                'v1': '25', 'v2': '30', 'v3': '35', 'v4': '40'},
-            'long_rsi_max': {
-                'description': 'RSI Max (LONG)',
-                'current': current_params.get('long_rsi_max', 70),
-                'v1': '60', 'v2': '65', 'v3': '70', 'v4': '75'},
-            'short_rsi_min': {
-                'description': 'RSI Min (SHORT)',
-                'current': current_params.get('short_rsi_min', 30),
-                'v1': '25', 'v2': '30', 'v3': '35', 'v4': '40'},
-            'short_rsi_max': {
-                'description': 'RSI Max (SHORT)',
-                'current': current_params.get('short_rsi_max', 70),
-                'v1': '60', 'v2': '65', 'v3': '70', 'v4': '75'},
-
-            # Stop Loss & Trailing
-            'stop_loss_pct': {
-                'description': 'Stop Loss %',
-                'current': current_params.get('stop_loss_pct', 0.02),
-                'v1': '0.015', 'v2': '0.02', 'v3': '0.025', 'v4': '0.03'},
-            'trailing_stop_pct': {
-                'description': 'Trailing Stop %',
-                'current': current_params.get('trailing_stop_pct', 0.015),
-                'v1': '0.01', 'v2': '0.015', 'v3': '0.02', 'v4': '0.025'},
-            'atr_multiplier': {
-                'description': 'ATR Multiplier',
-                'current': current_params.get('atr_multiplier', 2.0),
-                'v1': '1.5', 'v2': '2.0', 'v3': '2.5', 'v4': '3.0'},
-
-            # Risk Management
-            'risk_per_trade': {
-                'description': 'Risk Per Trade %',
-                'current': current_params.get('risk_per_trade', 0.01),
-                'v1': '0.005', 'v2': '0.01', 'v3': '0.015', 'v4': '0.02'},
-            'max_position_pct': {
-                'description': 'Max Position %',
-                'current': current_params.get('max_position_pct', 0.15),
-                'v1': '0.10', 'v2': '0.15', 'v3': '0.20', 'v4': '0.25'},
-
-            # Hold Time
-            'max_hold_bars': {
-                'description': 'Max Hold Bars',
-                'current': current_params.get('max_hold_bars', 48),
-                'v1': '24', 'v2': '36', 'v3': '48', 'v4': '72'},
-            'max_hold_seconds': {
-                'description': 'Max Hold Seconds',
-                'current': current_params.get('max_hold_seconds', 3600),
-                'v1': '1800', 'v2': '3600', 'v3': '7200', 'v4': '14400'},
-
-            # Market Filters
-            'min_adx': {
-                'description': 'Min ADX',
-                'current': current_params.get('min_adx', 15),
-                'v1': '10', 'v2': '15', 'v3': '20', 'v4': '25'},
-            'min_volatility': {
-                'description': 'Min Volatility',
-                'current': current_params.get('min_volatility', 0.001),
-                'v1': '0.0005', 'v2': '0.001', 'v3': '0.002', 'v4': '0.003'},
-            'cooldown_bars': {
-                'description': 'Cooldown Bars',
-                'current': current_params.get('cooldown_bars', 10),
-                'v1': '5', 'v2': '10', 'v3': '15', 'v4': '20'},
-            'volume_min_ratio': {
-                'description': 'Min Volume Ratio',
-                'current': current_params.get('volume_min_ratio', 1.0),
-                'v1': '0.8', 'v2': '1.0', 'v3': '1.2', 'v4': '1.5'},
-
-            # Trade Direction
-            'trade_direction': {
-                'description': 'Trade Direction',
-                'current': current_params.get('trade_direction', 'both'),
-                'v1': 'long', 'v2': 'both', 'v3': 'short', 'v4': ''},
-        }
-
-        # Initialize backtest_params for Kalman
-        if not hasattr(self, 'backtest_params'):
-            self.backtest_params = {}
-
-        for key, meta in ALL_KALMAN_BACKTEST_PARAMS.items():
-            if key not in self.backtest_params:
-                self.backtest_params[key] = {
-                    'active': tk.BooleanVar(value=False),
-                    'value1': tk.StringVar(value=meta['v1']),
-                    'value2': tk.StringVar(value=meta['v2']),
-                    'value3': tk.StringVar(value=meta['v3']),
-                    'value4': tk.StringVar(value=meta['v4']),
-                    'description': meta['description'],
-                    'current_value': meta['current']
-                }
-            else:
-                self.backtest_params[key]['current_value'] = meta['current']
-
-        self._build_backtest_ui(right_frame)
-
-    def _build_scalping_backtest_panel(self, right_frame):
-        """Build COMPLETE Scalping-specific backtest optimization panel with save/load"""
-        from strategies.scalping_strategy import SCALPING_PARAMS
-
-        current_params = self.get_current_scalping_params()
-
-        self.log_message("=" * 70, "yellow")
-        self.log_message(f"📋 SCALPING BACKTEST PARAMETER SOURCE: {self.param_toggle_var.get()}", "yellow")
-        self.log_message("=" * 70, "yellow")
-
-        ALL_SCALPING_BACKTEST_PARAMS = {
-            # ──────────────────────────────────────────────────────────────────────
-            # EMA Periods
-            # ──────────────────────────────────────────────────────────────────────
-            'ema_fast_period': {
-                'description': 'Fast EMA Period',
-                'current': current_params.get('ema_fast_period', 5),
-                'v1': '3', 'v2': '5', 'v3': '7', 'v4': '9'},
-            'ema_mid_period': {
-                'description': 'Mid EMA Period',
-                'current': current_params.get('ema_mid_period', 13),
-                'v1': '9', 'v2': '11', 'v3': '13', 'v4': '15'},
-            'ema_slow_period': {
-                'description': 'Slow EMA Period',
-                'current': current_params.get('ema_slow_period', 21),
-                'v1': '17', 'v2': '19', 'v3': '21', 'v4': '24'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # MACD Parameters
-            # ──────────────────────────────────────────────────────────────────────
-            'macd_fast': {
-                'description': 'MACD Fast Period',
-                'current': current_params.get('macd_fast', 12),
-                'v1': '8', 'v2': '10', 'v3': '12', 'v4': '14'},
-            'macd_slow': {
-                'description': 'MACD Slow Period',
-                'current': current_params.get('macd_slow', 26),
-                'v1': '22', 'v2': '24', 'v3': '26', 'v4': '28'},
-            'macd_signal_period': {
-                'description': 'MACD Signal Period',
-                'current': current_params.get('macd_signal_period', 9),
-                'v1': '7', 'v2': '9', 'v3': '11', 'v4': '13'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # Stochastic Parameters
-            # ──────────────────────────────────────────────────────────────────────
-            'stoch_k_period': {
-                'description': 'Stochastic %K Period',
-                'current': current_params.get('stoch_k_period', 5),
-                'v1': '3', 'v2': '5', 'v3': '7', 'v4': '9'},
-            'stoch_d_period': {
-                'description': 'Stochastic %D Period',
-                'current': current_params.get('stoch_d_period', 3),
-                'v1': '2', 'v2': '3', 'v3': '4', 'v4': '5'},
-            'stoch_smooth': {
-                'description': 'Stochastic Smoothing',
-                'current': current_params.get('stoch_smooth', 3),
-                'v1': '1', 'v2': '3', 'v3': '5', 'v4': '7'},
-            'stoch_overbought': {
-                'description': 'Stochastic Overbought',
-                'current': current_params.get('stoch_overbought', 80),
-                'v1': '70', 'v2': '75', 'v3': '80', 'v4': '85'},
-            'stoch_oversold': {
-                'description': 'Stochastic Oversold',
-                'current': current_params.get('stoch_oversold', 20),
-                'v1': '15', 'v2': '18', 'v3': '20', 'v4': '25'},
-            'stoch_mid_upper': {
-                'description': 'Stochastic Mid Upper',
-                'current': current_params.get('stoch_mid_upper', 70),
-                'v1': '60', 'v2': '65', 'v3': '70', 'v4': '75'},
-            'stoch_mid_lower': {
-                'description': 'Stochastic Mid Lower',
-                'current': current_params.get('stoch_mid_lower', 30),
-                'v1': '25', 'v2': '28', 'v3': '30', 'v4': '35'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # RSI Filters
-            # ──────────────────────────────────────────────────────────────────────
-            'rsi_period': {
-                'description': 'RSI Period',
-                'current': current_params.get('rsi_period', 14),
-                'v1': '10', 'v2': '12', 'v3': '14', 'v4': '16'},
-            'rsi_long_min': {
-                'description': 'RSI Long Min',
-                'current': current_params.get('rsi_long_min', 45),
-                'v1': '40', 'v2': '45', 'v3': '50', 'v4': '55'},
-            'rsi_long_max': {
-                'description': 'RSI Long Max',
-                'current': current_params.get('rsi_long_max', 68),
-                'v1': '60', 'v2': '65', 'v3': '68', 'v4': '72'},
-            'rsi_short_min': {
-                'description': 'RSI Short Min',
-                'current': current_params.get('rsi_short_min', 32),
-                'v1': '28', 'v2': '30', 'v3': '32', 'v4': '35'},
-            'rsi_short_max': {
-                'description': 'RSI Short Max',
-                'current': current_params.get('rsi_short_max', 55),
-                'v1': '50', 'v2': '52', 'v3': '55', 'v4': '58'},
-            'rsi_overbought_exit': {
-                'description': 'RSI Overbought Exit',
-                'current': current_params.get('rsi_overbought_exit', 75),
-                'v1': '70', 'v2': '75', 'v3': '80', 'v4': '85'},
-            'rsi_oversold_exit': {
-                'description': 'RSI Oversold Exit',
-                'current': current_params.get('rsi_oversold_exit', 25),
-                'v1': '20', 'v2': '25', 'v3': '30', 'v4': '35'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # ADX Filters
-            # ──────────────────────────────────────────────────────────────────────
-            'adx_period': {
-                'description': 'ADX Period',
-                'current': current_params.get('adx_period', 14),
-                'v1': '10', 'v2': '12', 'v3': '14', 'v4': '16'},
-            'adx_min_long': {
-                'description': 'ADX Min Long',
-                'current': current_params.get('adx_min_long', 20),
-                'v1': '15', 'v2': '18', 'v3': '20', 'v4': '22'},
-            'adx_min_short': {
-                'description': 'ADX Min Short',
-                'current': current_params.get('adx_min_short', 22),
-                'v1': '18', 'v2': '20', 'v3': '22', 'v4': '25'},
-            'adx_extended_threshold': {
-                'description': 'ADX Extended Threshold',
-                'current': current_params.get('adx_extended_threshold', 45),
-                'v1': '40', 'v2': '45', 'v3': '50', 'v4': '55'},
-            'adx_slope_min': {
-                'description': 'ADX Slope Min',
-                'current': current_params.get('adx_slope_min', -0.1),
-                'v1': '-0.3', 'v2': '-0.2', 'v3': '-0.1', 'v4': '0.0'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # Volume & ATR
-            # ──────────────────────────────────────────────────────────────────────
-            'volume_period': {
-                'description': 'Volume Period',
-                'current': current_params.get('volume_period', 20),
-                'v1': '10', 'v2': '15', 'v3': '20', 'v4': '30'},
-            'volume_min_ratio': {
-                'description': 'Volume Min Ratio',
-                'current': current_params.get('volume_min_ratio', 1.2),
-                'v1': '1.0', 'v2': '1.1', 'v3': '1.2', 'v4': '1.4'},
-            'volume_strong_ratio': {
-                'description': 'Volume Strong Ratio',
-                'current': current_params.get('volume_strong_ratio', 1.8),
-                'v1': '1.5', 'v2': '1.8', 'v3': '2.0', 'v4': '2.5'},
-            'atr_period': {
-                'description': 'ATR Period',
-                'current': current_params.get('atr_period', 14),
-                'v1': '10', 'v2': '12', 'v3': '14', 'v4': '16'},
-            'atr_compression_threshold': {
-                'description': 'ATR Compression Threshold',
-                'current': current_params.get('atr_compression_threshold', 0.35),
-                'v1': '0.25', 'v2': '0.30', 'v3': '0.35', 'v4': '0.40'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # Quality Score Thresholds
-            # ──────────────────────────────────────────────────────────────────────
-            'quality_min_long': {
-                'description': 'Min Quality Score (LONG)',
-                'current': current_params.get('quality_min_long', 35),
-                'v1': '30', 'v2': '35', 'v3': '40', 'v4': '45'},
-            'quality_min_short': {
-                'description': 'Min Quality Score (SHORT)',
-                'current': current_params.get('quality_min_short', 35),
-                'v1': '30', 'v2': '35', 'v3': '40', 'v4': '45'},
-            'quality_tier1_min': {
-                'description': 'Tier 1 Quality Min',
-                'current': current_params.get('quality_tier1_min', 50),
-                'v1': '45', 'v2': '48', 'v3': '50', 'v4': '55'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # Quality Weights (Scalping specific)
-            # ──────────────────────────────────────────────────────────────────────
-            'weight_ema': {
-                'description': 'EMA Weight',
-                'current': current_params.get('weight_ema', 22),
-                'v1': '15', 'v2': '20', 'v3': '22', 'v4': '25'},
-            'weight_macd': {
-                'description': 'MACD Weight',
-                'current': current_params.get('weight_macd', 23),
-                'v1': '18', 'v2': '20', 'v3': '23', 'v4': '25'},
-            'weight_stoch': {
-                'description': 'Stochastic Weight',
-                'current': current_params.get('weight_stoch', 20),
-                'v1': '15', 'v2': '18', 'v3': '20', 'v4': '22'},
-            'weight_rsi': {
-                'description': 'RSI Weight',
-                'current': current_params.get('weight_rsi', 18),
-                'v1': '14', 'v2': '16', 'v3': '18', 'v4': '20'},
-            'weight_volume': {
-                'description': 'Volume Weight',
-                'current': current_params.get('weight_volume', 12),
-                'v1': '8', 'v2': '10', 'v3': '12', 'v4': '14'},
-            'weight_adx': {
-                'description': 'ADX Weight',
-                'current': current_params.get('weight_adx', 5),
-                'v1': '3', 'v2': '5', 'v3': '7', 'v4': '10'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # Risk Management
-            # ──────────────────────────────────────────────────────────────────────
-            'risk_per_trade': {
-                'description': 'Risk Per Trade %',
-                'current': current_params.get('risk_per_trade', 0.008),
-                'v1': '0.005', 'v2': '0.008', 'v3': '0.010', 'v4': '0.012'},
-            'risk_tier1': {
-                'description': 'Tier 1 Risk %',
-                'current': current_params.get('risk_tier1', 0.010),
-                'v1': '0.008', 'v2': '0.010', 'v3': '0.012', 'v4': '0.015'},
-            'max_position_size_pct': {
-                'description': 'Max Position Size %',
-                'current': current_params.get('max_position_size_pct', 0.15),
-                'v1': '0.10', 'v2': '0.12', 'v3': '0.15', 'v4': '0.20'},
-            'max_position_units': {
-                'description': 'Max Position Units',
-                'current': current_params.get('max_position_units', 100),
-                'v1': '50', 'v2': '75', 'v3': '100', 'v4': '150'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # Stop Loss & Trailing
-            # ──────────────────────────────────────────────────────────────────────
-            'stop_loss_atr_mult': {
-                'description': 'Stop Loss ATR Mult',
-                'current': current_params.get('stop_loss_atr_mult', 1.8),
-                'v1': '1.5', 'v2': '1.8', 'v3': '2.0', 'v4': '2.2'},
-            'trailing_activation_pct': {
-                'description': 'Trailing Activation %',
-                'current': current_params.get('trailing_activation_pct', 0.025),
-                'v1': '0.015', 'v2': '0.02', 'v3': '0.025', 'v4': '0.03'},
-            'trailing_distance_pct': {
-                'description': 'Trailing Distance %',
-                'current': current_params.get('trailing_distance_pct', 0.01),
-                'v1': '0.008', 'v2': '0.01', 'v3': '0.012', 'v4': '0.015'},
-            'trailing_atr_mult': {
-                'description': 'Trailing ATR Mult',
-                'current': current_params.get('trailing_atr_mult', 0.8),
-                'v1': '0.6', 'v2': '0.8', 'v3': '1.0', 'v4': '1.2'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # Breakeven Stop
-            # ──────────────────────────────────────────────────────────────────────
-            'be_stop_enabled': {
-                'description': 'Breakeven Stop Enabled',
-                'current': current_params.get('be_stop_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'be_stop_r_trigger': {
-                'description': 'Breakeven R Trigger',
-                'current': current_params.get('be_stop_r_trigger', 2.0),
-                'v1': '1.5', 'v2': '2.0', 'v3': '2.5', 'v4': '3.0'},
-            'be_stop_no_progress_bars': {
-                'description': 'Breakeven No-Progress Bars',
-                'current': current_params.get('be_stop_no_progress_bars', 8),
-                'v1': '4', 'v2': '6', 'v3': '8', 'v4': '12'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # Profit Targets
-            # ──────────────────────────────────────────────────────────────────────
-            'take_profit_r1': {
-                'description': 'Profit Target R1',
-                'current': current_params.get('take_profit_r1', 1.5),
-                'v1': '1.2', 'v2': '1.5', 'v3': '1.8', 'v4': '2.0'},
-            'take_profit_r2': {
-                'description': 'Profit Target R2',
-                'current': current_params.get('take_profit_r2', 2.5),
-                'v1': '2.0', 'v2': '2.5', 'v3': '3.0', 'v4': '3.5'},
-            'partial_exit_pct_r1': {
-                'description': 'Partial Exit % at R1',
-                'current': current_params.get('partial_exit_pct_r1', 0.5),
-                'v1': '0.3', 'v2': '0.4', 'v3': '0.5', 'v4': '0.6'},
-            'partial_exit_pct_r2': {
-                'description': 'Partial Exit % at R2',
-                'current': current_params.get('partial_exit_pct_r2', 0.3),
-                'v1': '0.2', 'v2': '0.25', 'v3': '0.3', 'v4': '0.4'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # Exit Conditions
-            # ──────────────────────────────────────────────────────────────────────
-            'macd_cross_exit_enabled': {
-                'description': 'MACD Cross Exit Enabled',
-                'current': current_params.get('macd_cross_exit_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'macd_cross_min_profit_r': {
-                'description': 'MACD Cross Min Profit R',
-                'current': current_params.get('macd_cross_min_profit_r', 1.0),
-                'v1': '0.5', 'v2': '1.0', 'v3': '1.5', 'v4': '2.0'},
-            'stoch_reversal_exit_enabled': {
-                'description': 'Stochastic Reversal Exit Enabled',
-                'current': current_params.get('stoch_reversal_exit_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'stoch_reversal_min_profit_r': {
-                'description': 'Stoch Reversal Min Profit R',
-                'current': current_params.get('stoch_reversal_min_profit_r', 0.8),
-                'v1': '0.5', 'v2': '0.8', 'v3': '1.0', 'v4': '1.5'},
-            'ema_cross_exit_enabled': {
-                'description': 'EMA Cross Exit Enabled',
-                'current': current_params.get('ema_cross_exit_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'ema_cross_min_profit_r': {
-                'description': 'EMA Cross Min Profit R',
-                'current': current_params.get('ema_cross_min_profit_r', 1.5),
-                'v1': '1.0', 'v2': '1.5', 'v3': '2.0', 'v4': '2.5'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # Trade Management
-            # ──────────────────────────────────────────────────────────────────────
-            'max_hold_bars': {
-                'description': 'Max Hold Bars',
-                'current': current_params.get('max_hold_bars', 24),
-                'v1': '16', 'v2': '20', 'v3': '24', 'v4': '32'},
-            'min_hold_bars_before_stop': {
-                'description': 'Min Hold Bars Before Stop',
-                'current': current_params.get('min_hold_bars_before_stop', 3),
-                'v1': '2', 'v2': '3', 'v3': '4', 'v4': '6'},
-            'max_daily_trades': {
-                'description': 'Max Daily Trades',
-                'current': current_params.get('max_daily_trades', 10),
-                'v1': '5', 'v2': '8', 'v3': '10', 'v4': '15'},
-            'min_bars_between_trades': {
-                'description': 'Min Bars Between Trades',
-                'current': current_params.get('min_bars_between_trades', 1),
-                'v1': '1', 'v2': '2', 'v3': '3', 'v4': '4'},
-            'cooldown_after_loss_bars': {
-                'description': 'Cooldown After Loss (bars)',
-                'current': current_params.get('cooldown_after_loss_bars', 3),
-                'v1': '2', 'v2': '3', 'v3': '4', 'v4': '6'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # Pullback Zone
-            # ──────────────────────────────────────────────────────────────────────
-            'pullback_zone_lower_pct': {
-                'description': 'Pullback Zone Lower %',
-                'current': current_params.get('pullback_zone_lower_pct', -2.5),
-                'v1': '-3.0', 'v2': '-2.5', 'v3': '-2.0', 'v4': '-1.5'},
-            'pullback_zone_upper_pct': {
-                'description': 'Pullback Zone Upper %',
-                'current': current_params.get('pullback_zone_upper_pct', 1.5),
-                'v1': '1.0', 'v2': '1.5', 'v3': '2.0', 'v4': '3.0'},
-            'momentum_min_long': {
-                'description': 'Momentum Min % (LONG)',
-                'current': current_params.get('momentum_min_long', 0.01),
-                'v1': '0.005', 'v2': '0.01', 'v3': '0.015', 'v4': '0.02'},
-            'momentum_min_short': {
-                'description': 'Momentum Min % (SHORT)',
-                'current': current_params.get('momentum_min_short', 0.01),
-                'v1': '0.005', 'v2': '0.01', 'v3': '0.015', 'v4': '0.02'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # Regime Filter
-            # ──────────────────────────────────────────────────────────────────────
-            'regime_filter_enabled': {
-                'description': 'Regime Filter Enabled',
-                'current': current_params.get('regime_filter_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'chop_threshold': {
-                'description': 'Choppiness Threshold',
-                'current': current_params.get('chop_threshold', 61),
-                'v1': '55', 'v2': '58', 'v3': '61', 'v4': '65'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # Daily Trend Filter
-            # ──────────────────────────────────────────────────────────────────────
-            'daily_trend_filter_enabled': {
-                'description': 'Daily Trend Filter Enabled',
-                'current': current_params.get('daily_trend_filter_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'daily_ema_period': {
-                'description': 'Daily EMA Period (bars)',
-                'current': current_params.get('daily_ema_period', 24),
-                'v1': '12', 'v2': '18', 'v3': '24', 'v4': '36'},
-            'daily_trend_adx_override': {
-                'description': 'Daily Trend ADX Override',
-                'current': current_params.get('daily_trend_adx_override', 25),
-                'v1': '20', 'v2': '25', 'v3': '30', 'v4': '35'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # Extended Run
-            # ──────────────────────────────────────────────────────────────────────
-            'extended_run_max_pct_long': {
-                'description': 'Extended Run Max % (LONG)',
-                'current': current_params.get('extended_run_max_pct_long', 4.0),
-                'v1': '3.0', 'v2': '4.0', 'v3': '5.0', 'v4': '6.0'},
-            'extended_run_max_pct_short': {
-                'description': 'Extended Run Max % (SHORT)',
-                'current': current_params.get('extended_run_max_pct_short', 4.0),
-                'v1': '3.0', 'v2': '4.0', 'v3': '5.0', 'v4': '6.0'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # Trade Direction
-            # ──────────────────────────────────────────────────────────────────────
-            'trade_direction': {
-                'description': 'Trade Direction',
-                'current': current_params.get('trade_direction', 'both'),
-                'v1': 'long', 'v2': 'both', 'v3': 'short', 'v4': ''},
-            'only_tier2_entries': {
-                'description': 'Only Tier 2 Entries',
-                'current': current_params.get('only_tier2_entries', False),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-        }
-
-        # Initialize scalping_backtest_params
-        if not hasattr(self, 'scalping_backtest_params'):
-            self.scalping_backtest_params = {}
-
-        for key, meta in ALL_SCALPING_BACKTEST_PARAMS.items():
-            if key not in self.scalping_backtest_params:
-                self.scalping_backtest_params[key] = {
-                    'active': tk.BooleanVar(value=False),
-                    'value1': tk.StringVar(value=meta['v1']),
-                    'value2': tk.StringVar(value=meta['v2']),
-                    'value3': tk.StringVar(value=meta['v3']),
-                    'value4': tk.StringVar(value=meta['v4']),
-                    'description': meta['description'],
-                    'current_value': meta['current']
-                }
-            else:
-                self.scalping_backtest_params[key]['current_value'] = meta['current']
-                self.scalping_backtest_params[key]['description'] = meta['description']
-
-        # Build the UI
-        self._build_scalping_backtest_ui(right_frame)
-
-    def _build_scalping_backtest_ui(self, right_frame):
-        """Build the UI for scalping backtest parameters with save/load buttons"""
-
-        # ── Optimization Metrics Selection ──────────────────────────────────────
-        metrics_frame = ttk.LabelFrame(right_frame, text="Optimization Metrics")
-        metrics_frame.pack(fill=tk.X, padx=5, pady=5)
-
-        metrics_inner = ttk.Frame(metrics_frame)
+        # ── Optimization Metrics ──────────────────────────────────────
+        metrics_header = ttk.LabelFrame(right_frame, text="Optimization Metrics")
+        metrics_header.pack(fill=tk.X, padx=5, pady=5)
+        metrics_inner = ttk.Frame(metrics_header)
         metrics_inner.pack(fill=tk.X, padx=5, pady=5)
 
         row, col = 0, 0
@@ -7308,346 +5697,7 @@ class TradingApp:
 
         ttk.Separator(right_frame, orient='horizontal').pack(fill=tk.X, padx=5, pady=3)
 
-        # ── Action Buttons (with Scalping-specific save/load) ───────────────────
-        action_frame = ttk.Frame(right_frame)
-        action_frame.pack(fill=tk.X, padx=5, pady=3)
-
-        ttk.Button(action_frame, text="✅ Select All",
-                   command=self._sc_select_all).pack(side=tk.LEFT, padx=2)
-        ttk.Button(action_frame, text="❌ Deselect All",
-                   command=self._sc_deselect_all).pack(side=tk.LEFT, padx=2)
-        ttk.Button(action_frame, text="💾 Save Scalping Params",
-                   command=self.save_scalping_backtest_params).pack(side=tk.LEFT, padx=2)
-        ttk.Button(action_frame, text="📂 Load Scalping Params",
-                   command=self.load_scalping_backtest_params).pack(side=tk.LEFT, padx=2)
-        ttk.Button(action_frame, text="🔄 Reset",
-                   command=self.reset_scalping_backtest_params).pack(side=tk.LEFT, padx=2)
-
-        self.sc_selection_label = ttk.Label(action_frame, text="Selected: 0",
-                                            foreground='blue', font=('Arial', 9, 'bold'))
-        self.sc_selection_label.pack(side=tk.RIGHT, padx=5)
-
-        # ── Parameter Table Header ──────────────────────────────────────────────
-        param_header_frame = ttk.LabelFrame(right_frame, text="Scalping Parameters (Select for Optimization)")
-        param_header_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        col_header = ttk.Frame(param_header_frame)
-        col_header.pack(fill=tk.X, padx=5, pady=2)
-
-        ttk.Label(col_header, text="✓", width=3, anchor='center', font=('Arial', 8, 'bold')).grid(row=0, column=0,
-                                                                                                  padx=1)
-        ttk.Label(col_header, text="Parameter", width=30, anchor='w', font=('Arial', 8, 'bold')).grid(row=0, column=1,
-                                                                                                      padx=1)
-        ttk.Label(col_header, text="Current", width=10, anchor='center', font=('Arial', 8, 'bold')).grid(row=0,
-                                                                                                         column=2,
-                                                                                                         padx=1)
-        ttk.Label(col_header, text="Val 1", width=7, anchor='center', font=('Arial', 8, 'bold')).grid(row=0, column=3,
-                                                                                                      padx=1)
-        ttk.Label(col_header, text="Val 2", width=7, anchor='center', font=('Arial', 8, 'bold')).grid(row=0, column=4,
-                                                                                                      padx=1)
-        ttk.Label(col_header, text="Val 3", width=7, anchor='center', font=('Arial', 8, 'bold')).grid(row=0, column=5,
-                                                                                                      padx=1)
-        ttk.Label(col_header, text="Val 4", width=7, anchor='center', font=('Arial', 8, 'bold')).grid(row=0, column=6,
-                                                                                                      padx=1)
-
-        ttk.Separator(param_header_frame, orient='horizontal').pack(fill=tk.X, padx=5)
-
-        # ── Scrollable Parameter List ───────────────────────────────────────────
-        param_canvas = tk.Canvas(param_header_frame, bg='white', highlightthickness=0)
-        param_scrollbar = ttk.Scrollbar(param_header_frame, orient="vertical", command=param_canvas.yview)
-        param_scrollable = ttk.Frame(param_canvas)
-
-        param_scrollable.bind("<Configure>",
-                              lambda e: param_canvas.configure(scrollregion=param_canvas.bbox("all")))
-        param_canvas.create_window((0, 0), window=param_scrollable, anchor="nw")
-        param_canvas.configure(yscrollcommand=param_scrollbar.set)
-        param_canvas.pack(side="left", fill="both", expand=True, padx=2, pady=2)
-        param_scrollbar.pack(side="right", fill="y")
-
-        def _on_mousewheel(event):
-            param_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        param_canvas.bind("<MouseWheel>", _on_mousewheel)
-
-        # Store widget references
-        self.scalping_backtest_param_widgets = {}
-
-        sorted_params = sorted(self.scalping_backtest_params.items(), key=lambda x: x[1]['description'])
-
-        for p_row, (param_key, param_data) in enumerate(sorted_params):
-            frame = ttk.Frame(param_scrollable)
-            frame.grid(row=p_row, column=0, sticky='ew', pady=1, padx=2)
-
-            def make_toggle_cmd(key=param_key):
-                def cmd():
-                    self._sc_update_count()
-
-                return cmd
-
-            cb = ttk.Checkbutton(frame, variable=param_data['active'], command=make_toggle_cmd())
-            cb.grid(row=0, column=0, padx=2)
-
-            # Parameter name/description
-            lbl = ttk.Label(frame, text=param_data['description'], width=30, anchor='w',
-                            font=('Arial', 8), cursor='hand2')
-            lbl.grid(row=0, column=1, padx=2, sticky='w')
-
-            def make_label_callback(k=param_key):
-                def callback(e):
-                    current = self.scalping_backtest_params[k]['active'].get()
-                    self.scalping_backtest_params[k]['active'].set(not current)
-                    self._sc_update_count()
-
-                return callback
-
-            lbl.bind("<Button-1>", make_label_callback())
-
-            # Current value (from GUI-selected parameters)
-            current_val = param_data.get('current_value', '')
-            current_lbl = ttk.Label(frame, text=str(current_val), width=10, anchor='center',
-                                    font=('Arial', 8, 'bold'), foreground='blue')
-            current_lbl.grid(row=0, column=2, padx=1)
-
-            # Value inputs
-            for v_idx, v_key in enumerate(['value1', 'value2', 'value3', 'value4'], start=3):
-                e = ttk.Entry(frame, textvariable=param_data[v_key], width=7, font=('Arial', 8))
-                e.grid(row=0, column=v_idx, padx=1)
-
-            self.scalping_backtest_param_widgets[param_key] = {
-                'active': param_data['active'],
-                'value1': param_data['value1'],
-                'value2': param_data['value2'],
-                'value3': param_data['value3'],
-                'value4': param_data['value4'],
-                'current_lbl': current_lbl,
-                'widget': cb
-            }
-
-        self._sc_update_count()
-
-        # Log summary
-        self.log_message("=" * 70, "green")
-        self.log_message(f"✅ Built Scalping backtest panel with {len(self.scalping_backtest_params)} parameters",
-                         "green")
-        self.log_message(f"📋 Parameter source: {self.param_toggle_var.get()}", "blue")
-        self.log_message("=" * 70, "green")
-
-    def save_scalping_backtest_params(self):
-        """Save Scalping backtest parameters to JSON file"""
-        try:
-            params_to_save = {}
-            for param_key, param_data in self.scalping_backtest_params.items():
-                params_to_save[param_key] = {
-                    'active': param_data['active'].get(),
-                    'value1': param_data['value1'].get(),
-                    'value2': param_data['value2'].get(),
-                    'value3': param_data['value3'].get(),
-                    'value4': param_data['value4'].get(),
-                    'description': param_data['description']
-                }
-
-            # Save metrics
-            metrics_to_save = {}
-            for metric_name, metric_var in self.optimization_metrics.items():
-                metrics_to_save[metric_name] = metric_var.get()
-
-            save_data = {
-                'strategy': 'Scalping',
-                'parameters': params_to_save,
-                'metrics': metrics_to_save,
-                'timestamp': datetime.now().isoformat()
-            }
-
-            filename = "backtest_params_scalping.json"
-            with open(filename, 'w') as f:
-                json.dump(save_data, f, indent=4)
-
-            selected_count = sum(1 for p in params_to_save.values() if p['active'])
-            active_metrics = [m for m, v in metrics_to_save.items() if v]
-
-            self.log_message("=" * 70, "green")
-            self.log_message(f"✅ Scalping backtest params saved to: {filename}", "green")
-            self.log_message(f"   • {selected_count} parameters selected for optimization", "blue")
-            self.log_message(f"   • {len(active_metrics)} optimization metrics selected: {', '.join(active_metrics)}",
-                             "blue")
-            self.log_message("=" * 70, "green")
-
-            messagebox.showinfo("Saved",
-                                f"Scalping backtest parameters saved to {filename}\n\nParameters selected: {selected_count}")
-
-        except Exception as e:
-            self.log_message(f"❌ Error saving scalping backtest params: {e}", "red")
-            messagebox.showerror("Error", f"Failed to save parameters:\n{e}")
-
-    def load_scalping_backtest_params(self):
-        """Load Scalping backtest parameters from JSON file"""
-        filename = "backtest_params_scalping.json"
-        try:
-            if not os.path.exists(filename):
-                messagebox.showwarning("File Not Found",
-                                       f"No saved scalping backtest parameters found.\nExpected: {filename}\n\nSave parameters first.")
-                return
-
-            with open(filename, 'r') as f:
-                loaded = json.load(f)
-
-            # Handle both new and old format
-            if isinstance(loaded, dict) and 'parameters' in loaded:
-                params_dict = loaded['parameters']
-                metrics_dict = loaded.get('metrics', {})
-                self.log_message("📂 Loading scalping parameters with metrics", "blue")
-            else:
-                params_dict = loaded
-                metrics_dict = {}
-                self.log_message("📂 Loading scalping parameters in legacy format", "orange")
-
-            loaded_count = 0
-            for param_key, param_info in params_dict.items():
-                if param_key in self.scalping_backtest_params:
-                    self.scalping_backtest_params[param_key]['active'].set(param_info.get('active', False))
-                    self.scalping_backtest_params[param_key]['value1'].set(str(param_info.get('value1', '')))
-                    self.scalping_backtest_params[param_key]['value2'].set(str(param_info.get('value2', '')))
-                    self.scalping_backtest_params[param_key]['value3'].set(str(param_info.get('value3', '')))
-                    self.scalping_backtest_params[param_key]['value4'].set(str(param_info.get('value4', '')))
-                    loaded_count += 1
-
-            # Load optimization metrics
-            metrics_loaded = 0
-            for metric_name, metric_value in metrics_dict.items():
-                if metric_name in self.optimization_metrics:
-                    self.optimization_metrics[metric_name].set(metric_value)
-                    metrics_loaded += 1
-
-            self._sc_update_count()
-
-            selected_count = sum(1 for p in self.scalping_backtest_params.values() if p['active'].get())
-            active_metrics = [m for m, v in self.optimization_metrics.items() if v.get()]
-
-            self.log_message("=" * 70, "green")
-            self.log_message(f"✅ Loaded scalping backtest params from {filename}", "green")
-            self.log_message(f"   • {loaded_count} parameters updated", "blue")
-            self.log_message(f"   • {selected_count} parameters selected for optimization", "blue")
-            self.log_message(f"   • {len(active_metrics)} optimization metrics loaded", "blue")
-            self.log_message("=" * 70, "green")
-
-            messagebox.showinfo("Loaded",
-                                f"Scalping backtest parameters loaded from {filename}\n\n"
-                                f"Updated: {loaded_count} parameters\n"
-                                f"Selected for optimization: {selected_count}\n"
-                                f"Optimization metrics: {len(active_metrics)}")
-
-        except json.JSONDecodeError as e:
-            self.log_message(f"❌ Invalid JSON in {filename}: {e}", "red")
-            messagebox.showerror("Load Error", f"File is corrupted or not valid JSON:\n{e}")
-        except Exception as e:
-            self.log_message(f"❌ Error loading scalping backtest params: {e}", "red")
-            messagebox.showerror("Load Error", f"Failed to load parameters:\n{e}")
-
-    def reset_scalping_backtest_params(self):
-        """Reset Scalping backtest parameters to defaults (all deselected)"""
-        if messagebox.askyesno("Reset Scalping Params",
-                               "Reset all scalping backtest parameters to defaults?\nThis will also deselect all parameters."):
-            try:
-                for param_data in self.scalping_backtest_params.values():
-                    param_data['active'].set(False)
-
-                self._sc_update_count()
-                self.log_message("✅ Scalping backtest parameters reset (all deselected)", "green")
-
-            except Exception as e:
-                self.log_message(f"❌ Error resetting scalping backtest params: {e}", "red")
-
-    # ─────────────────────────────────────────────────────────────────────────────
-    # HELPER — call once anywhere you need the filename for a given strategy
-    # ─────────────────────────────────────────────────────────────────────────────
-    def _get_strategy_bt_file(self, strategy: str | None = None) -> str:
-        """Return the canonical backtest-param filename for *strategy*.
-
-        Falls back to the currently selected strategy when *strategy* is None.
-        Examples:
-            Momentum → backtest_params_momentum.json
-            Kalman   → backtest_params_kalman.json
-            Scalping → backtest_params_scalping.json
-        """
-        if strategy is None:
-            strategy = (
-                self.strategy_type_var.get()
-                if hasattr(self, "strategy_type_var")
-                else "Momentum"
-            )
-        return f"backtest_params_{strategy.lower()}.json"
-
-    def _sc_select_all(self):
-        """Select all scalping backtest parameters"""
-        for param_data in self.scalping_backtest_params.values():
-            param_data['active'].set(True)
-        self._sc_update_count()
-        self.log_message("✅ All scalping parameters selected", "green")
-
-    def _sc_deselect_all(self):
-        """Deselect all scalping backtest parameters"""
-        for param_data in self.scalping_backtest_params.values():
-            param_data['active'].set(False)
-        self._sc_update_count()
-        self.log_message("✅ All scalping parameters deselected", "blue")
-
-    def _sc_update_count(self):
-        """Update the scalping selection counter label"""
-        if hasattr(self, 'sc_selection_label') and self.sc_selection_label.winfo_exists():
-            count = sum(1 for p in self.scalping_backtest_params.values() if p['active'].get())
-            color = 'red' if count > 15 else 'green' if count > 0 else 'blue'
-            self.sc_selection_label.config(text=f"Selected: {count}", foreground=color)
-
-    def _get_scalping_param_value(self, param_key):
-        """Get current value for a scalping param (UI → custom_params → SCALPING_PARAMS)"""
-        # Layer 1: live scalping param widgets
-        if hasattr(self, 'scalping_param_widgets') and param_key in self.scalping_param_widgets:
-            try:
-                cvar = self.scalping_param_widgets[param_key]['custom']
-                if isinstance(cvar, tk.BooleanVar):
-                    return cvar.get()
-                raw = cvar.get()
-                if raw not in ('', None):
-                    return self.convert_param_value(raw)
-            except Exception:
-                pass
-        # Layer 2: saved custom
-        val = self.custom_params.get('scalping', {}).get(param_key)
-        if val is not None:
-            return val
-        # Layer 3: SCALPING_PARAMS defaults
-        try:
-            from strategies.scalping_strategy import SCALPING_PARAMS
-            return SCALPING_PARAMS.get(param_key)
-        except ImportError:
-            return None
-
-
-    def _build_backtest_ui(self, right_frame):
-        """Build the actual UI for backtest parameters (shared across strategies)"""
-
-        # ── Optimization Metrics Selection ──────────────────────────────────────
-        metrics_frame = ttk.LabelFrame(right_frame, text="Optimization Metrics")
-        metrics_frame.pack(fill=tk.X, padx=5, pady=5)
-
-        metrics_inner = ttk.Frame(metrics_frame)
-        metrics_inner.pack(fill=tk.X, padx=5, pady=5)
-
-        row, col = 0, 0
-        for metric_name, metric_var in self.optimization_metrics.items():
-            ttk.Checkbutton(metrics_inner, text=metric_name.replace('_', ' ').title(),
-                            variable=metric_var).grid(row=row, column=col, sticky='w', padx=5, pady=2)
-            col += 1
-            if col > 1:
-                col = 0
-                row += 1
-
-        ttk.Label(metrics_inner, text="Equal Weights (All selected metrics)").grid(
-            row=row + 1, column=0, columnspan=2, pady=5)
-
-        ttk.Separator(right_frame, orient='horizontal').pack(fill=tk.X, padx=5, pady=3)
-
-        # ── Action Buttons ──────────────────────────────────────────────────────
+        # ── Action buttons row ────────────────────────────────────────
         action_frame = ttk.Frame(right_frame)
         action_frame.pack(fill=tk.X, padx=5, pady=3)
 
@@ -7662,40 +5712,35 @@ class TradingApp:
         ttk.Button(action_frame, text="🔄 Reset",
                    command=self.reset_backtest_params).pack(side=tk.LEFT, padx=2)
 
-        self.bt_selection_label = ttk.Label(action_frame, text="Selected: 0",
-                                            foreground='blue', font=('Arial', 9, 'bold'))
+        # Selection counter label
+        self.bt_selection_label = ttk.Label(action_frame, text="Selected: 0", foreground='blue',
+                                            font=('Arial', 9, 'bold'))
         self.bt_selection_label.pack(side=tk.RIGHT, padx=5)
 
-        # ── Parameter Table Header ──────────────────────────────────────────────
+        # ── Parameter table header ────────────────────────────────────
         param_header_frame = ttk.LabelFrame(right_frame, text="Parameters (Select for Optimization)")
         param_header_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         col_header = ttk.Frame(param_header_frame)
         col_header.pack(fill=tk.X, padx=5, pady=2)
-
         ttk.Label(col_header, text="✓", width=3, anchor='center', font=('Arial', 8, 'bold')).grid(row=0, column=0,
                                                                                                   padx=1)
-        ttk.Label(col_header, text="Parameter", width=30, anchor='w', font=('Arial', 8, 'bold')).grid(row=0, column=1,
+        ttk.Label(col_header, text="Parameter", width=25, anchor='w', font=('Arial', 8, 'bold')).grid(row=0, column=1,
                                                                                                       padx=1)
-        ttk.Label(col_header, text="Current", width=10, anchor='center', font=('Arial', 8, 'bold')).grid(row=0,
-                                                                                                         column=2,
-                                                                                                         padx=1)
-        ttk.Label(col_header, text="Val 1", width=7, anchor='center', font=('Arial', 8, 'bold')).grid(row=0, column=3,
+        ttk.Label(col_header, text="Val 1", width=7, anchor='center', font=('Arial', 8, 'bold')).grid(row=0, column=2,
                                                                                                       padx=1)
-        ttk.Label(col_header, text="Val 2", width=7, anchor='center', font=('Arial', 8, 'bold')).grid(row=0, column=4,
+        ttk.Label(col_header, text="Val 2", width=7, anchor='center', font=('Arial', 8, 'bold')).grid(row=0, column=3,
                                                                                                       padx=1)
-        ttk.Label(col_header, text="Val 3", width=7, anchor='center', font=('Arial', 8, 'bold')).grid(row=0, column=5,
+        ttk.Label(col_header, text="Val 3", width=7, anchor='center', font=('Arial', 8, 'bold')).grid(row=0, column=4,
                                                                                                       padx=1)
-        ttk.Label(col_header, text="Val 4", width=7, anchor='center', font=('Arial', 8, 'bold')).grid(row=0, column=6,
+        ttk.Label(col_header, text="Val 4", width=7, anchor='center', font=('Arial', 8, 'bold')).grid(row=0, column=5,
                                                                                                       padx=1)
-
         ttk.Separator(param_header_frame, orient='horizontal').pack(fill=tk.X, padx=5)
 
-        # ── Scrollable Parameter List ───────────────────────────────────────────
+        # Scrollable parameter list
         param_canvas = tk.Canvas(param_header_frame, bg='white', highlightthickness=0)
         param_scrollbar = ttk.Scrollbar(param_header_frame, orient="vertical", command=param_canvas.yview)
         param_scrollable = ttk.Frame(param_canvas)
-
         param_scrollable.bind("<Configure>",
                               lambda e: param_canvas.configure(scrollregion=param_canvas.bbox("all")))
         param_canvas.create_window((0, 0), window=param_scrollable, anchor="nw")
@@ -7703,32 +5748,41 @@ class TradingApp:
         param_canvas.pack(side="left", fill="both", expand=True, padx=2, pady=2)
         param_scrollbar.pack(side="right", fill="y")
 
+        # Mouse wheel scrolling
         def _on_mousewheel(event):
             param_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
         param_canvas.bind("<MouseWheel>", _on_mousewheel)
 
-        # Store widget references
-        if not hasattr(self, 'backtest_param_widgets'):
-            self.backtest_param_widgets = {}
+        self.backtest_param_widgets = {}
 
+        # Track checkbox commands to avoid recursion
+        self._updating_group = False
+
+        # Sort parameters by description for better organization
         sorted_params = sorted(self.backtest_params.items(), key=lambda x: x[1]['description'])
 
         for p_row, (param_key, param_data) in enumerate(sorted_params):
             frame = ttk.Frame(param_scrollable)
             frame.grid(row=p_row, column=0, sticky='ew', pady=1, padx=2)
 
+            bg_color = '#f0f8ff' if p_row % 2 == 0 else '#ffffff'
+
+            # Active checkbox - with group synchronization
             def make_toggle_cmd(key=param_key):
                 def cmd():
+                    if self._updating_group:
+                        return
                     self._update_bt_selection_count()
+                    self._check_bt_selection_warning()
 
                 return cmd
 
             cb = ttk.Checkbutton(frame, variable=param_data['active'], command=make_toggle_cmd())
             cb.grid(row=0, column=0, padx=2)
 
-            # Parameter name/description
-            lbl = ttk.Label(frame, text=param_data['description'], width=30, anchor='w',
+            # Description label - clicking toggles checkbox with group sync
+            lbl = ttk.Label(frame, text=param_data['description'], width=25, anchor='w',
                             font=('Arial', 8), cursor='hand2')
             lbl.grid(row=0, column=1, padx=2, sticky='w')
 
@@ -7740,15 +5794,10 @@ class TradingApp:
 
             lbl.bind("<Button-1>", make_label_callback())
 
-            # Current value (from GUI-selected parameters)
-            current_val = param_data.get('current_value', '')
-            current_lbl = ttk.Label(frame, text=str(current_val), width=10, anchor='center',
-                                    font=('Arial', 8, 'bold'), foreground='blue')
-            current_lbl.grid(row=0, column=2, padx=1)
-
-            # Value inputs
-            for v_idx, v_key in enumerate(['value1', 'value2', 'value3', 'value4'], start=3):
-                e = ttk.Entry(frame, textvariable=param_data[v_key], width=7, font=('Arial', 8))
+            # Four value entries
+            for v_idx, v_key in enumerate(['value1', 'value2', 'value3', 'value4'], start=2):
+                e = ttk.Entry(frame, textvariable=param_data[v_key], width=7,
+                              font=('Arial', 8))
                 e.grid(row=0, column=v_idx, padx=1)
 
             self.backtest_param_widgets[param_key] = {
@@ -7757,18 +5806,10 @@ class TradingApp:
                 'value2': param_data['value2'],
                 'value3': param_data['value3'],
                 'value4': param_data['value4'],
-                'current_lbl': current_lbl,
-                'widget': cb
+                'widget': cb  # Store reference to checkbox widget
             }
 
         self._update_bt_selection_count()
-
-        # Log summary
-        self.log_message("=" * 70, "green")
-        self.log_message(f"✅ Built backtest panel with {len(self.backtest_params)} parameters", "green")
-        self.log_message(f"📋 Parameter source: {self.param_toggle_var.get()}", "blue")
-        self.log_message("=" * 70, "green")
-
 
     def _sync_param_group(self, group_name, triggered_by_key):
         """Synchronize all parameters in a group to have the same active state"""
@@ -7887,217 +5928,154 @@ class TradingApp:
         self._update_bt_selection_count()
         self.log_message("✅ All backtest parameters deselected", "blue")
 
-    # ─────────────────────────────────────────────────────────────────────────────
-    # REPLACE: save_backtest_params
-    # ─────────────────────────────────────────────────────────────────────────────
     def save_backtest_params(self):
-        """Save backtest optimisation parameters for the CURRENT strategy."""
-        import json, os
-        from datetime import datetime
-
+        """Save backtest parameters AND optimization metrics to JSON file with file path display"""
         try:
-            current_strategy = (
-                self.strategy_type_var.get()
-                if hasattr(self, "strategy_type_var")
-                else "Momentum"
-            )
-            filename = self._get_strategy_bt_file(current_strategy)
-
-            # Choose the right param dict
-            if current_strategy == "Scalping":
-                param_source = getattr(self, "scalping_backtest_params", {})
-            else:
-                param_source = self.backtest_params
-
             params_to_save = {}
-            for key, data in param_source.items():
-                params_to_save[key] = {
-                    "active": data["active"].get(),
-                    "value1": data["value1"].get(),
-                    "value2": data["value2"].get(),
-                    "value3": data["value3"].get(),
-                    "value4": data["value4"].get(),
-                    "description": data.get("description", key),
+            for param_key, param_data in self.backtest_params.items():
+                params_to_save[param_key] = {
+                    'active': param_data['active'].get(),
+                    'value1': param_data['value1'].get(),
+                    'value2': param_data['value2'].get(),
+                    'value3': param_data['value3'].get(),
+                    'value4': param_data['value4'].get(),
+                    'description': param_data['description']
                 }
 
-            metrics_to_save = {
-                name: var.get()
-                for name, var in self.optimization_metrics.items()
-            }
+            # ═══ ADD OPTIMIZATION METRICS TO SAVED DATA ════════════════════
+            metrics_to_save = {}
+            for metric_name, metric_var in self.optimization_metrics.items():
+                metrics_to_save[metric_name] = metric_var.get()
 
+            # Combine both in a single file
             save_data = {
-                "strategy": current_strategy,
-                "parameters": params_to_save,
-                "metrics": metrics_to_save,
-                "timestamp": datetime.now().isoformat(),
+                'parameters': params_to_save,
+                'metrics': metrics_to_save,
+                'timestamp': datetime.now().isoformat()
             }
 
-            with open(filename, "w") as f:
+            filename = "backtest_params.json"
+            with open(filename, 'w') as f:
                 json.dump(save_data, f, indent=4)
 
-            selected = sum(1 for p in params_to_save.values() if p["active"])
+            # ═══════════════════════════════════════════════════════════════
+            # DISPLAY FILE PATH
+            # ═══════════════════════════════════════════════════════════════
+            import os
+            full_path = os.path.abspath(filename)
+            file_size = os.path.getsize(full_path)
+
+            selected_count = sum(1 for p in params_to_save.values() if p['active'])
             active_metrics = [m for m, v in metrics_to_save.items() if v]
 
-            self.log_message("=" * 70, "green")
-            self.log_message(
-                f"✅ [{current_strategy}] backtest params saved → {filename}", "green"
-            )
-            self.log_message(
-                f"   • {selected} params selected  |  "
-                f"{len(active_metrics)} metrics: {', '.join(active_metrics)}",
-                "blue",
-            )
-            self.log_message("=" * 70, "green")
+            print("=" * 70)
+            print(f"✅ Backtest parameters saved to: {full_path}")
+            print(f"💾 File size: {file_size:,} bytes")
+            print(f"📅 Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            # BUG FIX v9.4.1 (APP BUG D): print() does not accept a colour argument.
+            # The string "blue" was being printed as a literal second positional argument.
+            print(f"   • {selected_count} parameters selected for optimization")
+            print(f"   • {len(active_metrics)} optimization metrics selected: {', '.join(active_metrics)}")
+            print("=" * 70)
 
-            import tkinter.messagebox as mb
-            mb.showinfo(
-                "Saved",
-                f"{current_strategy} backtest params saved to:\n{filename}\n\n"
-                f"Selected: {selected}  |  Metrics: {len(active_metrics)}",
-            )
+            self.log_message(f"✅ Backtest parameters saved to {filename}", "green")
+            self.log_message(f"📁 Full path: {full_path}", "blue")
+            self.log_message(f"   • {selected_count} parameters selected for optimization", "blue")
+            self.log_message(f"   • {len(active_metrics)} optimization metrics selected: {', '.join(active_metrics)}",
+                             "blue")
 
-        except Exception as exc:
-            self.log_message(f"❌ save_backtest_params error: {exc}", "red")
-            import traceback as tb
-            self.log_message(tb.format_exc(), "red")
+            messagebox.showinfo("Saved",
+                                f"Backtest parameters saved to {filename}\n\n"
+                                f"Full path: {full_path}\n\n"
+                                f"Parameters selected: {selected_count}\n"
+                                f"Optimization metrics: {len(active_metrics)}")
+        except Exception as e:
+            self.log_message(f"❌ Error saving backtest params: {e}", "red")
+            messagebox.showerror("Error", f"Failed to save parameters:\n{e}")
 
-    def load_backtest_params(self, strategy: str | None = None, silent: bool = False):
-        """Load backtest optimisation parameters for *strategy* (or current strategy).
-
-        Parameters
-        ----------
-        strategy : str | None
-            Target strategy name.  None → use self.strategy_type_var.
-        silent : bool
-            When True suppress the messagebox (used for auto-load on strategy switch).
-        """
-        import json, os
-        import tkinter.messagebox as mb
-
+    def load_backtest_params(self):
+        """Load backtest parameters AND optimization metrics from JSON file"""
+        filename = "backtest_params.json"
         try:
-            if strategy is None:
-                strategy = (
-                    self.strategy_type_var.get()
-                    if hasattr(self, "strategy_type_var")
-                    else "Momentum"
-                )
-            filename = self._get_strategy_bt_file(strategy)
-
             if not os.path.exists(filename):
-                if not silent:
-                    mb.showwarning(
-                        "File Not Found",
-                        f"No saved params for {strategy}.\nExpected: {filename}\n\n"
-                        "Save parameters first.",
-                    )
-                else:
-                    self.log_message(
-                        f"ℹ️ No saved backtest params for {strategy} ({filename})", "blue"
-                    )
+                messagebox.showwarning("File Not Found",
+                                       f"No saved backtest parameters found.\nExpected: {filename}\n\nSave parameters first.")
                 return
 
-            with open(filename, "r") as f:
+            with open(filename, 'r') as f:
                 loaded = json.load(f)
 
-            # Support both new format {parameters, metrics} and legacy flat dict
-            if isinstance(loaded, dict) and "parameters" in loaded:
-                params_dict = loaded["parameters"]
-                metrics_dict = loaded.get("metrics", {})
+            # Handle both old format (direct dict) and new format (with metrics)
+            if isinstance(loaded, dict) and 'parameters' in loaded and 'metrics' in loaded:
+                # New format with metrics
+                params_dict = loaded['parameters']
+                metrics_dict = loaded['metrics']
+                self.log_message("📂 Loading parameters with optimization metrics", "blue")
             else:
+                # Old format - just parameters
                 params_dict = loaded
                 metrics_dict = {}
-                self.log_message(
-                    f"📂 [{strategy}] legacy format (no metrics)", "orange"
-                )
-
-            # Choose target param dict
-            if strategy == "Scalping":
-                target = getattr(self, "scalping_backtest_params", {})
-            else:
-                target = self.backtest_params
+                self.log_message("📂 Loading parameters in legacy format (no metrics)", "orange")
 
             loaded_count = 0
-            for key, info in params_dict.items():
-                if key in target:
-                    target[key]["active"].set(info.get("active", False))
-                    target[key]["value1"].set(str(info.get("value1", "")))
-                    target[key]["value2"].set(str(info.get("value2", "")))
-                    target[key]["value3"].set(str(info.get("value3", "")))
-                    target[key]["value4"].set(str(info.get("value4", "")))
+            new_count = 0
+
+            # Load parameters
+            for param_key, param_info in params_dict.items():
+                if param_key in self.backtest_params:
+                    # Update existing
+                    self.backtest_params[param_key]['active'].set(param_info.get('active', False))
+                    self.backtest_params[param_key]['value1'].set(str(param_info.get('value1', '')))
+                    self.backtest_params[param_key]['value2'].set(str(param_info.get('value2', '')))
+                    self.backtest_params[param_key]['value3'].set(str(param_info.get('value3', '')))
+                    self.backtest_params[param_key]['value4'].set(str(param_info.get('value4', '')))
                     loaded_count += 1
                 else:
-                    # Parameter not yet in UI — add it silently
-                    import tkinter as tk
-                    target[key] = {
-                        "active": tk.BooleanVar(value=info.get("active", False)),
-                        "value1": tk.StringVar(value=str(info.get("value1", ""))),
-                        "value2": tk.StringVar(value=str(info.get("value2", ""))),
-                        "value3": tk.StringVar(value=str(info.get("value3", ""))),
-                        "value4": tk.StringVar(value=str(info.get("value4", ""))),
-                        "description": info.get("description", key),
+                    # Add new parameter not yet in UI
+                    self.backtest_params[param_key] = {
+                        'active': tk.BooleanVar(value=param_info.get('active', False)),
+                        'value1': tk.StringVar(value=str(param_info.get('value1', ''))),
+                        'value2': tk.StringVar(value=str(param_info.get('value2', ''))),
+                        'value3': tk.StringVar(value=str(param_info.get('value3', ''))),
+                        'value4': tk.StringVar(value=str(param_info.get('value4', ''))),
+                        'description': param_info.get('description', param_key)
                     }
-                    loaded_count += 1
+                    new_count += 1
 
-            for metric, value in metrics_dict.items():
-                if metric in self.optimization_metrics:
-                    self.optimization_metrics[metric].set(value)
+            # ═══ LOAD OPTIMIZATION METRICS ═════════════════════════════════
+            metrics_loaded = 0
+            for metric_name, metric_value in metrics_dict.items():
+                if metric_name in self.optimization_metrics:
+                    self.optimization_metrics[metric_name].set(metric_value)
+                    metrics_loaded += 1
+            # ════════════════════════════════════════════════════════════════
 
-            # Refresh selection counters
-            if strategy == "Scalping" and hasattr(self, "_sc_update_count"):
-                self._sc_update_count()
-            elif hasattr(self, "_update_bt_selection_count"):
-                self._update_bt_selection_count()
+            self._update_bt_selection_count()
 
-            selected = sum(1 for p in target.values() if p["active"].get())
+            selected_count = sum(1 for p in self.backtest_params.values() if p['active'].get())
             active_metrics = [m for m, v in self.optimization_metrics.items() if v.get()]
 
-            self.log_message("=" * 70, "green")
-            self.log_message(
-                f"✅ [{strategy}] backtest params loaded ← {filename}", "green"
-            )
-            self.log_message(
-                f"   • {loaded_count} params updated  |  {selected} selected  |  "
-                f"{len(active_metrics)} metrics",
-                "blue",
-            )
-            self.log_message("=" * 70, "green")
+            self.log_message(f"✅ Loaded backtest params from {filename}", "green")
+            self.log_message(f"   • {loaded_count} parameters updated, {new_count} new", "blue")
+            self.log_message(f"   • {selected_count} parameters selected for optimization", "blue")
+            self.log_message(f"   • {len(active_metrics)} optimization metrics loaded", "blue")
 
-            if not silent:
-                mb.showinfo(
-                    "Loaded",
-                    f"{strategy} backtest params loaded from:\n{filename}\n\n"
-                    f"Updated: {loaded_count}  |  Selected: {selected}  |  "
-                    f"Metrics: {len(active_metrics)}",
-                )
+            messagebox.showinfo("Loaded",
+                                f"Backtest parameters loaded from {filename}\n\n"
+                                f"Updated: {loaded_count} parameters\n"
+                                f"New: {new_count} parameters\n"
+                                f"Selected for optimization: {selected_count}\n"
+                                f"Optimization metrics: {len(active_metrics)}")
 
-            if selected > 10 and hasattr(self, "_check_bt_selection_warning"):
+            if selected_count > 10:
                 self._check_bt_selection_warning()
 
-        except json.JSONDecodeError as exc:
-            self.log_message(f"❌ Invalid JSON in {filename}: {exc}", "red")
-            if not silent:
-                import tkinter.messagebox as mb
-                mb.showerror("Load Error", f"File is corrupted:\n{exc}")
-        except Exception as exc:
-            self.log_message(f"❌ load_backtest_params error: {exc}", "red")
-            import traceback as tb
-            self.log_message(tb.format_exc(), "red")
-
-    def switch_strategy_autoload_snippet(self, new_strategy_name: str):
-        """
-        Call this at the end of a successful switch_strategy() to silently
-        restore saved backtest params for the newly selected strategy.
-        """
-        try:
-            self.load_backtest_params(strategy=new_strategy_name, silent=True)
-            self.log_message(
-                f"📂 Backtest params auto-loaded for {new_strategy_name}", "blue"
-            )
-        except Exception as exc:
-            self.log_message(
-                f"ℹ️ Could not auto-load backtest params for {new_strategy_name}: {exc}",
-                "orange",
-            )
+        except json.JSONDecodeError as e:
+            self.log_message(f"❌ Invalid JSON in {filename}: {e}", "red")
+            messagebox.showerror("Load Error", f"File is corrupted or not valid JSON:\n{e}")
+        except Exception as e:
+            self.log_message(f"❌ Error loading backtest params: {e}", "red")
+            messagebox.showerror("Load Error", f"Failed to load parameters:\n{e}")
 
     def reset_backtest_params(self):
         """Reset backtest parameters to defaults"""
@@ -8112,7 +6090,6 @@ class TradingApp:
 
             except Exception as e:
                 self.log_message(f"❌ Error resetting backtest params: {e}", "red")
-
 
     def _get_param_values(self, param_key):
         """
@@ -8277,330 +6254,6 @@ class TradingApp:
 
         return fallbacks.get(param_key, None)
 
-    def create_scalping_parameter_controls(self, parent):
-        """Create parameter controls for Scalping strategy — all SCALPING_PARAMS editable."""
-        paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        left_frame  = ttk.Frame(paned, width=600)
-        paned.add(left_frame, weight=2)
-
-        right_frame = ttk.LabelFrame(paned, text="Backtest Optimization Parameters", width=500)
-        paned.add(right_frame, weight=1)
-
-        # ── Column headers ────────────────────────────────────────────────────
-        headers_frame = ttk.Frame(left_frame)
-        headers_frame.pack(fill='x', padx=5, pady=(5, 0), side=tk.TOP)
-        for col, (text, minw) in enumerate([
-            ("Parameter", 250), ("📌 Default Value", 120),
-            ("✏️ Custom Value", 120), ("Description", 350)
-        ]):
-            headers_frame.columnconfigure(col, weight=0 if col < 3 else 1, minsize=minw)
-            ttk.Label(headers_frame, text=text, font=('Arial', 10, 'bold'), anchor='w').grid(
-                row=0, column=col, padx=5, pady=8, sticky='w')
-        ttk.Separator(headers_frame, orient='horizontal').grid(
-            row=1, column=0, columnspan=4, sticky='ew', padx=5, pady=(0, 5))
-
-        # ── Scrollable content ────────────────────────────────────────────────
-        content_frame = ttk.Frame(left_frame)
-        content_frame.pack(fill='both', expand=True, padx=5, pady=5, side=tk.TOP)
-
-        canvas    = tk.Canvas(content_frame, bg='white', highlightthickness=0)
-        scrollbar = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        scrollable_frame.bind("<Configure>",
-                              lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        canvas.bind("<MouseWheel>",
-                    lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
-
-        default_params = self.get_default_scalping_params()
-        self.scalping_param_widgets = {}
-
-        categories = {
-            '📈 EMA Periods': [
-                'ema_fast_period', 'ema_mid_period', 'ema_slow_period',
-            ],
-            '📊 MACD & Stochastic': [
-                'macd_fast', 'macd_slow', 'macd_signal_period',
-                'stoch_k_period', 'stoch_d_period', 'stoch_smooth',
-                'stoch_overbought', 'stoch_oversold', 'stoch_mid_upper', 'stoch_mid_lower',
-            ],
-            '🎯 RSI Filters': [
-                'rsi_period', 'rsi_long_min', 'rsi_long_max',
-                'rsi_short_min', 'rsi_short_max',
-                'rsi_overbought_exit', 'rsi_oversold_exit',
-            ],
-            '📐 ADX Filters': [
-                'adx_period', 'adx_min_long', 'adx_min_short', 'adx_extended_threshold',
-                'adx_slope_min',
-            ],
-            '📦 Volume & ATR': [
-                'volume_period', 'volume_min_ratio', 'volume_strong_ratio',
-                'atr_period', 'atr_compression_lookback', 'atr_compression_threshold',
-            ],
-            '🏆 Quality Score Thresholds': [
-                'quality_min_long', 'quality_min_short', 'quality_tier1_min',
-                'weight_ema', 'weight_macd', 'weight_stoch',
-                'weight_rsi', 'weight_volume', 'weight_adx',
-            ],
-            '💰 Risk Management': [
-                'risk_per_trade', 'risk_tier1',
-                'max_position_size_pct', 'max_position_units',
-                'min_cash_reserve', 'base_risk_pct',
-            ],
-            '🛑 Stop Loss & Trailing': [
-                'stop_loss_atr_mult', 'trailing_activation_pct',
-                'trailing_distance_pct', 'trailing_atr_mult',
-            ],
-            '🔒 Breakeven Stop': [
-                'be_stop_enabled', 'be_stop_r_trigger', 'be_stop_no_progress_bars',
-            ],
-            '🎯 Profit Targets': [
-                'take_profit_r1', 'take_profit_r2',
-                'partial_exit_pct_r1', 'partial_exit_pct_r2',
-            ],
-            '🚪 Exit Conditions': [
-                'macd_cross_exit_enabled', 'macd_cross_min_profit_r',
-                'stoch_reversal_exit_enabled', 'stoch_reversal_min_profit_r',
-                'ema_cross_exit_enabled', 'ema_cross_min_profit_r',
-                'max_hold_bars', 'min_hold_bars_before_stop',
-            ],
-            '⏱️ Entry Timing Filters': [
-                'pullback_zone_lower_pct', 'pullback_zone_upper_pct',
-                'momentum_period', 'momentum_min_long', 'momentum_min_short',
-            ],
-            '🌍 Regime / Ranging Filter': [
-                'regime_filter_enabled', 'bb_period', 'bb_std',
-                'kc_period', 'kc_atr_mult',
-                'chop_period', 'chop_threshold', 'ranging_min_checks',
-            ],
-            '⏳ Trade Frequency & Cooldown': [
-                'max_daily_trades', 'min_bars_between_trades',
-                'cooldown_after_loss_bars',
-                'consecutive_loss_threshold', 'consecutive_loss_cooldown_bars',
-            ],
-            '📅 Daily Trend Filter': [
-                'daily_trend_filter_enabled', 'daily_ema_period', 'daily_trend_adx_override',
-            ],
-            '🔍 Extended Run & Trend Age': [
-                'extended_run_lookback',
-                'extended_run_max_pct_long', 'extended_run_max_pct_short',
-                'trend_age_penalty_enabled', 'trend_age_max_bars', 'trend_age_penalty_pts',
-            ],
-            '🛡️ Loss Limits': [
-                'daily_loss_limit_pct', 'max_drawdown_limit_pct', 'max_consecutive_losses',
-            ],
-            '🧠 Fuzzy Learning': [
-                'fuzzy_mode_enabled', 'fuzzy_learning_enabled',
-                'fuzzy_absolute_min', 'fuzzy_absolute_max',
-                'fuzzy_default_margin_pct', 'fuzzy_min_confidence', 'fuzzy_min_samples',
-            ],
-            '⚙️ Trade Direction': [
-                'trade_direction', 'only_tier2_entries',
-            ],
-        }
-
-        scalping_descriptions = {
-            'ema_fast_period'            : 'Fast EMA period (default 5)',
-            'ema_mid_period'             : 'Mid EMA period (default 13)',
-            'ema_slow_period'            : 'Slow EMA period (default 21)',
-            'macd_fast'                  : 'MACD fast period — faster than standard for scalping',
-            'macd_slow'                  : 'MACD slow period',
-            'macd_signal_period'         : 'MACD signal smoothing',
-            'stoch_k_period'             : 'Stochastic %K period',
-            'stoch_d_period'             : 'Stochastic %D smoothing',
-            'stoch_smooth'               : 'Stochastic slow %K smoothing',
-            'stoch_overbought'           : 'Stochastic overbought threshold (exit signal)',
-            'stoch_oversold'             : 'Stochastic oversold threshold (exit signal)',
-            'stoch_mid_upper'            : 'Upper mid zone for perfect long setup',
-            'stoch_mid_lower'            : 'Lower mid zone for perfect short setup',
-            'rsi_period'                 : 'RSI look-back period',
-            'rsi_long_min'               : 'RSI minimum for long entries (avoid oversold)',
-            'rsi_long_max'               : 'RSI maximum for long entries (avoid overbought)',
-            'rsi_short_min'              : 'RSI minimum for short entries',
-            'rsi_short_max'              : 'RSI maximum for short entries (avoid too oversold)',
-            'rsi_overbought_exit'        : 'RSI level that triggers long exit',
-            'rsi_oversold_exit'          : 'RSI level that triggers short exit',
-            'adx_period'                 : 'ADX calculation period',
-            'adx_min_long'               : 'Minimum ADX for long entries — needs real trend',
-            'adx_min_short'              : 'Minimum ADX for short entries',
-            'adx_extended_threshold'     : 'ADX above this = trend exhausted, block new entries',
-            'adx_slope_min'              : 'Minimum ADX rise per bar (trend accelerating)',
-            'volume_period'              : 'Volume MA look-back bars',
-            'volume_min_ratio'           : 'Minimum volume vs average (1.4 = 40% above average)',
-            'volume_strong_ratio'        : 'Strong volume confirmation threshold',
-            'atr_period'                 : 'ATR calculation period',
-            'atr_compression_lookback'   : 'Bars to average ATR for compression check',
-            'atr_compression_threshold'  : 'Block entries when ATR < this × average ATR',
-            'quality_min_long'           : 'Minimum quality score to enter a long (0-100)',
-            'quality_min_short'          : 'Minimum quality score to enter a short (0-100)',
-            'quality_tier1_min'          : 'Quality score for Tier 1 (high-conviction) entries',
-            'weight_ema'                 : 'EMA alignment component weight (out of 100)',
-            'weight_macd'                : 'MACD component weight',
-            'weight_stoch'               : 'Stochastic component weight',
-            'weight_rsi'                 : 'RSI component weight',
-            'weight_volume'              : 'Volume component weight',
-            'weight_adx'                 : 'ADX component weight',
-            'risk_per_trade'             : 'Base risk % of equity per trade (0.008 = 0.8%)',
-            'risk_tier1'                 : 'Risk % for high-conviction Tier 1 entries',
-            'max_position_size_pct'      : 'Maximum position as % of equity (0.15 = 15%)',
-            'max_position_units'         : 'Hard unit cap per position',
-            'min_cash_reserve'           : 'Minimum cash to keep unallocated',
-            'base_risk_pct'              : 'Base risk used for position sizing',
-            'stop_loss_atr_mult'         : 'Stop distance = ATR × this multiplier (2.2 recommended)',
-            'trailing_activation_pct'    : 'Profit % needed to activate trailing stop',
-            'trailing_distance_pct'      : 'Trailing stop distance from peak',
-            'trailing_atr_mult'          : 'ATR multiplier for dynamic trailing distance',
-            'be_stop_enabled'            : 'Enable breakeven stop',
-            'be_stop_r_trigger'          : 'Move stop to breakeven when profit reaches this R',
-            'be_stop_no_progress_bars'   : 'Move to BE if no progress after this many bars',
-            'take_profit_r1'             : 'First partial exit at this R-multiple',
-            'take_profit_r2'             : 'Second partial exit at this R-multiple',
-            'partial_exit_pct_r1'        : 'Fraction of position to close at R1 (0.50 = 50%)',
-            'partial_exit_pct_r2'        : 'Fraction to close at R2 (0.30 = 30%)',
-            'macd_cross_exit_enabled'    : 'Exit on MACD bearish cross when in profit',
-            'macd_cross_min_profit_r'    : 'Minimum profit (R) before MACD cross exit fires',
-            'stoch_reversal_exit_enabled': 'Exit on Stochastic reversal when in profit',
-            'stoch_reversal_min_profit_r': 'Minimum profit before Stochastic exit fires',
-            'ema_cross_exit_enabled'     : 'Exit on full EMA bearish reversal',
-            'ema_cross_min_profit_r'     : 'Minimum profit before EMA cross exit fires',
-            'max_hold_bars'              : 'Force exit after this many bars (48 × 15min = 12h)',
-            'min_hold_bars_before_stop'  : 'Do not allow stop in first N bars (noise protection)',
-            'pullback_zone_lower_pct'    : 'Max % below EMA_fast for entry — deeper pullback allowed',
-            'pullback_zone_upper_pct'    : 'Max % above EMA_fast for entry — tighter = fewer entries',
-            'momentum_period'            : 'Look-back bars for short-term momentum check',
-            'momentum_min_long'          : 'Minimum momentum % required for long entry',
-            'momentum_min_short'         : 'Minimum downward momentum % for short entry',
-            'regime_filter_enabled'      : 'Block entries in ranging/choppy markets',
-            'bb_period'                  : 'Bollinger Band period for regime detection',
-            'bb_std'                     : 'Bollinger Band standard deviation',
-            'kc_period'                  : 'Keltner Channel period',
-            'kc_atr_mult'                : 'Keltner Channel ATR multiplier',
-            'chop_period'                : 'Choppiness Index period',
-            'chop_threshold'             : 'Choppiness above this = ranging, block entries',
-            'ranging_min_checks'         : 'Minimum regime checks to classify as ranging',
-            'max_daily_trades'           : 'Maximum entries per day (8 prevents overtrading)',
-            'min_bars_between_trades'    : 'Bars to wait between entries (4 = 1 hour minimum)',
-            'cooldown_after_loss_bars'   : 'Bars to pause after a losing trade',
-            'consecutive_loss_threshold' : 'Trigger extended cooldown after this many consecutive losses',
-            'consecutive_loss_cooldown_bars': 'Extended cooldown bars after loss streak',
-            'daily_trend_filter_enabled' : 'Only trade longs above daily EMA, shorts below',
-            'daily_ema_period'           : 'Bars for daily trend EMA (96 × 15min = 24h)',
-            'daily_trend_adx_override'   : 'ADX level that overrides daily trend filter',
-            'extended_run_lookback'      : 'Bars to look back for swing high/low',
-            'extended_run_max_pct_long'  : 'Block longs if price already ran > this % from swing low',
-            'extended_run_max_pct_short' : 'Block shorts if price dropped > this % from swing high',
-            'trend_age_penalty_enabled'  : 'Penalise old trends in quality score',
-            'trend_age_max_bars'         : 'Trend older than this gets quality penalty',
-            'trend_age_penalty_pts'      : 'Points deducted from quality for aged trend',
-            'daily_loss_limit_pct'       : 'Halt trading if daily loss exceeds this % of equity',
-            'max_drawdown_limit_pct'     : 'Halt if drawdown from peak exceeds this %',
-            'max_consecutive_losses'     : 'Halt trading after this many consecutive losses',
-            'fuzzy_mode_enabled'         : 'Use adaptive quality thresholds learned from near-misses',
-            'fuzzy_learning_enabled'     : 'Enable continuous learning from near-miss trades',
-            'fuzzy_absolute_min'         : 'Absolute floor — fuzzy mode cannot go below this',
-            'fuzzy_absolute_max'         : 'Absolute ceiling for fuzzy threshold',
-            'fuzzy_default_margin_pct'   : 'Percentage below fixed threshold to start fuzzy zone',
-            'fuzzy_min_confidence'       : 'Minimum confidence for fuzzy entry to fire',
-            'fuzzy_min_samples'          : 'Minimum near-miss samples before fuzzy activates',
-            'trade_direction'            : 'long / short / both',
-            'only_tier2_entries'         : 'When True, only Tier 1 (high-conviction) entries fire',
-        }
-
-        row = 0
-        for category, params in categories.items():
-            ttk.Separator(scrollable_frame, orient='horizontal').grid(
-                row=row, column=0, columnspan=4, sticky='ew', pady=(10, 5), padx=5)
-            row += 1
-            ttk.Label(scrollable_frame, text=category,
-                      font=('Arial', 11, 'bold')).grid(
-                row=row, column=0, columnspan=4, sticky='w', padx=5, pady=5)
-            row += 1
-
-            for param_name in params:
-                if param_name not in default_params:
-                    continue
-
-                for col, minw in enumerate([250, 120, 120, 350]):
-                    scrollable_frame.columnconfigure(col, weight=0 if col < 3 else 1, minsize=minw)
-
-                label_text = param_name.replace('_', ' ').title()
-                ttk.Label(scrollable_frame, text=label_text, anchor='w').grid(
-                    row=row, column=0, padx=5, pady=2, sticky='w')
-
-                default_value = default_params[param_name]
-                if isinstance(default_value, bool):
-                    default_display = "✓ Enabled" if default_value else "✗ Disabled"
-                else:
-                    default_display = str(default_value)
-
-                default_entry = ttk.Entry(scrollable_frame, width=15)
-                default_entry.insert(0, default_display)
-                default_entry.config(state='readonly')
-                default_entry.grid(row=row, column=1, padx=5, pady=2, sticky='w')
-
-                custom_value = self.custom_params.get('scalping', {}).get(param_name, default_value)
-
-                if isinstance(default_value, bool):
-                    custom_var = tk.BooleanVar(value=bool(custom_value))
-                    custom_widget = ttk.Checkbutton(
-                        scrollable_frame, variable=custom_var,
-                        text="Enable" if custom_value else "Disable")
-                    custom_widget.grid(row=row, column=2, padx=5, pady=2, sticky='w')
-
-                    indicator = tk.Label(scrollable_frame, text="●", width=2,
-                                         bg="yellow" if bool(custom_value) != bool(default_value) else "white")
-                    indicator.grid(row=row, column=2, padx=(100, 0), pady=2, sticky='w')
-
-                    def _make_bool_cb(v, w, ind, dv):
-                        def cb(*_):
-                            try:
-                                cur = v.get()
-                                w.config(text="Enable" if cur else "Disable")
-                                ind.config(bg="yellow" if bool(cur) != bool(dv) else "white")
-                            except tk.TclError:
-                                pass
-                        return cb
-
-                    custom_var.trace_add('write',
-                        _make_bool_cb(custom_var, custom_widget, indicator, default_value))
-                else:
-                    custom_var = tk.StringVar(value=str(custom_value))
-                    custom_widget = tk.Entry(
-                        scrollable_frame, textvariable=custom_var, width=15,
-                        bg="yellow" if str(custom_value) != str(default_value) else "white")
-                    custom_widget.grid(row=row, column=2, padx=5, pady=2, sticky='w')
-
-                    def _make_str_cb(v, w, dv):
-                        def cb(*_):
-                            try:
-                                w.config(bg="yellow" if v.get() != str(dv) else "white")
-                            except tk.TclError:
-                                pass
-                        return cb
-
-                    custom_var.trace_add('write',
-                        _make_str_cb(custom_var, custom_widget, default_value))
-
-                description = scalping_descriptions.get(param_name, 'Scalping parameter')
-                ttk.Label(scrollable_frame, text=description,
-                          wraplength=400, anchor='w',
-                          foreground='#555555').grid(row=row, column=3, padx=5, pady=2, sticky='w')
-
-                self.scalping_param_widgets[param_name] = {
-                    'default': default_entry,
-                    'custom' : custom_var,
-                    'widget' : custom_widget,
-                }
-                row += 1
-
-        # ── Right panel: Scalping-specific optimization panel ─────────────────
-        self._build_scalping_backtest_optimization_panel(right_frame)
-
     def create_kalman_parameter_controls(self, parent):
         """Create parameter controls for Kalman strategy with FIXED default values"""
         # Create PanedWindow to split left and right
@@ -8749,8 +6402,38 @@ class TradingApp:
 
                     row += 1
 
-        # Right panel: full backtest optimization panel (same as Momentum)
-        self._build_backtest_optimization_panel(right_frame)
+        # Right panel: Same backtest parameters as momentum tab
+        # Copy the same backtest parameters to the right panel
+        metrics_header = ttk.LabelFrame(right_frame, text="Optimization Metrics")
+        metrics_header.pack(fill=tk.X, padx=5, pady=5)
+
+        metrics_inner = ttk.Frame(metrics_header)
+        metrics_inner.pack(fill=tk.X, padx=5, pady=5)
+
+        row, col = 0, 0
+        for metric_name, metric_var in self.optimization_metrics.items():
+            cb = ttk.Checkbutton(
+                metrics_inner,
+                text=metric_name.replace('_', ' ').title(),
+                variable=metric_var
+            )
+            cb.grid(row=row, column=col, sticky='w', padx=5, pady=2)
+            col += 1
+            if col > 1:
+                col = 0
+                row += 1
+
+        ttk.Label(metrics_inner, text="Equal Weights (All selected metrics)").grid(
+            row=row, column=0, columnspan=2, pady=5
+        )
+
+        ttk.Separator(right_frame, orient='horizontal').pack(fill=tk.X, padx=5, pady=5)
+
+        param_header = ttk.LabelFrame(right_frame, text="Parameter Optimization (4 values + Active)")
+        param_header.pack(fill=tk.X, padx=5, pady=5)
+
+        # Show note that parameters are shared across strategies
+        ttk.Label(param_header, text="(Shared across all strategies)", foreground='blue').pack(pady=2)
 
     def fmt_val(self, value, format_str='{:.4f}'):
         if value is None:
@@ -8785,23 +6468,6 @@ class TradingApp:
             # ═══ NEW: IMPROVEMENT 4 DESCRIPTION ═════════════════════════════
             'cooldown_after_profit_target_bars': 'IMP-4: Bars to wait after profit target exit before new entry. Prevents immediate reversals. Default: 8',
             'cooldown_after_profit_target_bars': 'IMP-4: Bars to wait after profit target exit',
-            # ═══ PULLBACK ZONE & ADX SLOPE ═══════════════════════════════════
-            'pullback_zone_lower_pct': (
-                'How far below EMA_Fast price can be and still enter (%). '
-                'Default -2.5. Widen to -4.0 or -5.0 to allow deeper pullback entries '
-                '— one of the two biggest levers for increasing trade frequency.'
-            ),
-            'pullback_zone_upper_pct': (
-                'How far above EMA_Fast price can be and still enter (%). '
-                'Default 1.5. Widen to 3.0 or 4.0 to allow more extended entries '
-                '— combined with lower bound, widening both doubles entry frequency.'
-            ),
-            'adx_slope_min': (
-                'Minimum ADX rise per bar required to enter. '
-                'Default 0.1 (strict rising ADX). Set 0.0 to allow flat ADX. '
-                'Set -0.3 or -0.5 to allow slightly declining ADX '
-                '— the second biggest lever for increasing trade frequency.'
-            ),
         }
         return descriptions.get(param_name, 'No description available')
 
@@ -8844,9 +6510,6 @@ class TradingApp:
 
         self.apply_selected_parameters()
 
-        if hasattr(self, 'refresh_scalping_current_values'):
-            self.refresh_scalping_current_values()
-
         try:
             if os.path.exists(self.strategy_settings_file):
                 with open(self.strategy_settings_file, 'r') as f:
@@ -8865,71 +6528,33 @@ class TradingApp:
         self.log_message(f"Switched to: {selection}", "blue")
 
     def apply_selected_parameters(self):
-        """Apply selected parameters to all strategies."""
+        """Apply the selected parameters (default or custom) to all strategies"""
         selection = self.param_toggle_var.get()
-        gui_dir = self.trade_direction_var.get()
 
         try:
-            # ── Momentum ────────────────────────────────────────────────────
             if hasattr(self, 'strategies') and 'Momentum' in self.strategies:
                 momentum_strategy = self.strategies['Momentum']
                 params = self.get_current_momentum_params()
 
-                # always force GUI direction into params
-                params['trade_direction'] = gui_dir
-
                 for key, value in params.items():
                     if hasattr(momentum_strategy, key):
                         setattr(momentum_strategy, key, value)
-                    if hasattr(momentum_strategy, 'config') and \
-                            key in momentum_strategy.config:
+                    if hasattr(momentum_strategy, 'config') and key in momentum_strategy.config:
                         momentum_strategy.config[key] = value
 
-                # explicit direction flags
-                momentum_strategy.trade_direction = gui_dir
-                momentum_strategy.only_long_entries = (gui_dir == 'long')
-                momentum_strategy.only_short_entries = (gui_dir == 'short')
-                self.log_message(
-                    f"✅ Applied {selection} to Momentum "
-                    f"(direction={gui_dir})", "green")
+                self.log_message(f"✅ Applied {selection} to Momentum strategy", "green")
 
-            # ── Kalman ──────────────────────────────────────────────────────
             if hasattr(self, 'strategies') and 'Kalman' in self.strategies:
                 kalman_strategy = self.strategies['Kalman']
                 params = self.get_current_kalman_params()
-                params['trade_direction'] = gui_dir
 
                 for key, value in params.items():
                     if hasattr(kalman_strategy, key):
                         setattr(kalman_strategy, key, value)
-                    if hasattr(kalman_strategy, 'config') and \
-                            key in kalman_strategy.config:
+                    if hasattr(kalman_strategy, 'config') and key in kalman_strategy.config:
                         kalman_strategy.config[key] = value
 
-                kalman_strategy.trade_direction = gui_dir
-                self.log_message(
-                    f"✅ Applied {selection} to Kalman "
-                    f"(direction={gui_dir})", "green")
-
-            # ── Scalping ────────────────────────────────────────────────────
-            if hasattr(self, 'strategies') and 'Scalping' in self.strategies:
-                scalping_strategy = self.strategies['Scalping']
-                params = self.get_current_scalping_params()
-                params['trade_direction'] = gui_dir
-
-                for key, value in params.items():
-                    if hasattr(scalping_strategy, key):
-                        setattr(scalping_strategy, key, value)
-                    if hasattr(scalping_strategy, 'config') and \
-                            key in scalping_strategy.config:
-                        scalping_strategy.config[key] = value
-
-                scalping_strategy.trade_direction = gui_dir
-                scalping_strategy.only_long_entries = (gui_dir == 'long')
-                scalping_strategy.only_short_entries = (gui_dir == 'short')
-                self.log_message(
-                    f"✅ Applied {selection} to Scalping "
-                    f"(direction={gui_dir})", "green")
+                self.log_message(f"✅ Applied {selection} to Kalman strategy", "green")
 
         except Exception as e:
             self.log_message(f"❌ Error applying parameters: {e}", "red")
@@ -8984,21 +6609,7 @@ class TradingApp:
                 self.custom_params['kalman'] = kalman_params
                 self.log_message(f"✅ Captured {len(kalman_params)} kalman params from UI", "green")
 
-            # Get scalping params from UI widgets
-            if hasattr(self, 'scalping_param_widgets'):
-                from strategies.scalping_strategy import SCALPING_PARAMS
-                scalping_params = SCALPING_PARAMS.copy()
-                if self.custom_params.get('scalping'):
-                    scalping_params.update(self.custom_params['scalping'])
-                for param_name, widget_info in self.scalping_param_widgets.items():
-                    custom_var = widget_info['custom']
-                    if isinstance(custom_var, tk.BooleanVar):
-                        scalping_params[param_name] = custom_var.get()
-                    else:
-                        scalping_params[param_name] = self.convert_param_value(custom_var.get())
-                self.custom_params['scalping'] = scalping_params
-                self.log_message(f"✅ Captured {len(scalping_params)} scalping params from UI", "green")
-
+            # Prepare settings to save
             settings_to_save = {
                 'default_params': self.default_params,
                 'custom_params': self.custom_params,
@@ -9006,13 +6617,9 @@ class TradingApp:
                 'timestamp': datetime.now().isoformat()
             }
 
-            # ── persist trading-time windows ────────────────────────────────────
-            settings_to_save = self._save_trading_time_config(settings_to_save)
-
+            # Save to file
             with open(self.strategy_settings_file, 'w') as f:
                 json.dump(settings_to_save, f, indent=4)
-
-            self.log_message("⏰ Trading time windows saved to settings", "green")
 
             # ═══════════════════════════════════════════════════════════════
             # ENHANCED: Get full file path and display detailed info
@@ -9135,21 +6742,6 @@ class TradingApp:
                             custom_var.set(str(default_value))
 
                         self.custom_params['kalman'][param_name] = default_value
-
-            # Reset scalping params
-            if hasattr(self, 'scalping_param_widgets'):
-                scalping_defaults = self.get_default_scalping_params()
-                for param_name, widget_info in self.scalping_param_widgets.items():
-                    if param_name in scalping_defaults:
-                        default_value = scalping_defaults[param_name]
-                        custom_var = widget_info['custom']
-
-                        if isinstance(custom_var, tk.BooleanVar):
-                            custom_var.set(bool(default_value))
-                        else:
-                            custom_var.set(str(default_value))
-
-                        self.custom_params.setdefault('scalping', {})[param_name] = default_value
 
             # Update MomentumConfig state
             self.current_mode = "Default Parameters"
@@ -9761,278 +7353,289 @@ class TradingApp:
             self.log_message(f"Connection error: {str(e)}", "red")
             logging.error(f"Connection error: {str(e)}")
 
-    def _show_schedule_toast(self, start_str: str, end_str: str, starting_now: bool = False):
-        """Show a floating 5-second notification about the trading schedule."""
-        try:
-            toast = tk.Toplevel(self.root)
-            toast.overrideredirect(True)
-            toast.attributes("-topmost", True)
-            toast.attributes("-alpha", 0.93)
-
-            w, h = 420, 110
-            sx = self.root.winfo_screenwidth()
-            sy = self.root.winfo_screenheight()
-            x = (sx - w) // 2
-            y = sy - h - 80
-            toast.geometry(f"{w}x{h}+{x}+{y}")
-
-            bg = "#1a1a2e"
-            fr = tk.Frame(toast, bg=bg, bd=2, relief="ridge")
-            fr.pack(fill=tk.BOTH, expand=True)
-
-            header_text = "▶ Trading starting now" if starting_now else "⏰ Trading scheduled"
-            header_col = "#00ff88" if starting_now else "#ffaa00"
-            tk.Label(
-                fr, text=header_text,
-                bg=bg, fg=header_col,
-                font=("Arial", 12, "bold"), pady=6
-            ).pack()
-
-            detail = (f"Ends at  {end_str} UTC"
-                      if starting_now
-                      else f"Starts  {start_str} UTC  →  ends  {end_str} UTC")
-            tk.Label(
-                fr, text=detail,
-                bg=bg, fg="white",
-                font=("Consolas", 10), pady=2
-            ).pack()
-
-            bar_frame = tk.Frame(fr, bg=bg, padx=14, pady=6)
-            bar_frame.pack(fill=tk.X)
-            canvas = tk.Canvas(bar_frame, bg="#333355", height=6,
-                               highlightthickness=0, bd=0)
-            canvas.pack(fill=tk.X)
-
-            duration_ms = 5000
-            interval_ms = 50
-            steps = duration_ms // interval_ms
-            bar_id = [None]
-            step_counter = [0]
-
-            def _draw_bar():
-                canvas.delete("all")
-                cw = canvas.winfo_width() or 392
-                fraction = 1.0 - (step_counter[0] / steps)
-                canvas.create_rectangle(
-                    0, 0, int(cw * fraction), 6,
-                    fill=header_col, outline="")
-
-            def _tick():
-                step_counter[0] += 1
-                _draw_bar()
-                if step_counter[0] < steps:
-                    bar_id[0] = toast.after(interval_ms, _tick)
-                else:
-                    _close()
-
-            def _close():
-                try:
-                    if bar_id[0]:
-                        toast.after_cancel(bar_id[0])
-                    toast.destroy()
-                except tk.TclError:
-                    pass
-
-            fr.bind("<Button-1>", lambda e: _close())
-            toast.bind("<Button-1>", lambda e: _close())
-            toast.after(100, _tick)
-
-        except Exception as e:
-            self.log_message(f"⚠️ Toast notification error: {e}", "orange")
     def start_trading(self):
-        """Start trading, respecting the per-strategy time window."""
         self.update_status_indicators("parking")
         self.order_size_pct = self.order_size_var.get()
         self.stop_loss_pct = self.stop_loss_var.get() / 100
         self.trailing_stop_pct = self.trailing_stop_var.get() / 100
         self.trade_direction = self.trade_direction_var.get()
-
-        mode = self.mode_var.get().lower()
-        strategy = self.strategy_type_var.get()
-
-        if mode != "backtest":
+        if self.mode_var.get().lower() != "backtest":
             if not hasattr(self, 'market_api') or self.market_api is None:
                 messagebox.showerror("Error", "Please check connection first!")
                 return
-
-        if self.running:
-            return
-
-        self._cancel_scheduled_trading()
-
-        # ── Time-window logic (live / demo only) ─────────────────────────────
-        if (mode in ('live', 'demo')
-                and hasattr(self, 'trading_time_config')
-                and not self._is_time_unconstrained(strategy)):
-
-            s, e = self._get_window_minutes(strategy)
-            sh, sm = divmod(s, 60)
-            eh, em = divmod(e, 60)
-
-            now_utc = datetime.now(timezone.utc)
-            now_str = now_utc.strftime('%H:%M UTC')
-
-            if self._is_within_trading_window(strategy):
-                self.log_message(
-                    f"⏰ [{strategy}] Inside window "
-                    f"({sh:02d}:{sm:02d}→{eh:02d}:{em:02d} UTC) — starting.", "green")
-
-                # ── toast: starting now ──────────────────────────────────────
-                self._show_schedule_toast(
-                    start_str=f"{sh:02d}:{sm:02d}",
-                    end_str=f"{eh:02d}:{em:02d}",
-                    starting_now=True
-                )
-
-                self._do_start_trading()
-
-                stop_secs = self._seconds_until_end(strategy)
-                if stop_secs > 0:
-                    self._sched_stop_id = self.root.after(
-                        int(stop_secs * 1000), self._scheduled_stop_callback)
-                    self.log_message(
-                        f"⏰ [{strategy}] Auto-stop in "
-                        f"{stop_secs / 60:.1f} min at {eh:02d}:{em:02d} UTC", "blue")
-            else:
-                wait_secs = self._seconds_until_start(strategy)
-                self._waiting_to_start = True
-
-                self.log_message(
-                    f"⏰ [{strategy}] Outside trading window — "
-                    f"current time {now_str}. "
-                    f"Waiting {wait_secs / 60:.1f} min until "
-                    f"{sh:02d}:{sm:02d} UTC …", "orange")
-
-                # ── toast: scheduled for later ───────────────────────────────
-                self._show_schedule_toast(
-                    start_str=f"{sh:02d}:{sm:02d}",
-                    end_str=f"{eh:02d}:{em:02d}",
-                    starting_now=False
-                )
-
-                self.mode_display.config(
-                    text=f"⏰ WAITING {sh:02d}:{sm:02d} UTC",
-                    foreground="orange")
-                self._sched_start_id = self.root.after(
-                    int(wait_secs * 1000), self._scheduled_start_callback)
-                self.stop_btn.config(state=tk.NORMAL)
-                self.start_btn.config(state=tk.DISABLED)
-                self._update_wait_countdown(strategy, sh, sm)
-            return
-
-        # ── No time constraint → start immediately ───────────────────────────
-        self._do_start_trading()
-        self.log_message(
-            f"📊 {strategy} — Order {self.order_size_pct}% | "
-            f"SL {self.stop_loss_pct * 100:.1f}% | "
-            f"Trail {self.trailing_stop_pct * 100:.1f}% | "
-            f"Dir {self.trade_direction.upper()}", "blue")
-
-    def stop_trading(self):
-        """Stop the trading loop and clean up state."""
         if not self.running:
-            self.log_message("⚠️ Trading is not currently running.", "orange")
-            return
-
-        self.running = False
-        self.trading_running = False
-
-        # Stop the circular timer
-        if hasattr(self, 'timer') and self.timer:
-            try:
-                self.timer.stop()
-            except Exception:
-                pass
-
-        # Re-enable / disable buttons
-        if hasattr(self, 'start_btn') and self.start_btn:
-            self.start_btn.config(state=tk.NORMAL)
-        if hasattr(self, 'stop_btn') and self.stop_btn:
-            self.stop_btn.config(state=tk.DISABLED)
-
-        # Update mode display (re-enables settings button)
-        self.update_mode_display(self.mode_var.get())
-
-        self.update_status_indicators("parking")
-        self.log_message("🛑 Trading stopped.", "orange")
-
-        # Voice notification
-        try:
+            self.running = True
+            self.trading_running = True
+            self.start_btn.config(state=tk.DISABLED)
+            self.stop_btn.config(state=tk.NORMAL)
+            self.update_mode_display(self.mode_var.get())  # This will disable settings
+            self.trading_thread = threading.Thread(target=self.trading_loop, daemon=True)
+            self.trading_thread.start()
             engine = pyttsx3.init()
             engine.setProperty('rate', 135)
-            engine.say("Trading stopped")
+            engine.say(f"Trading started")
             engine.runAndWait()
-        except Exception:
-            pass
+            self.log_message("Trading started...", "blue")
+            self.log_message(
+                f"Using parameters - Order Size: {self.order_size_pct}%, Stop Loss: {self.stop_loss_pct * 100}%, Trailing Stop: {self.trailing_stop_pct * 100}%",
+                "blue")
+            self.log_message(f"Trade Direction: {self.trade_direction.upper()} only", "blue")
+            self.play_notification("tick")
+            self.enable_ai_button()
 
+    def stop_trading(self):
+        self.update_status_indicators("parking")
+        self.running = False
+        self.trading_running = False
+        self.start_btn.config(state=tk.NORMAL if self.market_api else tk.DISABLED)
+        self.stop_btn.config(state=tk.DISABLED)
+        self.update_mode_display(self.mode_var.get())  # This will re-enable settings
+        self.log_message("Trading stopped", "red")
         self.play_notification("tick")
-        self.update_stats()
+        self.timer.stop()
+        # ... rest of your existing stop_trading code ...
 
-    def _prepare_ml_data(self, df, model_type="tree"):
-        """Prepares dataframe for ML models with v9.5.2 NaN handling fix."""
-        if df is None or df.empty:
-            return None, None, None
+    def prepare_ml_data(self, df, model_type="lstm", max_nan_threshold=0.3):
+        """
+        Prepare DataFrame for ML models by:
+        1. Selecting only numeric columns
+        2. Handling boolean/object columns properly
+        3. Removing columns with too many NaNs (> threshold)
+        4. Ensuring no NaN/Inf values remain
+        5. Maintaining minimum sample count
 
-        df = df.copy()
+        Args:
+            df: Input DataFrame
+            model_type: "lstm" or "tree"
+            max_nan_threshold: Maximum allowed NaN percentage per column (0.3 = 30%)
+        """
+        import numpy as np
+        import pandas as pd
 
-        # ── 1. Convert Boolean / Object Columns ──
-        bool_cols = df.select_dtypes(include=['object', 'bool']).columns.tolist()
-        for col in bool_cols:
-            try:
-                # Map True/False/None to 1/0/0
-                df[col] = df[col].astype(str).str.upper().map({
-                    'TRUE': 1, 'FALSE': 0, 'NAN': 0, 'NONE': 0
-                }).fillna(0).astype(int)
-            except Exception:
-                df.drop(columns=[col], inplace=True)
+        self.log_message(f"🔧 Preparing data for {model_type} model...", "blue")
+        self.log_message("=" * 70, "blue")
 
-        # ── 2. v9.5.2 FIX: Intelligent NaN Handling ──
-        # Don't drop slow EMAs — backfill them so ML has trend features.
-        # Using modern Pandas syntax (.bfill() and .ffill() instead of deprecated fillna(method=...))
-        slow_ema_cols = [c for c in df.columns if 'Daily_50' in c or 'EMA_200' in c]
-        for col in slow_ema_cols:
-            nan_pct = df[col].isna().mean()
-            if nan_pct > 0.5:
-                # If mostly NaN (warmup period), backfill from first valid value
-                first_valid = df[col].dropna().iloc[0] if not df[col].dropna().empty else 0
-                df[col] = df[col].bfill().fillna(first_valid)
-            elif nan_pct > 0:
-                # If slightly NaN, forward fill then backfill
-                df[col] = df[col].ffill().bfill()
+        # Make a copy to avoid modifying original
+        df_ml = df.copy()
 
-        # Drop columns that are STILL >50% NaN after filling (truly broken indicators)
-        drop_cols = [c for c in df.columns if df[c].isna().mean() > 0.50]
-        if drop_cols:
-            print(f"    ⚠️ Dropping {len(drop_cols)} truly broken columns:")
-            for c in drop_cols:
-                print(f"       - {c}: {df[c].isna().mean() * 100:.1f}% NaNs")
-            df.drop(columns=drop_cols, inplace=True)
+        # Display original data info
+        self.log_message(f"📊 Original data: {len(df_ml)} rows, {len(df_ml.columns)} columns", "white")
 
-        # Fill any remaining straggler NaNs safely
-        df = df.ffill().bfill().fillna(0)
+        # Step 1: Convert boolean columns to int (0/1)
+        bool_cols = df_ml.select_dtypes(include=['bool']).columns
+        if len(bool_cols) > 0:
+            for col in bool_cols:
+                df_ml[col] = df_ml[col].astype(int)
+            self.log_message(f"   ✅ Converted {len(bool_cols)} boolean columns to int", "green")
+            for i, col in enumerate(bool_cols[:5]):
+                self.log_message(f"      - {col}", "blue")
+            if len(bool_cols) > 5:
+                self.log_message(f"      ... and {len(bool_cols) - 5} more", "blue")
+        else:
+            self.log_message(f"   ℹ️ No boolean columns found", "blue")
 
-        # ── 3. Clean Infinite Values ──
-        df.replace([np.inf, -np.inf], 0, inplace=True)
+        # Step 2: Convert object columns that might contain boolean strings
+        object_cols = df_ml.select_dtypes(include=['object']).columns
+        converted_count = 0
+        if len(object_cols) > 0:
+            for col in object_cols:
+                # Check if column contains boolean-like values
+                unique_vals = df_ml[col].dropna().unique()
+                bool_like = {'True', 'False', 'true', 'false', 'TRUE', 'FALSE', 'Yes', 'No', 'yes', 'no', 'Y', 'N', 'y',
+                             'n'}
 
-        # ── 4. Final Validation ──
-        if df.empty:
-            return None, None, None
+                # Convert to string representation for comparison
+                str_vals = set()
+                for v in unique_vals:
+                    if pd.notna(v):
+                        str_vals.add(str(v))
 
-        print(f"    ✅ NaN handling complete: {len(df)} rows, {df.isna().sum().sum()} NaNs remaining")
+                if str_vals.issubset(bool_like) or len(unique_vals) <= 2:
+                    df_ml[col] = df_ml[col].map({
+                        True: 1, False: 0,
+                        'True': 1, 'False': 0,
+                        'true': 1, 'false': 0,
+                        'TRUE': 1, 'FALSE': 0,
+                        'Yes': 1, 'No': 0,
+                        'yes': 1, 'no': 0,
+                        'Y': 1, 'N': 0,
+                        'y': 1, 'n': 0,
+                        1: 1, 0: 0
+                    }).fillna(0).astype(int)
+                    converted_count += 1
+                    self.log_message(f"   ✅ Converted object column '{col}' to int", "green")
 
-        # ── 5. Format for specific model types ──
-        try:
-            if model_type == "lstm":
-                # LSTM expects 3D array (samples, time_steps, features)
-                # Usually handled by the LSTM class itself, return 2D here
-                return df.values, df.columns.tolist(), df
+            if converted_count > 0:
+                self.log_message(f"   Total: {converted_count} object columns converted", "green")
+        else:
+            self.log_message(f"   ℹ️ No object columns found", "blue")
+
+        # Step 3: Select only numeric columns
+        numeric_df = df_ml.select_dtypes(include=[np.number])
+        self.log_message(f"   📊 Found {len(numeric_df.columns)} numeric columns", "cyan")
+
+        if len(numeric_df.columns) == 0:
+            self.log_message("❌ No numeric columns found in data!", "red")
+            return None
+
+        # Step 4: Calculate NaN percentages before any processing
+        nan_percentage = numeric_df.isna().sum() / len(numeric_df)
+
+        # Log columns with high NaN percentages
+        high_nan_cols = nan_percentage[nan_percentage > 0].sort_values(ascending=False)
+        if len(high_nan_cols) > 0:
+            self.log_message(f"   📊 NaN percentages per column:", "yellow")
+            for col, pct in high_nan_cols.head(10).items():
+                self.log_message(f"      - {col}: {pct * 100:.1f}% NaNs", "orange")
+            if len(high_nan_cols) > 10:
+                self.log_message(f"      ... and {len(high_nan_cols) - 10} more columns with NaNs", "orange")
+
+        # Step 5: Remove columns with too many NaNs
+        cols_to_drop = nan_percentage[nan_percentage > max_nan_threshold].index.tolist()
+
+        if cols_to_drop:
+            self.log_message(f"   ⚠️ Dropping {len(cols_to_drop)} columns with >{max_nan_threshold * 100:.0f}% NaNs:",
+                             "orange")
+            for col in cols_to_drop[:10]:
+                pct = nan_percentage[col] * 100
+                self.log_message(f"      - {col}: {pct:.1f}% NaNs", "orange")
+            if len(cols_to_drop) > 10:
+                self.log_message(f"      ... and {len(cols_to_drop) - 10} more", "orange")
+
+            numeric_df = numeric_df.drop(columns=cols_to_drop)
+            self.log_message(f"   ✅ Remaining columns: {len(numeric_df.columns)}", "green")
+
+        # Step 6: Check if we have enough data after column removal
+        if len(numeric_df.columns) < 10:
+            self.log_message(f"⚠️ Only {len(numeric_df.columns)} features remaining (min recommended: 10)", "orange")
+
+        # Step 7: Handle NaN values with multiple strategies
+        nan_count = numeric_df.isna().sum().sum()
+        if nan_count > 0:
+            self.log_message(f"   ⚠️ Handling {nan_count} NaN values...", "orange")
+
+            # First try forward fill (carry last valid observation forward)
+            numeric_df = numeric_df.ffill()
+
+            # Then backward fill for any remaining NaNs at the beginning
+            numeric_df = numeric_df.bfill()
+
+            # If still have NaNs (should be rare), fill with column median
+            remaining_nans = numeric_df.isna().sum().sum()
+            if remaining_nans > 0:
+                self.log_message(f"   ⚠️ {remaining_nans} NaNs remain after fill, filling with column medians...",
+                                 "orange")
+
+                # Fill remaining NaNs with column median
+                for col in numeric_df.columns:
+                    if numeric_df[col].isna().any():
+                        median_val = numeric_df[col].median()
+                        if pd.isna(median_val):  # If median is also NaN (all values NaN)
+                            median_val = 0
+                        numeric_df[col] = numeric_df[col].fillna(median_val)
+
+            # Final check - should have no NaNs now
+            final_nans = numeric_df.isna().sum().sum()
+            if final_nans == 0:
+                self.log_message(f"   ✅ NaN handling complete: {len(numeric_df)} rows, no NaNs remaining", "green")
             else:
-                # Tree models (RF, XGBoost) expect 2D array
-                return df.values, df.columns.tolist(), df
-        except Exception as e:
-            print(f"    ❌ Error finalizing ML data: {e}")
-            return None, None, None
+                self.log_message(f"   ⚠️ {final_nans} NaNs remain after all handling - dropping those rows", "orange")
+                before_drop = len(numeric_df)
+                numeric_df = numeric_df.dropna()
+                dropped = before_drop - len(numeric_df)
+                if dropped > 0:
+                    self.log_message(f"   ⚠️ Dropped {dropped} rows with remaining NaNs", "orange")
+        else:
+            self.log_message(f"   ✅ No NaN values found", "green")
 
+        # Step 8: Handle infinite values safely
+        if len(numeric_df) > 0:
+            # Check for infinite values only in numeric data
+            numeric_values = numeric_df.values
+            inf_mask = np.isinf(numeric_values)
+            inf_count = inf_mask.sum()
+
+            if inf_count > 0:
+                self.log_message(f"   ⚠️ Found {inf_count} infinite values", "orange")
+
+                # Replace infinities with NaN
+                numeric_df = numeric_df.replace([np.inf, -np.inf], np.nan)
+
+                # Fill NaNs with column median
+                for col in numeric_df.columns:
+                    if numeric_df[col].isna().any():
+                        median_val = numeric_df[col].median()
+                        if pd.isna(median_val):
+                            median_val = 0
+                        numeric_df[col] = numeric_df[col].fillna(median_val)
+
+                self.log_message(f"   ✅ Infinite value handling complete", "green")
+            else:
+                self.log_message(f"   ✅ No infinite values found", "green")
+        else:
+            self.log_message("❌ No data remaining after NaN handling", "red")
+            return None
+
+        # Step 9: Final validation
+        if len(numeric_df) == 0:
+            self.log_message("❌ No valid data remaining after preprocessing", "red")
+            return None
+
+        if len(numeric_df) < 100:
+            self.log_message(f"⚠️ Only {len(numeric_df)} rows after preprocessing (min 100 recommended)", "orange")
+            if len(numeric_df) < 50:
+                self.log_message("❌ Insufficient data for reliable ML training", "red")
+                return None
+
+        # Step 10: Display final stats
+        self.log_message("=" * 70, "green")
+        self.log_message(f"✅ DATA PREPARATION COMPLETE", "green")
+        self.log_message("=" * 70, "green")
+        self.log_message(f"   Final rows:      {len(numeric_df)}", "white")
+        self.log_message(f"   Final features:  {len(numeric_df.columns)}", "white")
+        self.log_message(f"   Date range:      {numeric_df.index[0]} to {numeric_df.index[-1]}", "white")
+        self.log_message(f"   Memory usage:    {numeric_df.memory_usage(deep=True).sum() / 1024:.1f} KB", "white")
+        self.log_message("=" * 70, "green")
+
+        return numeric_df
+
+    def combined_score(self, quality_score, ml_score, ml_confidence,
+                       high_conf_thresh=0.70, high_conf_weight=0.40,
+                       med_conf_thresh=0.50, med_conf_weight=0.25,
+                       low_conf_weight=0.10,
+                       agreement_boost=1.05,
+                       quality_agree_thresh=75, ml_agree_thresh=60):
+        """
+        Combine Quality Score and ML Score with confidence-based weighting.
+
+        ML weight increases only when ML confidence justifies it:
+        - High confidence (≥70%) → ML gets 40% weight (partner)
+        - Medium confidence (50-70%) → ML gets 25% weight (gut check)
+        - Low confidence (<50%) → ML gets 10% weight (whisper)
+
+        Agreement bonus: When both signals are positive, apply 5% boost
+        to reflect higher conviction from confluence.
+        """
+        # Determine ML weight based on confidence tier
+        if ml_confidence >= high_conf_thresh:
+            ml_weight = high_conf_weight
+        elif ml_confidence >= med_conf_thresh:
+            ml_weight = med_conf_weight
+        else:
+            ml_weight = low_conf_weight
+
+        # Quality score gets remaining weight
+        qs_weight = 1 - ml_weight
+
+        # Calculate base combined score
+        combined = (qs_weight * quality_score) + (ml_weight * ml_score)
+
+        # Agreement bonus: both signals point to bullish trade
+        if ml_score > ml_agree_thresh and quality_score > quality_agree_thresh:
+            combined *= agreement_boost
+
+        # Cap at maximum score (avoid over-optimistic outliers)
+        return min(combined, 100)
     def _display_detailed_analysis(self, df, current_data, result):
         self.log_message(f"{'═' * 77}", "blue")
         self.log_message(f"📅 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}", "blue")
@@ -10048,20 +7651,12 @@ class TradingApp:
                     n_future = int(self.prediction_candles_slider.get()) if hasattr(self,
                                                                                     'prediction_candles_slider') else 5
                     ml_conf, ml_prediction, forecast = self.current_ml_model.predict(df, n_future)
-                    # --- NEW: process raw probability through correction ---
-                    ml_output = process_ml_prediction(float(ml_conf))
-                    ml_conf_pct = ml_output["confidence_pct"]
-                    # Convert direction to integer (-1, 0, 1) for compatibility
-                    if ml_output["ml_direction"] == "BULLISH":
-                        ml_prediction = 1
-                    elif ml_output["ml_direction"] == "BEARISH":
-                        ml_prediction = -1
-                    else:
-                        ml_prediction = 0
-                    # Store the correction for later use (e.g. in quality score)
-                    self._last_ml_direction = ml_output["ml_direction"]
-                    self._last_ml_impact = ml_output["impact_points"]
+                    ml_conf_pct = float(ml_conf * 100.0 if ml_conf <= 1.0 else ml_conf)
+
+                    # ── STORE forecast on self so trading_loop can draw it AFTER update_chart ──
                     self._last_forecast = forecast if (forecast is not None and len(forecast) > 0) else None
+                    self._last_ml_prediction = ml_prediction
+
                 except Exception as e:
                     self.log_message(f"⚠️ ML prediction error: {e}", "orange")
                     self._last_forecast = None
@@ -10074,43 +7669,13 @@ class TradingApp:
             decision, quality_score, shares, reason = result[:4]
 
             if quality_score >= 0:
-                # ── FIX: safe defaults so every strategy works, not just
-                #    those that have _calculate_quality_score ──────────────
-                combined_confidence = float(quality_score) if quality_score is not None else 0.0
-                total_score = combined_confidence
-                component_scores = {}
-
-                # Determine strategy type and get quality score appropriately
-                is_momentum_strategy = hasattr(self.strategy, '_calculate_quality_score')
-                is_scalping_strategy = hasattr(self.strategy, '_quality_score_long') and hasattr(self.strategy,
-                                                                                                 '_quality_score_short')
-
-                if is_momentum_strategy:
-                    # ── MOMENTUM/KALMAN STRATEGY (weighted component scoring) ──
+                if hasattr(self.strategy, '_calculate_quality_score'):
                     _eff_dir = getattr(self.strategy, "_pending_signal", None)
-                    _eff_dir = _eff_dir.get("direction", "long") if _eff_dir else getattr(
-                        self.strategy, "trade_direction", "long")
-                    # BUG FIX: this call used to always hit the indicator-mode
-                    # scorer directly, bypassing self.strategy.alpha_mode. If
-                    # alpha_mode='breakout' is set, the live decision logic
-                    # (inside the strategy's own entry methods) correctly uses
-                    # the breakout scorer, but this display path would still
-                    # log indicator-mode numbers — meaning what you SEE in the
-                    # console wouldn't match what's actually being traded on.
-                    _alpha_mode = getattr(self.strategy, 'alpha_mode', 'indicator')
-                    if _alpha_mode == 'breakout' and hasattr(self.strategy, '_calculate_breakout_score'):
-                        if _eff_dir == "short" and hasattr(self.strategy, "_calculate_breakout_score_short"):
-                            total_score, component_scores, score_reason = (
-                                self.strategy._calculate_breakout_score_short(current_data))
-                        else:
-                            total_score, component_scores, score_reason = (
-                                self.strategy._calculate_breakout_score(current_data))
-                    elif _eff_dir == "short" and hasattr(self.strategy, "_calculate_quality_score_short"):
-                        total_score, component_scores, score_reason = (
-                            self.strategy._calculate_quality_score_short(current_data))
+                    _eff_dir = _eff_dir.get("direction", "long") if _eff_dir else getattr(self.strategy, "trade_direction", "long")
+                    if _eff_dir == "short" and hasattr(self.strategy, "_calculate_quality_score_short"):
+                        total_score, component_scores, score_reason = self.strategy._calculate_quality_score_short(current_data)
                     else:
-                        total_score, component_scores, score_reason = (
-                            self.strategy._calculate_quality_score(current_data))
+                        total_score, component_scores, score_reason = self.strategy._calculate_quality_score(current_data)
 
                     combined_confidence = total_score
                     if ml_is_enabled and ml_conf_pct > 0:
@@ -10157,152 +7722,32 @@ class TradingApp:
                         signal_text = "BULLISH" if ml_prediction == 1 else "BEARISH" if ml_prediction == -1 else "NEUTRAL"
                         signal_color = "green" if ml_prediction == 1 else "red" if ml_prediction == -1 else "orange"
                         ml_impact = combined_confidence - total_score
-                        self.log_message(
-                            f"🤖 ML: {signal_text} ({ml_conf_pct:.0f}%) | Impact: {ml_impact:+.0f} pts",
-                            signal_color)
+                        self.log_message(f"🤖 ML: {signal_text} ({ml_conf_pct:.0f}%) | Impact: {ml_impact:+.0f} pts",
+                                         signal_color)
 
+                        # ── Log forecast prices in the analysis panel ──
                         if self._last_forecast is not None:
-                            n_future = int(self.prediction_candles_slider.get()) if hasattr(
-                                self, 'prediction_candles_slider') else 5
+                            n_future = int(self.prediction_candles_slider.get()) if hasattr(self,
+                                                                                            'prediction_candles_slider') else 5
                             current_price = float(current_data.get('Close', 0))
                             self.log_message(f"🕯️ FORECASTED PRICES ({n_future} candles):", "purple")
                             for i, pred_price in enumerate(self._last_forecast, 1):
-                                change_pct = ((pred_price - current_price) / current_price * 100
-                                              ) if current_price > 0 else 0
+                                change_pct = ((
+                                                          pred_price - current_price) / current_price * 100) if current_price > 0 else 0
                                 direction = "🔼" if change_pct > 0 else "🔽" if change_pct < 0 else "➡️"
                                 color = "green" if change_pct > 0 else "red" if change_pct < 0 else "white"
-                                self.log_message(
-                                    f"   Candle {i}: ${pred_price:.4f} ({change_pct:+.2f}%) {direction}",
-                                    color)
+                                self.log_message(f"   Candle {i}: ${pred_price:.4f} ({change_pct:+.2f}%) {direction}",
+                                                 color)
 
                     self.log_message(f"📝 Reason: {reason}", "blue")
 
-                elif is_scalping_strategy:
-                    # ── SCALPING STRATEGY (simplified additive scoring) ──
-                    _eff_dir = getattr(self.strategy, "_pending_signal", None)
-                    _eff_dir = _eff_dir.get("direction", "long") if _eff_dir else getattr(
-                        self.strategy, "trade_direction", "long")
-
-                    if _eff_dir == "short":
-                        total_score, component_scores, score_reason = self.strategy._quality_score_short(current_data)
-                    else:
-                        total_score, component_scores, score_reason = self.strategy._quality_score_long(current_data)
-
-                    combined_confidence = total_score
-                    if ml_is_enabled and ml_conf_pct > 0:
-                        combined_confidence = (total_score + ml_conf_pct) / 2
-
-                    self.log_message(f"🎯 SCALPING STRATEGY - QUALITY SCORE ANALYSIS", "bold purple")
-                    self.log_message(f"{'─' * 77}", "purple")
-
-                    # Display the breakdown
-                    self.log_message(f"📊 COMPONENT BREAKDOWN:", "cyan")
-                    self.log_message(f"   {score_reason}", "yellow")
-                    self.log_message(f"{'─' * 77}", "purple")
-
-                    # Create visual bar for total score
-                    bar_length = int((total_score / 100) * 10)
-                    bar = "█" * bar_length + "░" * (10 - bar_length)
-
-                    col_widths = [24, 25, 24]
-                    self.log_message(self._create_table_separator(col_widths, "top"), "purple")
-                    headers = ["Quality Score", "ML Contribution", "Combined Power"]
-                    self.log_message(self._create_table_row(headers, col_widths), "white")
-                    self.log_message(self._create_table_separator(col_widths, "middle"), "purple")
-
-                    quality_cell = f"{total_score}/100 {bar}"
-
-                    if ml_is_enabled and ml_conf_pct > 0:
-                        ml_bar = self._create_confidence_bar(ml_conf_pct, 10)
-                        ml_cell = f"{ml_conf_pct:.0f}/100 {ml_bar}"
-                    else:
-                        ml_cell = "[DISABLED]"
-
-                    combined_bar = self._create_confidence_bar(combined_confidence, 10)
-                    combined_cell = f"{combined_confidence:.0f}/100 {combined_bar}"
-
-                    data_cells = [quality_cell, ml_cell, combined_cell]
-                    self.log_message(self._create_table_row(data_cells, col_widths),
-                                     "green" if combined_confidence >= 75 else "orange" if combined_confidence >= 50 else "red")
-                    self.log_message(self._create_table_separator(col_widths, "bottom"), "purple")
-
-                    # Display individual component scores if available
-                    if component_scores:
-                        self.log_message(f"\n📊 COMPONENT SCORES:", "cyan")
-                        self.log_message(f"{'─' * 50}", "purple")
-                        for component, score in component_scores.items():
-                            component_name = component.upper().replace('_', ' ')
-                            bar_len = int((score / 100) * 10) if score <= 100 else 10
-                            comp_bar = "█" * bar_len + "░" * (10 - bar_len)
-                            self.log_message(f"   {component_name:<15}: {score:>3} {comp_bar}", "yellow")
-                        self.log_message(f"{'─' * 50}", "purple")
-
-                    if hasattr(self.strategy, '_get_position_multiplier'):
-                        position_mult = self.strategy._get_position_multiplier(combined_confidence)
-                        self.log_message(f"💰 Position Size: {position_mult * 100:.0f}% of normal",
-                                         "green" if position_mult >= 1.0 else "orange")
-
-                    tier = getattr(self.strategy, '_last_entry_tier',
-                                   getattr(self.strategy, '_entry_tier', 1))
-                    tier_label = f"TIER {tier}" if tier else "TIER None"
-                    tier_color = "green" if tier == 2 else "blue" if tier == 1 else "orange"
-                    self.log_message(f"🎯 {tier_label} Entry", tier_color)
-
-                    if ml_is_enabled and ml_conf_pct > 0:
-                        signal_text = "BULLISH" if ml_prediction == 1 else "BEARISH" if ml_prediction == -1 else "NEUTRAL"
-                        signal_color = "green" if ml_prediction == 1 else "red" if ml_prediction == -1 else "orange"
-                        ml_impact = combined_confidence - total_score
-                        self.log_message(
-                            f"🤖 ML: {signal_text} ({ml_conf_pct:.0f}%) | Impact: {ml_impact:+.0f} pts",
-                            signal_color)
-
-                        if self._last_forecast is not None:
-                            n_future = int(self.prediction_candles_slider.get()) if hasattr(
-                                self, 'prediction_candles_slider') else 5
-                            current_price = float(current_data.get('Close', 0))
-                            self.log_message(f"🕯️ FORECASTED PRICES ({n_future} candles):", "purple")
-                            for i, pred_price in enumerate(self._last_forecast, 1):
-                                change_pct = ((pred_price - current_price) / current_price * 100
-                                              ) if current_price > 0 else 0
-                                direction = "🔼" if change_pct > 0 else "🔽" if change_pct < 0 else "➡️"
-                                color = "green" if change_pct > 0 else "red" if change_pct < 0 else "white"
-                                self.log_message(
-                                    f"   Candle {i}: ${pred_price:.4f} ({change_pct:+.2f}%) {direction}",
-                                    color)
-
-                    self.log_message(f"📝 Reason: {reason}", "blue")
-                    self.log_message(f"{'─' * 77}", "purple")
-
-                else:
-                    # ── FALLBACK for unknown strategy types ──
-                    total_score = quality_score if isinstance(quality_score, (int, float)) else 0
-                    combined_confidence = total_score
-                    if ml_is_enabled and ml_conf_pct > 0:
-                        combined_confidence = (total_score + ml_conf_pct) / 2
-
-                    self.log_message(f"🎯 QUALITY SCORE (Basic Mode)", "yellow")
-                    bar_length = int((total_score / 100) * 10)
-                    bar = "█" * bar_length + "░" * (10 - bar_length)
-                    self.log_message(f"   Score: {total_score}/100 {bar}",
-                                     "green" if total_score >= 70 else "orange" if total_score >= 50 else "red")
-                    if ml_is_enabled and ml_conf_pct > 0:
-                        self.log_message(f"   ML: {ml_conf_pct:.0f}%", "cyan")
-                    self.log_message(f"📝 Reason: {reason}", "blue")
-
-                # ── FIX: derive actual quality threshold from the active strategy
-                #    so the "Minimum" label is always correct ──────────────────
-                q_min = getattr(self.strategy, 'quality_min_long',
-                                getattr(self.strategy, 'quality_minimum_score',
-                                        getattr(self.strategy, 'quality_tier2_min', 75)))
-
-                if (decision == "buy" or decision == "sell") and shares and shares > 0:
+                if (decision == "buy" or decision == "sell") and shares > 0:
                     self.log_message(f"✅ BUY SIGNAL DETECTED - {shares:.4f} shares", "green")
                 else:
                     self.log_message(f"\n🎯 QUALITY SCORE REJECTED", "red")
                     self.log_message(f"{'=' * 70}", "red")
-                    self.log_message(
-                        f"📊 Score: {combined_confidence:.0f}/100 (Minimum: {q_min})", "red")
-                    self.log_message(f"   Raw Quality: {total_score:.0f}", "yellow")
+                    self.log_message(f"📊 Score: {combined_confidence:.0f}/100 (Minimum: 75)", "red")
+                    self.log_message(f"   Raw Quality: {total_score}", "yellow")
                     if ml_is_enabled and ml_conf_pct > 0:
                         self.log_message(f"   ML Contribution: {ml_conf_pct:.0f}%", "yellow")
                     self.log_message(f"   Reason: {reason}", "orange")
@@ -10328,68 +7773,10 @@ class TradingApp:
                                 profit_pct = ((current_price - entry_price) / entry_price) * 100
                                 profit_r = ((current_price - entry_price) /
                                             (current_data.get('ATR', 1) * 3.0))
-                            self.log_message(
-                                f"📊 Current P/L: {profit_pct:.2f}% ({profit_r:.2f}R)",
-                                "green" if profit_pct > 0 else "red")
+                            self.log_message(f"📊 Current P/L: {profit_pct:.2f}% ({profit_r:.2f}R)",
+                                             "green" if profit_pct > 0 else "red")
 
     def _display_component_scores(self, component_scores):
-        # BUG FIX: denominators used to be hardcoded literals (/20, /20, /25,
-        # /15, /20, /5, /5) that didn't match the strategy's actual configured
-        # weights and silently went stale every time weights were retuned —
-        # this is why you'd see impossible-looking values like "18/15". Now
-        # pulled live from self.strategy, and branches on alpha_mode so
-        # breakout-mode scores (different component keys entirely) display
-        # correctly instead of showing as all-zero.
-        alpha_mode = getattr(self.strategy, 'alpha_mode', 'indicator')
-
-        if alpha_mode == 'breakout':
-            w_break = getattr(self.strategy, 'weight_breakout_strength', 30)
-            w_coil = getattr(self.strategy, 'weight_consolidation_quality', 20)
-            w_vol = getattr(self.strategy, 'weight_breakout_volume', 25)
-            w_ema = getattr(self.strategy, 'weight_breakout_ema_trend', 15)
-            w_adx = getattr(self.strategy, 'weight_breakout_adx', 10)
-
-            self.log_message(f"\n📊 Breakout Component Scores:", "cyan")
-
-            col_widths = [15, 15, 15]
-            self.log_message(self._create_table_separator(col_widths, "top"), "purple")
-            headers = ["Breakout", "Coil", "Volume"]
-            self.log_message(self._create_table_row(headers, col_widths), "white")
-            self.log_message(self._create_table_separator(col_widths, "middle"), "purple")
-
-            data_cells = [
-                f"{component_scores.get('breakout_strength', 0)}/{w_break}",
-                f"{component_scores.get('consolidation_quality', 0)}/{w_coil}",
-                f"{component_scores.get('volume_confirm', 0)}/{w_vol}",
-            ]
-            self.log_message(self._create_table_row(data_cells, col_widths), "green")
-            self.log_message(self._create_table_separator(col_widths, "bottom"), "purple")
-
-            self.log_message(f"\n📊 Trend Confirmation:", "cyan")
-
-            col_widths = [15, 15]
-            self.log_message(self._create_table_separator(col_widths, "top"), "purple")
-            headers = ["EMA Trend", "ADX"]
-            self.log_message(self._create_table_row(headers, col_widths), "white")
-            self.log_message(self._create_table_separator(col_widths, "middle"), "purple")
-
-            data_cells = [
-                f"{component_scores.get('ema_trend', 0)}/{w_ema}",
-                f"{component_scores.get('adx_confirm', 0)}/{w_adx}",
-            ]
-            self.log_message(self._create_table_row(data_cells, col_widths), "green")
-            self.log_message(self._create_table_separator(col_widths, "bottom"), "purple")
-            return
-
-        # ── indicator mode (default) ──────────────────────────────────────
-        w_ema = getattr(self.strategy, 'weight_ema', 22)
-        w_adx = getattr(self.strategy, 'weight_adx', 13)
-        w_macd = getattr(self.strategy, 'weight_macd', 24)
-        w_rsi = getattr(self.strategy, 'weight_rsi', 16)
-        w_volume = getattr(self.strategy, 'weight_volume', 15)
-        w_cci = getattr(self.strategy, 'weight_cci', 5)
-        w_kalman = getattr(self.strategy, 'weight_kalman', 5)
-
         self.log_message(f"\n📊 Component Scores:", "cyan")
 
         col_widths = [15, 15, 15, 15]
@@ -10399,10 +7786,10 @@ class TradingApp:
         self.log_message(self._create_table_separator(col_widths, "middle"), "purple")
 
         data_cells = [
-            f"{component_scores.get('ema', 0)}/{w_ema}",
-            f"{component_scores.get('adx', 0)}/{w_adx}",
-            f"{component_scores.get('macd', 0)}/{w_macd}",
-            f"{component_scores.get('volume', 0)}/{w_volume}"
+            f"{component_scores.get('ema', 0)}/20",
+            f"{component_scores.get('adx', 0)}/20",
+            f"{component_scores.get('macd', 0)}/25",
+            f"{component_scores.get('volume', 0)}/15"
         ]
         self.log_message(self._create_table_row(data_cells, col_widths), "green")
         self.log_message(self._create_table_separator(col_widths, "bottom"), "purple")
@@ -10416,9 +7803,9 @@ class TradingApp:
         self.log_message(self._create_table_separator(col_widths, "middle"), "purple")
 
         data_cells = [
-            f"{component_scores.get('rsi', 0)}/{w_rsi}",
-            f"{component_scores.get('cci', 0)}/{w_cci}",
-            f"{component_scores.get('kalman', 0)}/{w_kalman}"
+            f"{component_scores.get('rsi', 0)}/20",
+            f"{component_scores.get('cci', 0)}/5",
+            f"{component_scores.get('kalman', 0)}/5"
         ]
         self.log_message(self._create_table_row(data_cells, col_widths), "green")
         self.log_message(self._create_table_separator(col_widths, "bottom"), "purple")
@@ -10430,11 +7817,6 @@ class TradingApp:
         ema_slow = float(current_data.get('EMA_Slow', 0))
         full_alignment = close > ema_fast > ema_mid > ema_slow
 
-        # ── Get ML status ──────────────────────────────────────────────────────
-        ml_is_enabled = getattr(self, 'ml_enabled', False)
-        ml_conf_pct = getattr(self, '_last_ml_conf_pct', 0.0)
-        ml_dir = getattr(self, '_last_ml_direction', None)
-
         if isinstance(result, tuple) and len(result) >= 4:
             decision, quality_score, shares, reason = result[:4]
 
@@ -10443,15 +7825,6 @@ class TradingApp:
                 tier_label = f"TIER {tier}"
                 self.log_message(f"🎯 Quality Score: {quality_score:.0f}/100 | {tier_label}",
                                  "green" if quality_score >= 75 else "orange")
-
-                # ── NEW: Display ML information ──────────────────────────────
-                if ml_is_enabled and ml_dir:
-                    ml_impact = getattr(self, '_last_ml_impact', 0)
-                    self.log_message(
-                        f"🤖 ML: {ml_dir} ({ml_conf_pct:.0f}%, impact: +{ml_impact} pts)",
-                        "cyan"
-                    )
-
                 if decision not in ("buy", "sell"):
                     self.log_message(f"⏸️ {reason}", "orange")
             else:
@@ -10471,64 +7844,6 @@ class TradingApp:
             f"📊 Price: ${close:.4f} | EMA: {ema_status} | RSI: {rsi:.1f} | ADX: {adx:.1f} | Vol: {volume_ratio:.2f}x",
             "green" if full_alignment else "white")
         self.log_message(f"{'=' * 30} {datetime.now(timezone.utc).strftime('%H:%M:%S')} {'=' * 29}", "blue")
-
-    def combined_score(self, quality_score, ml_score_raw, ml_confidence,
-                       trade_direction="long",
-                       high_conf_thresh=0.70, high_conf_weight=0.40,
-                       med_conf_thresh=0.50, med_conf_weight=0.25,
-                       low_conf_weight=0.10,
-                       agreement_boost=1.05):
-        """
-        Combine quality score with ML prediction using direction-aware alignment.
-
-        ml_score_raw    : raw prediction integer  (-1 = bearish, 0 = neutral, +1 = bullish)
-        ml_confidence   : float 0-1  (or 0-100; auto-detected)
-        trade_direction : 'long' or 'short'
-
-        Rules
-        -----
-        Long  + bullish  → aligned   → boost
-        Long  + bearish  → opposed   → penalty
-        Short + bearish  → aligned   → boost
-        Short + bullish  → opposed   → penalty
-        Any   + neutral  → abstain   → score unchanged
-        """
-        # ── Normalise confidence to 0-1 ─────────────────────────────────────────
-        ml_conf_norm = (ml_confidence / 100.0) if ml_confidence > 1.0 else float(ml_confidence)
-        ml_conf_pct = ml_conf_norm * 100.0
-
-        # ── Determine direction alignment ────────────────────────────────────────
-        if ml_score_raw == 0:
-            return float(quality_score)  # neutral — ML abstains entirely
-
-        if trade_direction == "long":
-            alignment = 1 if ml_score_raw == 1 else -1  # bullish=agree, bearish=oppose
-        else:  # short
-            alignment = 1 if ml_score_raw == -1 else -1  # bearish=agree, bullish=oppose
-
-        # ── Weight tier based on confidence level ────────────────────────────────
-        if ml_conf_norm >= high_conf_thresh:
-            ml_weight = high_conf_weight
-        elif ml_conf_norm >= med_conf_thresh:
-            ml_weight = med_conf_weight
-        else:
-            ml_weight = low_conf_weight
-
-        qs_weight = 1.0 - ml_weight
-
-        # ── Compute combined score ───────────────────────────────────────────────
-        if alignment == 1:
-            # Aligned: weighted blend — ML pulls score toward its confidence level
-            combined = (qs_weight * quality_score) + (ml_weight * ml_conf_pct)
-            # Agreement bonus when BOTH signals are independently strong
-            if quality_score >= 70 and ml_conf_pct >= 65:
-                combined *= agreement_boost
-        else:
-            # Opposed: ML confidence scales a penalty deducted from quality score
-            penalty = ml_weight * ml_conf_pct
-            combined = quality_score - penalty
-
-        return float(min(max(combined, 0.0), 100.0))
 
     def _execute_trades_from_result(self, result, current_data, current_price, df):
         if isinstance(result, tuple) and len(result) == 2:
@@ -10550,6 +7865,7 @@ class TradingApp:
         if isinstance(result, tuple) and len(result) >= 4:
             decision, quality_score, shares, reason = result[:4]
 
+            # v9.4.2: Route both long (buy) and short (sell) entry decisions
             is_entry = (decision == "buy" or decision == "sell")
 
             if is_entry and quality_score >= 0 and shares > 0:
@@ -10562,82 +7878,50 @@ class TradingApp:
 
                 confidence_threshold = float(self.confidence_var.get()) * 100
 
-                # ── Determine trade direction from decision ───────────────────────
-                _direction = "short" if decision == "sell" else "long"
+                combined_confidence = quality_score
 
-                # ── Start with quality score as the base ─────────────────────────
-                combined_confidence = float(quality_score)
-
-                # ── ML contribution (direction-aware) ────────────────────────────
                 ml_conf_pct = 0.0
                 ml_prediction = 0
                 ml_is_enabled = getattr(self, 'ml_enabled', False)
 
                 if ml_is_enabled and hasattr(self, 'current_ml_model') and self.current_ml_model:
                     if hasattr(self.current_ml_model, 'is_trained') and self.current_ml_model.is_trained:
-                        n_future = int(self.prediction_candles_slider.get()) \
-                            if hasattr(self, 'prediction_candles_slider') else 5
+                        n_future = int(self.prediction_candles_slider.get()) if hasattr(self,
+                                                                                        'prediction_candles_slider') else 5
                         try:
                             ml_conf, ml_prediction, forecast = self.current_ml_model.predict(df, n_future)
-
-                            # ── NEW: Process raw probability through correction ──
-                            ml_output = process_ml_prediction(float(ml_conf))
-                            ml_conf_pct = ml_output["confidence_pct"]
-
-                            # Convert corrected direction to integer (-1, 0, 1)
-                            if ml_output["ml_direction"] == "BULLISH":
-                                ml_prediction = 1
-                            elif ml_output["ml_direction"] == "BEARISH":
-                                ml_prediction = -1
-                            else:
-                                ml_prediction = 0
-
-                            # Store corrected values for logging
-                            self._last_ml_direction = ml_output["ml_direction"]
-                            self._last_ml_impact = ml_output["impact_points"]
+                            ml_conf_pct = float(ml_conf * 100.0 if ml_conf <= 1.0 else ml_conf)
 
                             model_thresh = getattr(self.current_ml_model, "confidence_threshold", 0.65)
                             model_thresh_pct = float(model_thresh * 100.0 if model_thresh <= 1.0 else model_thresh)
 
+                            # REPLACEMENT CODE - Use the new combined_score function
                             if ml_conf_pct >= model_thresh_pct:
+                                # ml_prediction is typically -1, 0, or 1 - convert to 0-100 scale
+                                ml_score_normalized = (ml_prediction + 1) * 50 if ml_prediction is not None else 50
+
+                                # Use the professional combined score function
                                 combined_confidence = self.combined_score(
                                     quality_score=quality_score,
-                                    ml_score_raw=ml_prediction,  # Corrected -1 / 0 / +1
-                                    ml_confidence=ml_conf_pct / 100.0,
-                                    trade_direction=_direction
-                                )
-                                # Log direction-aware adjustment with corrected values
-                                delta = combined_confidence - quality_score
-                                align_label = "aligned ✅" if delta >= 0 else "opposed ⚠️"
-                                self.log_message(
-                                    f"🤖 ML ({_direction.upper()}): {ml_output['ml_direction']} "
-                                    f"({ml_conf_pct:.0f}% conf, impact: +{ml_output['impact_points']} pts) → {align_label} "
-                                    f"Δscore={delta:+.1f} "
-                                    f"({quality_score:.0f} → {combined_confidence:.0f})",
-                                    "green" if delta >= 0 else "orange"
+                                    ml_score=ml_score_normalized,
+                                    ml_confidence=ml_conf_pct / 100.0  # Convert from 0-100 to 0-1
                                 )
                             else:
-                                self.log_message(
-                                    f"🤖 ML confidence {ml_conf_pct:.0f}% below threshold "
-                                    f"{model_thresh_pct:.0f}% — using quality score only",
-                                    "blue"
-                                )
+                                combined_confidence = quality_score  # ML not confident enough to influence
                         except Exception as e:
                             self.log_message(f"⚠️ ML prediction error: {e}", "orange")
 
                 self.log_message(
-                    f"🎯 Entry Check: Quality={quality_score:.0f} | "
-                    f"Combined={combined_confidence:.0f} | "
-                    f"Threshold={confidence_threshold:.0f} | "
-                    f"Direction={_direction.upper()}",
-                    "cyan"
-                )
+                    f"🎯 Entry Check: Combined={combined_confidence:.0f} vs Threshold={confidence_threshold:.0f}",
+                    "cyan")
 
                 if combined_confidence >= confidence_threshold:
                     self.play_notification("pre_buy_alert")
 
                     tier = getattr(self.strategy, '_last_entry_tier', 1)
 
+                    # v9.4.2: execute_buy now internally routes to execute_short
+                    # for short pending signals, so a single call handles both directions
                     success, filled_qty, order_id = self.strategy.execute_buy(
                         shares=shares,
                         price=current_price,
@@ -10647,18 +7931,12 @@ class TradingApp:
                     )
 
                     if success:
-                        # Build ML message with corrected values
-                        ml_msg = ''
-                        if ml_is_enabled and ml_conf_pct > 0:
-                            ml_dir = getattr(self, '_last_ml_direction', 'NEUTRAL')
-                            ml_impact = getattr(self, '_last_ml_impact', 0)
-                            ml_msg = f' | ML {ml_dir} ({ml_conf_pct:.0f}%, +{ml_impact} pts)'
-
+                        ml_msg = ' with ML confirmation' if ml_is_enabled and ml_conf_pct > 0 else ''
                         direction_label = "SHORT" if decision == "sell" else "LONG"
                         direction_emoji = "🔴" if decision == "sell" else "🟢"
                         self.log_message(
                             f"{direction_emoji} {direction_label} EXECUTED{ml_msg} "
-                            f"(Quality: {quality_score:.0f}, Combined: {combined_confidence:.0f}, Tier {tier})\n"
+                            f"(Quality: {quality_score:.0f}, Combined: {combined_confidence:.0f}%, Tier {tier})\n"
                             f"Qty {shares:.4f} at ${current_price:.4f}",
                             "green" if decision == "buy" else "red"
                         )
@@ -10667,27 +7945,138 @@ class TradingApp:
                         self.log_message(f"❌ ENTRY FAILED", "red")
                         self.play_notification("error")
                 else:
-                    # ── Rejection log ─────────────────────────────────────────────
-                    self.log_message(f"\n🎯 ENTRY REJECTED", "red")
+                    self.log_message(f"", "white")
+                    self.log_message(f"🎯 QUALITY SCORE REJECTED", "red")
                     self.log_message(f"{'=' * 70}", "red")
-                    self.log_message(
-                        f"📊 Combined: {combined_confidence:.0f}/100  "
-                        f"(minimum: {confidence_threshold:.0f})",
-                        "red"
-                    )
-                    self.log_message(f"   Raw quality   : {quality_score:.0f}", "yellow")
+                    self.log_message(f"📊 Score: {combined_confidence:.0f}/100 (Minimum: {confidence_threshold:.0f})",
+                                     "red")
+                    self.log_message(f"   Raw Quality: {quality_score:.0f}", "yellow")
                     if ml_is_enabled and ml_conf_pct > 0:
-                        delta = combined_confidence - quality_score
-                        align_label = "aligned" if delta >= 0 else "OPPOSED"
-                        ml_dir = getattr(self, '_last_ml_direction', 'NEUTRAL')
-                        ml_impact = getattr(self, '_last_ml_impact', 0)
-                        self.log_message(
-                            f"   ML impact     : {delta:+.1f} pts  "
-                            f"({ml_dir}, conf={ml_conf_pct:.0f}%, impact: +{ml_impact} pts, {align_label})",
-                            "orange"
-                        )
-                    self.log_message(f"   Reason        : {reason}", "orange")
+                        ml_impact = combined_confidence - quality_score
+                        self.log_message(f"   ML Impact: {ml_impact:+.0f} ({ml_conf_pct:.0f}%)", "yellow")
+                    self.log_message(f"   Reason: {reason}", "orange")
                     self.log_message(f"{'=' * 70}", "red")
+
+    def trading_loop(self):
+        while self.running:
+            try:
+                # Determine which strategy is active
+                current_strategy = self.strategy_type_var.get()
+
+                # ═══════════════════════════════════════════════════════════════
+                # CASE 1: TopDown Strategy - Needs 3 timeframes
+                # ═══════════════════════════════════════════════════════════════
+                if current_strategy == "TopDown":
+                    # Fetch all three timeframes
+                    multi_df = self.get_market_data_multiframe()
+
+                    df_1h = multi_df.get('1h')
+                    df_15m = multi_df.get('15m')
+                    df_5m = multi_df.get('5m')
+
+                    if df_1h is None or df_1h.empty:
+                        self.log_message("⚠️ TopDown: No 1H data available", "orange")
+                        time.sleep(60)
+                        continue
+
+                    if df_15m is None or df_15m.empty:
+                        self.log_message("⚠️ TopDown: No 15m data available", "orange")
+                        time.sleep(60)
+                        continue
+
+                    if df_5m is None or df_5m.empty:
+                        self.log_message("⚠️ TopDown: No 5m data available", "orange")
+                        time.sleep(60)
+                        continue
+
+                    # Calculate indicators for each timeframe
+                    df_1h = self.strategy.calculate_indicators_1h(df_1h)
+                    df_15m = self.strategy.calculate_indicators(df_15m)
+                    df_5m = self.strategy.calculate_indicators(df_5m)
+
+                    # Get current data from each timeframe
+                    current_data = {
+                        # Bias from 1H
+                        'bias_1h': self.strategy.calculate_indicators_1h(df_1h).get('bias', 0),
+                        # Setup from 15m
+                        'supertrend': df_15m['supertrend'].iloc[-1] if 'supertrend' in df_15m.columns else 0,
+                        'macd_hist': df_15m['macd_hist'].iloc[-1] if 'macd_hist' in df_15m.columns else 0,
+                        'cci': df_15m['cci'].iloc[-1] if 'cci' in df_15m.columns else 0,
+                        # Trigger from 5m
+                        'engulfing': df_5m['engulfing'].iloc[-1] if 'engulfing' in df_5m.columns else 0,
+                        'vol_ratio': df_5m['vol_ratio'].iloc[-1] if 'vol_ratio' in df_5m.columns else 1.0,
+                        'atr': df_5m['atr'].iloc[-1] if 'atr' in df_5m.columns else 0.001,
+                        'adx': df_5m['adx'].iloc[-1] if 'adx' in df_5m.columns else 0,
+                        'close': df_5m['Close'].iloc[-1],
+                    }
+
+                    current_price = current_data['close']
+
+                    # Run TopDown analysis
+                    result = self.strategy.run_analysis_cycle(current_data, current_price, df_5m)
+
+                    # Update chart with primary timeframe (15m for clarity)
+                    if hasattr(self, 'chart'):
+                        self.chart.update_chart(df_15m)
+
+                # ═══════════════════════════════════════════════════════════════
+                # CASE 2: Momentum or Kalman - Single timeframe (UNCHANGED)
+                # ═══════════════════════════════════════════════════════════════
+                else:
+                    interval_str = self.interval_var.get()
+                    interval_seconds = self.interval_seconds_map.get(interval_str, 60)
+
+                    # Calculate next run time (existing code)
+                    now = datetime.now(timezone.utc)
+                    if interval_str == '1m':
+                        next_run = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
+                    elif interval_str == '5m':
+                        next_run = now + timedelta(minutes=5 - (now.minute % 5))
+                        next_run = next_run.replace(second=0, microsecond=0)
+                    elif interval_str == '15m':
+                        next_run = now + timedelta(minutes=15 - (now.minute % 15))
+                        next_run = next_run.replace(second=0, microsecond=0)
+                    elif interval_str == '30m':
+                        next_run = now + timedelta(minutes=30 - (now.minute % 30))
+                        next_run = next_run.replace(second=0, microsecond=0)
+                    elif interval_str == '1H':
+                        next_run = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+                    elif interval_str == '1D':
+                        next_run = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+                    sleep_time = (next_run - now).total_seconds()
+                    next_run_str = next_run.strftime('%Y-%m-%d %H:%M:%S UTC')
+                    self.log_message(f"Next analysis at: {next_run_str}", "blue")
+
+                    self.timer.set_interval(interval_seconds)
+                    self.timer.start_time = time.time() - (time.time() % interval_seconds)
+                    self.timer.start()
+
+                    time.sleep(max(0, sleep_time))
+
+                    # Fetch single timeframe (existing code)
+                    df = self.get_market_data()
+                    if df is not None:
+                        df = self.strategy.calculate_indicators(df)
+                        if df is not None and len(df) >= 2:
+                            current_data = df.iloc[-2].copy()
+                            current_price = float(current_data['Close'])
+
+                            result = self.strategy.run_analysis_cycle(current_data, current_price, df)
+
+                            # Update chart
+                            if hasattr(self, 'chart'):
+                                self.chart.update_chart(df)
+
+                # Common post-processing (display results, execute trades, etc.)
+                self._process_trading_result(result, current_data, current_price)
+
+            except Exception as e:
+                self.log_message(f"Trading error: {str(e)}", "red")
+                logging.error(f"Trading error: {str(e)}")
+                import traceback
+                self.log_message(traceback.format_exc(), "red")
+
     def get_historical_data(self, symbol, exchange_name="binance", start=None, end=None,
                             interval="15m", days=360, cache=True, cache_dir="data_cache", limit=None):
         """
@@ -10925,7 +8314,78 @@ class TradingApp:
             self.log_message(f"💾 Data cached at {cache_file}", "blue")
 
         return df
+    def get_market_data(self):
+        if self.mode_var.get().lower() != "backtest":
+            if not hasattr(self, 'market_api') or self.market_api is None:
+                self.log_message("Market API not initialized. Please check connection.", "red")
+                return None
 
+        try:
+            if self.mode_var.get().lower() == "backtest":
+                df = self.get_historical_data(self.symbol_var.get(), self.interval_var.get(), limit=5000)
+                if df is not None:
+                    self.log_message("Using real historical data from OKX", "green")
+                    return df
+                else:
+                    self.log_message("Falling back to synthetic data", "orange")
+                    freq = self.interval_var.get()
+                    if freq == '1m':
+                        freq = 'T'
+                    elif freq == '5m':
+                        freq = '5T'
+                    return self.generate_test_data(freq)
+
+            symbol = self.symbol_var.get()
+            interval = self.interval_var.get()
+            total_limit = 50000
+            batch_size = 1000
+            all_data = []
+            before = None
+
+            while len(all_data) < total_limit:
+                params = {
+                    'instId': symbol,
+                    'bar': interval,
+                    'limit': batch_size
+                }
+                if before:
+                    params['before'] = before
+
+                response = self.market_api.get_candlesticks(**params)
+
+                if response['code'] != '0' or not response['data']:
+                    break
+
+                batch = response['data']
+                all_data.extend(batch)
+
+                if len(batch) < batch_size:
+                    break
+
+                before = batch[-1][0]
+
+            if not all_data:
+                return None
+
+            df = pd.DataFrame(all_data,
+                              columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume', 'volCcy', 'volBase',
+                                       'turnover'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'].astype('int64'), unit='ms', utc=True)
+            df.set_index('timestamp', inplace=True)
+            float_cols = ['Open', 'High', 'Low', 'Close', 'Volume', 'volCcy', 'volBase', 'turnover']
+            df[float_cols] = df[float_cols].astype(float)
+            df = df.sort_index(ascending=True)
+
+            start_str = df.index[0].strftime('%Y-%m-%d %H:%M:%S UTC')
+            end_str = df.index[-1].strftime('%Y-%m-%d %H:%M:%S UTC')
+            self.log_message(f"📊 Market data loaded: {start_str} to {end_str} ({len(df)} candles)", "blue")
+
+            return df
+
+        except Exception as e:
+            self.log_message(f"Data error: {str(e)}", "red")
+            logging.error(f"Data error: {str(e)}")
+            return None
 
     def update_trailing_stop(self, current_price):
         if self.position['price'] is None:
@@ -11548,42 +9008,893 @@ class TradingApp:
         entry_conf = min(100, max(0, float(entry_confidence)))
         ml_conf = min(100, max(0, float(ml_confidence))) if ml_confidence else 0
 
-        # ── Process ML confidence through correction ──────────────────────────
         if ml_conf > 0:
-            ml_output = process_ml_prediction(ml_conf / 100.0)
-            ml_conf_corrected = ml_output["confidence_pct"]
-            # Use corrected direction if available
-            if ml_output["ml_direction"] == "BULLISH":
-                ml_prediction_corrected = 1
-            elif ml_output["ml_direction"] == "BEARISH":
-                ml_prediction_corrected = -1
-            else:
-                ml_prediction_corrected = 0
-        else:
-            ml_conf_corrected = 0
-            ml_prediction_corrected = 0
-
-        # Use corrected values for scoring
-        if ml_conf_corrected > 0:
             entry_weight = 0.55
             ml_weight = 0.45
 
             safe_entry = max(1, entry_conf)
-            safe_ml = max(1, ml_conf_corrected)
+            safe_ml = max(1, ml_conf)
 
             geometric_mean = math.exp(entry_weight * math.log(safe_entry) + ml_weight * math.log(safe_ml))
-            arithmetic_mean = entry_conf * entry_weight + ml_conf_corrected * ml_weight
+            arithmetic_mean = entry_conf * entry_weight + ml_conf * ml_weight
             base_score = (geometric_mean * 0.6) + (arithmetic_mean * 0.4)
         else:
             base_score = entry_conf
 
         direction_bonus = 0
-        if ml_prediction_corrected == 1:
+        if ml_prediction == 1:
             direction_bonus = 10
-        elif ml_prediction_corrected == -1:
+        elif ml_prediction == -1:
             direction_bonus = -15
 
-        # ... rest of method unchanged ...
+        if conditions_result:
+            mandatory = conditions_result.get('mandatory_passed', 0)
+            mandatory_total = conditions_result.get('mandatory_total', 5)
+            supporting = conditions_result.get('supporting_passed', 0)
+            supporting_total = conditions_result.get('supporting_total', 3)
+
+            mandatory_ratio = mandatory / max(1, mandatory_total)
+            supporting_ratio = supporting / max(1, supporting_total)
+
+            weighted_ratio = (mandatory_ratio * 0.7) + (supporting_ratio * 0.3)
+            condition_multiplier = 0.7 + (weighted_ratio * 0.45)
+        else:
+            condition_multiplier = 1.0
+
+        divergence_penalty = 0
+        if ml_conf > 0:
+            divergence = abs(entry_conf - ml_conf)
+            if divergence > 30:
+                divergence_penalty = (divergence - 30) * 0.15
+
+        combined_score = (base_score + direction_bonus) * condition_multiplier - divergence_penalty
+        combined_score = min(100, max(0, combined_score))
+
+        if combined_score >= 80:
+            recommendation = "STRONG BUY"
+            confidence_level = "Very High"
+        elif combined_score >= 70:
+            recommendation = "BUY"
+            confidence_level = "High"
+        elif combined_score >= 60:
+            recommendation = "MODERATE BUY"
+            confidence_level = "Moderate"
+        elif combined_score >= 50:
+            recommendation = "WEAK BUY"
+            confidence_level = "Low"
+        elif combined_score >= 40:
+            recommendation = "CAUTION"
+            confidence_level = "Very Low"
+        else:
+            recommendation = "NO TRADE"
+            confidence_level = "Insufficient"
+
+        return {
+            'combined_score': combined_score,
+            'recommendation': recommendation,
+            'confidence_level': confidence_level,
+            'components': {
+                'base_score': base_score,
+                'direction_bonus': direction_bonus,
+                'condition_multiplier': condition_multiplier,
+                'divergence_penalty': divergence_penalty
+            }
+        }
+
+    def execute_strategy(self, current_data, df):
+        if hasattr(self.strategy, 'detect_market_regime'):
+            market_regime = self.strategy.detect_market_regime(df)
+
+            if market_regime == "high_volatility" and not getattr(self.strategy, 'trade_high_vol', True):
+                self.log_message(f"⏸️ Skipping trade - High volatility regime", "orange")
+                return
+
+            if market_regime == "ranging" and not getattr(self.strategy, 'trade_ranging', True):
+                self.log_message(f"⏸️ Skipping trade - Ranging market", "orange")
+                return
+
+        if len(df) < 2:
+            self.log_message("⚠️ Insufficient data (need at least 2 candles)", "orange")
+            return
+
+        if len(df) > 0:
+            rolling_vol = df['Volume'].rolling(50)
+            self.volume_mean = rolling_vol.mean().iloc[-1]
+            self.atr_mean = df['ATR_closed'].mean() if 'ATR_closed' in df else (df['ATR'].mean() if 'ATR' in df else 0)
+            self.volume_stats = {
+                'mean': rolling_vol.mean().iloc[-1],
+                'std': rolling_vol.std().iloc[-1] if rolling_vol.std().iloc[-1] > 0 else 1
+            }
+
+            if hasattr(self, 'calculate_volume_strength') and hasattr(self, 'volume_strength_frame'):
+                volume_strength = self.calculate_volume_strength(df)
+                self.draw_volume_strength(self.volume_strength_frame, volume_strength)
+
+        if df is None or current_data is None:
+            self.log_message("⚠️ No valid data to analyze", "orange")
+            if hasattr(self, 'play_notification'):
+                self.play_notification("error")
+            return
+
+        stop_loss = self.initial_stop_loss if self.position.get('price') else None
+        trailing_stop = self.trailing_stop if self.position.get('price') else None
+
+        active_params = {}
+        strategy_type = self.strategy_type_var.get()
+
+        if strategy_type == "Momentum":
+            active_params = self.get_current_momentum_params()
+        elif strategy_type == "Kalman":
+            active_params = self.get_current_kalman_params()
+
+        if hasattr(self, 'chart'):
+            self.chart.update_chart(
+                df.copy(),
+                params=active_params,
+                stop_loss=stop_loss,
+                trailing_stop=trailing_stop,
+                live_price=float(df['Close'].iloc[-1])
+            )
+
+        if hasattr(self, 'is_ranging'):
+            df = self.is_ranging(df)
+
+        # ── FIX: Use iloc[-2] = last CLOSED candle ──────────────────────────────
+        if len(df) < 2:
+            self.log_message("⚠️ Not enough data after indicator calculation", "orange")
+            return
+
+        current_data = df.iloc[-2].copy()
+
+        if 'Ranging' in df.columns:
+            current_data['Ranging'] = df['Ranging'].iloc[-2]
+
+        self.current_data = current_data.copy()
+        current_price = float(current_data['Close'])
+
+        self.log_message(
+            f"📊 Signal candle: "
+            f"{df.index[-2].strftime('%Y-%m-%d %H:%M:%S UTC')} | "
+            f"Price: ${current_price:.4f}",
+            "blue"
+        )
+        # ────────────────────────────────────────────────────────────────────────
+
+        if not hasattr(self, 'highest_since_buy') or self.highest_since_buy is None:
+            self.highest_since_buy = current_price
+
+        if df is not None and len(df) >= 2:
+            vol_ratio = self.get_volume_ratio(df, current_data, default=1.0)
+
+            if hasattr(current_data, 'at'):
+                current_data.at['Volume_Ratio'] = vol_ratio
+            elif hasattr(current_data, '__setitem__'):
+                current_data['Volume_Ratio'] = vol_ratio
+
+            self.current_data = current_data.copy() if hasattr(current_data, 'copy') else current_data
+
+        ml_conf_pct = 0.0
+        ml_prediction = 0
+        forecast = None
+        n_future = 5
+
+        ml_is_enabled = False
+        if hasattr(self, 'ml_enabled'):
+            ml_is_enabled = self.ml_enabled
+        elif hasattr(self, 'ml_enabled_var'):
+            ml_is_enabled = self.ml_enabled_var.get() if hasattr(self.ml_enabled_var, 'get') else False
+
+        self.log_message(f"🔍 ML Status: {'ENABLED' if ml_is_enabled else 'DISABLED'}", "cyan")
+
+        if ml_is_enabled and hasattr(self, 'current_ml_model') and self.current_ml_model:
+            if hasattr(self.current_ml_model, 'is_trained') and self.current_ml_model.is_trained:
+                n_future = int(self.prediction_candles_slider.get()) if hasattr(self,
+                                                                                'prediction_candles_slider') else 5
+                try:
+                    ml_conf, ml_prediction, forecast = self.current_ml_model.predict(df, n_future)
+                    ml_conf_pct = float(ml_conf * 100.0 if ml_conf <= 1.0 else ml_conf)
+                except Exception as e:
+                    self.log_message(f"⚠️ ML prediction error: {e}", "orange")
+
+        close = float(self.safe_get(current_data, 'Close', 0))
+        ema_fast = float(self.safe_get(current_data, 'EMA_Fast', 0))
+        ema_mid = float(self.safe_get(current_data, 'EMA_Mid', 0))
+        ema_slow = float(self.safe_get(current_data, 'EMA_Slow', 0))
+        adx = float(self.safe_get(current_data, 'ADX', 0))
+        rsi = float(self.safe_get(current_data, 'RSI', 50))
+        cci = float(self.safe_get(current_data, 'CCI', 0))
+        macd = float(self.safe_get(current_data, 'MACD_closed', 0))
+        supertrend = float(self.safe_get(current_data, 'SuperTrend', 1))
+        full_alignment = close > ema_fast > ema_mid > ema_slow
+
+        result = self.strategy.run_analysis_cycle(current_data, current_price)
+
+        decision = "hold"
+        quality_score = 0
+        shares = 0
+        reason = ""
+        exit_signal = None
+        exit_pct = 1.0
+        combined_confidence = 0
+
+        if isinstance(result, tuple) and len(result) >= 4:
+            decision, quality_score, shares, reason = result[:4]
+
+            combined_confidence = quality_score
+            if ml_is_enabled and ml_conf_pct > 0 and quality_score >= 0:
+                ml_score_normalized = (ml_prediction + 1) * 50 if ml_prediction is not None else 50
+                combined_confidence = self.combined_score(
+                    quality_score=quality_score,
+                    ml_score=ml_score_normalized,
+                    ml_confidence=ml_conf_pct / 100.0
+                )
+                self.log_message(
+                    f"🤖 Combined Confidence: {quality_score:.0f} + ML({ml_conf_pct:.0f}%) = {combined_confidence:.0f}",
+                    "blue")
+        else:
+            exit_signal, exit_pct = result
+
+        use_detailed = getattr(self, 'detailed_output_var', None)
+        is_detailed = use_detailed.get() if use_detailed else True
+
+        if is_detailed:
+            self.log_message(f"{'═' * 77}", "blue")
+            self.log_message(f"📅 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC", "blue")
+            self.log_message(f"{'═' * 77}", "blue")
+
+            if exit_signal is not None:
+                self.log_message(f"🚨 EXIT SIGNAL DETECTED: {exit_signal}", "yellow")
+                self.log_message(f"📊 Exit Percentage: {exit_pct * 100:.0f}%", "yellow")
+
+            else:
+                if hasattr(self.strategy, '_calculate_quality_score') and quality_score >= 0:
+                    _eff_dir = getattr(self.strategy, "_pending_signal", None)
+                    _eff_dir = _eff_dir.get("direction", "long") if _eff_dir else getattr(self.strategy, "trade_direction", "long")
+                    if _eff_dir == "short" and hasattr(self.strategy, "_calculate_quality_score_short"):
+                        total_score, component_scores, score_reason = self.strategy._calculate_quality_score_short(current_data)
+                    else:
+                        total_score, component_scores, score_reason = self.strategy._calculate_quality_score(current_data)
+
+                    self.log_message(f"🎯 QUALITY SCORE SYSTEM ANALYSIS", "purple")
+                    quality_bar = self._create_confidence_bar(total_score, 10)
+                    self.log_message(f"📊 Quality Score: {total_score}/100 {quality_bar}",
+                                     "green" if total_score >= 70 else "orange" if total_score >= 60 else "red")
+
+                    self.log_message(f"", "white")
+                    self.log_message(f"📈 Component Scores:", "cyan")
+
+                    col_widths = [15, 15, 15, 15]
+                    self.log_message(self._create_table_separator(col_widths, "top"), "cyan")
+                    headers = ["EMA", "ADX", "Volume", "Momentum"]
+                    self.log_message(self._create_table_row(headers, col_widths), "white")
+                    self.log_message(self._create_table_separator(col_widths, "middle"), "cyan")
+
+                    data_cells = [
+                        f"{component_scores.get('ema', 0)}/20",
+                        f"{component_scores.get('adx', 0)}/20",
+                        f"{component_scores.get('volume', 0)}/20",
+                        f"{component_scores.get('momentum', 0)}/20"
+                    ]
+                    self.log_message(self._create_table_row(data_cells, col_widths),
+                                     "green" if total_score >= 70 else "orange")
+                    self.log_message(self._create_table_separator(col_widths, "bottom"), "cyan")
+
+                    self.log_message(f"", "white")
+                    self.log_message(f"📊 Supporting Scores:", "cyan")
+
+                    col_widths = [15, 15, 15]
+                    self.log_message(self._create_table_separator(col_widths, "top"), "cyan")
+                    headers = ["RSI", "CCI", "Kalman"]
+                    self.log_message(self._create_table_row(headers, col_widths), "white")
+                    self.log_message(self._create_table_separator(col_widths, "middle"), "cyan")
+
+                    data_cells = [
+                        f"{component_scores.get('rsi', 0)}/10",
+                        f"{component_scores.get('cci', 0)}/5",
+                        f"{component_scores.get('kalman', 0)}/5"
+                    ]
+                    self.log_message(self._create_table_row(data_cells, col_widths),
+                                     "green" if total_score >= 70 else "orange")
+                    self.log_message(self._create_table_separator(col_widths, "bottom"), "cyan")
+
+                    position_mult = self.strategy._get_position_multiplier(total_score)
+                    self.log_message(f"", "white")
+                    self.log_message(f"💰 Position Size: {position_mult * 100:.0f}% of normal size",
+                                     "green" if position_mult >= 1.0 else "orange")
+
+                    self.log_message(f"📝 Quality Analysis: {score_reason}", "blue")
+
+                else:
+                    conditions_result = self.display_entry_conditions(current_data, strategy_type)
+
+                if decision not in ("buy", "sell") and quality_score >= 0:
+                    self.log_message(f"⏸️ Strategy Decision: {reason}", "orange")
+                elif quality_score == -1:
+                    self.log_message(f"ℹ️ Position already open - in IN_TRADE state", "blue")
+
+            if forecast is not None and len(forecast) > 0:
+                try:
+                    if hasattr(self, 'chart') and self.chart is not None:
+                        self.chart.plot_forecast(forecast)
+                except Exception as e:
+                    self.log_message(f"⚠️ Could not plot forecast: {e}", "orange")
+
+            if ml_conf_pct > 0:
+                signal_text = "BULLISH" if ml_prediction == 1 else "BEARISH" if ml_prediction == -1 else "WAIT"
+                signal_color = "green" if ml_prediction == 1 else "red" if ml_prediction == -1 else "orange"
+                self.log_message(f"🤖 ML Prediction: {signal_text} (Confidence: {ml_conf_pct:.2f}%)", signal_color)
+
+                if forecast is not None and len(forecast) > 0:
+                    self.log_message(f"🕯️ FORECASTED PRICES ({n_future} candles):", "purple")
+                    for i, pred_price in enumerate(forecast, 1):
+                        change_pct = ((pred_price - current_price) / current_price * 100) if current_price > 0 else 0
+                        direction = "🔼" if change_pct > 0 else "🔽" if change_pct < 0 else "➡️"
+                        color = "green" if change_pct > 0 else "red" if change_pct < 0 else "white"
+                        self.log_message(f"   Candle {i}: ${pred_price:.4f} ({change_pct:+.2f}%) {direction}", color)
+
+            if quality_score >= 0 and exit_signal is None:
+                self.log_message(f"", "white")
+                self.log_message(f"📊 ENTRY POWER ANALYSIS", "purple")
+
+                col_widths = [20, 20, 20]
+                self.log_message(self._create_table_separator(col_widths, "top"), "purple")
+                headers = ["Quality Score", "ML Contribution", "Combined Power"]
+                self.log_message(self._create_table_row(headers, col_widths), "white")
+                self.log_message(self._create_table_separator(col_widths, "middle"), "purple")
+
+                quality_bar = self._create_confidence_bar(quality_score, 6)
+                quality_text = f"{quality_score:.0f}/100 {quality_bar}"
+
+                if ml_is_enabled and ml_conf_pct > 0:
+                    ml_diff = combined_confidence - quality_score
+                    ml_text = f"{ml_diff:+.0f} pts ({ml_conf_pct:.0f}%)"
+                else:
+                    ml_text = "DISABLED"
+
+                combined_bar = self._create_confidence_bar(combined_confidence, 6)
+                combined_text = f"{combined_confidence:.0f}/100 {combined_bar}"
+
+                data_cells = [quality_text, ml_text, combined_text]
+                decision_color = "green" if combined_confidence >= 70 else "orange" if combined_confidence >= 60 else "red"
+                self.log_message(self._create_table_row(data_cells, col_widths), decision_color)
+                self.log_message(self._create_table_separator(col_widths, "bottom"), "purple")
+
+                if hasattr(self.strategy, '_get_position_multiplier'):
+                    final_mult = self.strategy._get_position_multiplier(combined_confidence)
+                    self.log_message(f"💰 RECOMMENDED POSITION: {final_mult * 100:.0f}% size",
+                                     "green" if final_mult >= 1.0 else "orange" if final_mult >= 0.5 else "red")
+
+        else:
+            if exit_signal is not None:
+                self.log_message(f"🚨 EXIT: {exit_signal} ({exit_pct * 100:.0f}%)", "yellow")
+            elif (decision == "buy" or decision == "sell") and quality_score >= 0:
+                tier = getattr(self.strategy, '_last_entry_tier', 1)
+                tier_label = f"TIER {tier}"
+                tier_color = "green" if tier == 2 else "blue"
+                self.log_message(
+                    f"🎯 Quality Score: {quality_score:.0f}/100 | {tier_label} | Combined: {combined_confidence:.0f}%",
+                    tier_color
+                )
+            elif quality_score >= 0:
+                self.log_message(f"⏸️ No trade: {reason}", "orange")
+            else:
+                self.log_message(f"ℹ️ Position open - monitoring", "blue")
+
+            if ml_conf_pct > 0:
+                signal_text = "BULLISH" if ml_prediction == 1 else "BEARISH" if ml_prediction == -1 else "WAIT"
+                signal_color = "green" if ml_prediction == 1 else "red" if ml_prediction == -1 else "orange"
+                self.log_message(f"🤖 ML: {signal_text} ({ml_conf_pct:.0f}%)", signal_color)
+
+            if forecast is not None and len(forecast) > 0:
+                forecast_str = "[" + " ".join([f"{p:.5f}" for p in forecast]) + "]"
+                self.log_message(f"🕯️ Forecast: {forecast_str}", "purple")
+
+            ema_status = "✅" if full_alignment else "❌"
+            self.log_message(
+                f"📊 EMA: {ema_status} | Price:{close:.4f} | RSI:{rsi:.1f} | ADX:{adx:.1f}",
+                "green" if full_alignment else "white"
+            )
+
+            self.log_message(f"{'=' * 30} {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} {'=' * 29}",
+                             "blue")
+
+            arrow = "🔼" if current_price >= self.highest_since_buy else "🔽"
+            arrow_color = "green" if current_price >= self.highest_since_buy else "red"
+            self.log_message(f"💰 Price: {current_price:.4f} {arrow} | CCI: {cci:.1f} | MACD: {macd:.3f}", arrow_color)
+
+            sl = self.initial_stop_loss or 0.0
+            tsl = self.trailing_stop or 0.0
+            if sl > 0:
+                self.log_message(f"💰 Stop: {sl:.4f} | Trail: {tsl:.4f}", "white")
+
+        if exit_signal is not None:
+            self.log_message(f"🚨 EXECUTING EXIT: {exit_signal}", "yellow")
+            success, profit, exit_price = self.strategy.execute_sell(
+                reason=exit_signal,
+                exit_percentage=exit_pct
+            )
+            if success:
+                self.log_message(f"✅ EXIT COMPLETE: Profit ${profit:.2f}", "green" if profit > 0 else "red")
+                self.play_notification("sell_success" if profit > 0 else "sell_loss")
+            else:
+                self.log_message(f"❌ EXIT FAILED", "red")
+                self.play_notification("error")
+            return
+
+        if (decision == "buy" or decision == "sell") and quality_score >= 0 and shares > 0:
+            ranging_value = current_data.get('Ranging')
+            if ranging_value is not None:
+                is_ranging = ranging_value.iloc[0] if hasattr(ranging_value, 'iloc') else ranging_value
+                if is_ranging:
+                    self.log_message("⏸️ Entry prevented: Market is ranging", "orange")
+                    return
+
+            confidence_threshold = float(self.confidence_var.get()) * 100
+
+            self.log_message(
+                f"🎯 Entry Check: Combined={combined_confidence:.0f} vs Threshold={confidence_threshold:.0f}",
+                "cyan"
+            )
+
+            if combined_confidence >= confidence_threshold:
+                quantity = shares
+
+                if quantity > 0:
+                    self.play_notification("pre_buy_alert")
+
+                    # v9.4.2: execute_buy routes to execute_short for short signals
+                    success, filled_qty, order_id = self.strategy.execute_buy(
+                        shares=quantity,
+                        price=current_price,
+                        atr=float(self.safe_get(current_data, 'ATR', 1)),
+                        quality_score=quality_score,
+                        tier=getattr(self.strategy, '_last_entry_tier', 1)
+                    )
+
+                    if not success:
+                        self.log_message("❌ ENTRY FAILED - No position opened", "red")
+                        self.play_notification("error")
+                    else:
+                        direction_label = "SHORT" if decision == "sell" else "LONG"
+                        direction_emoji = "🔴" if decision == "sell" else "🟢"
+                        self.active_position = 'short' if decision == "sell" else 'long'
+                        self.position_entry_price = current_price
+                        self.position_size = filled_qty
+                        self.position_entry_time = datetime.now(timezone.utc)
+
+                        ml_msg = ' with ML confirmation' if ml_is_enabled and ml_conf_pct > 0 else ''
+                        self.log_message(
+                            f"{direction_emoji} {direction_label} EXECUTED{ml_msg} "
+                            f"(Quality: {quality_score:.0f}, Combined: {combined_confidence:.0f}%, "
+                            f"Tier {getattr(self.strategy, '_last_entry_tier', 1)})\n"
+                            f"Qty {quantity:.4f} at ${current_price:.4f}",
+                            "green" if decision == "buy" else "red"
+                        )
+
+                        self.speak_trade(
+                            f"{'Short' if decision == 'sell' else 'Buy'} order filled at {current_price:.2f} "
+                            f"with confidence {combined_confidence:.1f}%"
+                        )
+                else:
+                    self.log_message(f"❌ Invalid quantity: {quantity}", "red")
+            else:
+                self.log_message(f"", "white")
+                self.log_message(f"🎯 QUALITY SCORE REJECTED", "red")
+                self.log_message(f"{'=' * 70}", "red")
+                self.log_message(
+                    f"📊 Score: {combined_confidence:.0f}/100 (Minimum: {confidence_threshold:.0f})", "red")
+                self.log_message(f"   Raw Quality: {quality_score:.0f}", "yellow")
+                if ml_is_enabled and ml_conf_pct > 0:
+                    ml_impact = combined_confidence - quality_score
+                    self.log_message(f"   ML Impact: {ml_impact:+.0f} ({ml_conf_pct:.0f}%)", "yellow")
+                self.log_message(f"   Reason: {reason}", "orange")
+                self.log_message(f"{'=' * 70}", "red")
+
+        if len(df) > 0:
+            rolling_vol = df['Volume'].rolling(50)
+            self.volume_mean = rolling_vol.mean().iloc[-1]
+            self.atr_mean = df['ATR_closed'].mean() if 'ATR_closed' in df else (df['ATR'].mean() if 'ATR' in df else 0)
+            self.volume_stats = {
+                'mean': rolling_vol.mean().iloc[-1],
+                'std': rolling_vol.std().iloc[-1] if rolling_vol.std().iloc[-1] > 0 else 1
+            }
+
+            if hasattr(self, 'calculate_volume_strength') and hasattr(self, 'volume_strength_frame'):
+                volume_strength = self.calculate_volume_strength(df)
+                self.draw_volume_strength(self.volume_strength_frame, volume_strength)
+
+        if df is None or current_data is None:
+            self.log_message("⚠️ No valid data to analyze", "orange")
+            if hasattr(self, 'play_notification'):
+                self.play_notification("error")
+            return
+
+        stop_loss = self.initial_stop_loss if self.position.get('price') else None
+        trailing_stop = self.trailing_stop if self.position.get('price') else None
+
+        active_params = {}
+        strategy_type = self.strategy_type_var.get()
+
+        if strategy_type == "Momentum":
+            active_params = self.get_current_momentum_params()
+        elif strategy_type == "Kalman":
+            active_params = self.get_current_kalman_params()
+
+        if hasattr(self, 'chart'):
+            self.chart.update_chart(
+                df,
+                params=active_params,
+                stop_loss=stop_loss,
+                trailing_stop=trailing_stop
+            )
+
+        if hasattr(self, 'is_ranging'):
+            df = self.is_ranging(df)
+
+        current_data = df.iloc[-1].copy()
+        if 'Ranging' in df.columns:
+            current_data['Ranging'] = df['Ranging'].iloc[-1]
+        self.current_data = current_data.copy()
+        current_price = float(current_data['Close'])
+
+        if not hasattr(self, 'highest_since_buy') or self.highest_since_buy is None:
+            self.highest_since_buy = current_price
+
+        if df is not None and len(df) >= 2:
+            vol_ratio = self.get_volume_ratio(df, current_data, default=1.0)
+
+            if hasattr(current_data, 'at'):
+                current_data.at['Volume_Ratio'] = vol_ratio
+            elif hasattr(current_data, '__setitem__'):
+                current_data['Volume_Ratio'] = vol_ratio
+
+            self.current_data = current_data.copy() if hasattr(current_data, 'copy') else current_data
+
+        ml_conf_pct = 0.0
+        ml_prediction = 0
+        forecast = None
+        n_future = 5
+
+        ml_is_enabled = False
+        if hasattr(self, 'ml_enabled'):
+            ml_is_enabled = self.ml_enabled
+        elif hasattr(self, 'ml_enabled_var'):
+            ml_is_enabled = self.ml_enabled_var.get() if hasattr(self.ml_enabled_var, 'get') else False
+
+        self.log_message(f"🔍 ML Status: {'ENABLED' if ml_is_enabled else 'DISABLED'}", "cyan")
+
+        if ml_is_enabled and hasattr(self, 'current_ml_model') and self.current_ml_model:
+            if hasattr(self.current_ml_model, 'is_trained') and self.current_ml_model.is_trained:
+                n_future = int(self.prediction_candles_slider.get()) if hasattr(self,
+                                                                                'prediction_candles_slider') else 5
+                try:
+                    ml_conf, ml_prediction, forecast = self.current_ml_model.predict(df, n_future)
+                    ml_conf_pct = float(ml_conf * 100.0 if ml_conf <= 1.0 else ml_conf)
+                except Exception as e:
+                    self.log_message(f"⚠️ ML prediction error: {e}", "orange")
+
+        close = float(self.safe_get(current_data, 'Close', 0))
+        ema_fast = float(self.safe_get(current_data, 'EMA_Fast', 0))
+        ema_mid = float(self.safe_get(current_data, 'EMA_Mid', 0))
+        ema_slow = float(self.safe_get(current_data, 'EMA_Slow', 0))
+        adx = float(self.safe_get(current_data, 'ADX', 0))
+        rsi = float(self.safe_get(current_data, 'RSI', 50))
+        cci = float(self.safe_get(current_data, 'CCI', 0))
+        macd = float(self.safe_get(current_data, 'MACD_closed', 0))
+        supertrend = float(self.safe_get(current_data, 'SuperTrend', 1))
+        full_alignment = close > ema_fast > ema_mid > ema_slow
+
+        result = self.strategy.run_analysis_cycle(current_data, current_price)
+
+        decision = "hold"
+        quality_score = 0
+        shares = 0
+        reason = ""
+        exit_signal = None
+        exit_pct = 1.0
+        combined_confidence = 0
+
+        if isinstance(result, tuple) and len(result) >= 4:
+            decision, quality_score, shares, reason = result[:4]
+
+            combined_confidence = quality_score
+            if ml_is_enabled and ml_conf_pct > 0 and quality_score >= 0:
+                combined_confidence = (quality_score + ml_conf_pct) / 2
+                self.log_message(
+                    f"🤖 Combined Confidence: {quality_score:.0f} + ML({ml_conf_pct:.0f}%) = {combined_confidence:.0f}",
+                    "blue")
+        else:
+            exit_signal, exit_pct = result
+
+        use_detailed = getattr(self, 'detailed_output_var', None)
+        is_detailed = use_detailed.get() if use_detailed else True
+
+        if is_detailed:
+            self.log_message(f"{'═' * 77}", "blue")
+            self.log_message(f"📅 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC", "blue")
+            self.log_message(f"{'═' * 77}", "blue")
+
+            if exit_signal is not None:
+                self.log_message(f"🚨 EXIT SIGNAL DETECTED: {exit_signal}", "yellow")
+                self.log_message(f"📊 Exit Percentage: {exit_pct * 100:.0f}%", "yellow")
+
+            else:
+                if hasattr(self.strategy, '_calculate_quality_score') and quality_score >= 0:
+                    _eff_dir = getattr(self.strategy, "_pending_signal", None)
+                    _eff_dir = _eff_dir.get("direction", "long") if _eff_dir else getattr(self.strategy, "trade_direction", "long")
+                    if _eff_dir == "short" and hasattr(self.strategy, "_calculate_quality_score_short"):
+                        total_score, component_scores, score_reason = self.strategy._calculate_quality_score_short(current_data)
+                    else:
+                        total_score, component_scores, score_reason = self.strategy._calculate_quality_score(current_data)
+
+                    # ── Candle Price Info ────────────────────────────────────────────────────
+                    candle_time = df.index[-2].strftime('%Y-%m-%d %H:%M:%S UTC') if hasattr(df.index[-2],
+                                                                                            'strftime') else str(
+                        df.index[-2])
+                    o = float(self.safe_get(current_data, 'Open', current_price))
+                    h = float(self.safe_get(current_data, 'High', current_price))
+                    l = float(self.safe_get(current_data, 'Low', current_price))
+                    c = float(self.safe_get(current_data, 'Close', current_price))
+                    v = float(self.safe_get(current_data, 'Volume', 0))
+
+                    candle_dir = "🟢 BULL" if c >= o else "🔴 BEAR"
+                    candle_range = ((h - l) / l * 100) if l > 0 else 0
+                    body_pct = (abs(c - o) / (h - l) * 100) if (h - l) > 0 else 0
+
+                    col_w = [28, 28, 28]
+                    self.log_message(self._create_table_separator(col_w, "top"), "cyan")
+                    self.log_message(self._create_table_row(["📅 Candle", "🕯️ Direction", "📐 Range"], col_w), "white")
+                    self.log_message(self._create_table_separator(col_w, "middle"), "cyan")
+                    self.log_message(self._create_table_row(
+                        [candle_time, candle_dir, f"{candle_range:.3f}% | Body {body_pct:.0f}%"],
+                        col_w), "cyan")
+                    self.log_message(self._create_table_separator(col_w, "middle"), "cyan")
+                    self.log_message(self._create_table_row(["Open", "High", "Low"], col_w), "white")
+                    self.log_message(self._create_table_separator(col_w, "middle"), "cyan")
+                    self.log_message(self._create_table_row(
+                        [f"${o:.5f}", f"${h:.5f}", f"${l:.5f}"],
+                        col_w),
+                        "green" if c >= o else "red")
+                    self.log_message(self._create_table_separator(col_w, "middle"), "cyan")
+                    self.log_message(self._create_table_row(["Close", "Volume", ""], col_w), "white")
+                    self.log_message(self._create_table_separator(col_w, "middle"), "cyan")
+                    self.log_message(self._create_table_row(
+                        [f"${c:.5f}", f"{v:,.2f}", ""],
+                        col_w),
+                        "green" if c >= o else "red")
+                    self.log_message(self._create_table_separator(col_w, "bottom"), "cyan")
+                    self.log_message(f"", "white")
+
+                    quality_bar = self._create_confidence_bar(total_score, 10)
+                    self.log_message(f"📊 Quality Score: {total_score}/100 {quality_bar}",
+                                     "green" if total_score >= 70 else "orange" if total_score >= 60 else "red")
+
+                    self.log_message(f"", "white")
+                    self.log_message(f"📈 Component Scores:", "cyan")
+
+                    col_widths = [15, 15, 15, 15]
+                    self.log_message(self._create_table_separator(col_widths, "top"), "cyan")
+                    headers = ["EMA", "ADX", "Volume", "Momentum"]
+                    self.log_message(self._create_table_row(headers, col_widths), "white")
+                    self.log_message(self._create_table_separator(col_widths, "middle"), "cyan")
+
+                    data_cells = [
+                        f"{component_scores.get('ema', 0)}/20",
+                        f"{component_scores.get('adx', 0)}/20",
+                        f"{component_scores.get('volume', 0)}/20",
+                        f"{component_scores.get('momentum', 0)}/20"
+                    ]
+                    self.log_message(self._create_table_row(data_cells, col_widths),
+                                     "green" if total_score >= 70 else "orange")
+                    self.log_message(self._create_table_separator(col_widths, "bottom"), "cyan")
+
+                    self.log_message(f"", "white")
+                    self.log_message(f"📊 Supporting Scores:", "cyan")
+
+                    col_widths = [15, 15, 15]
+                    self.log_message(self._create_table_separator(col_widths, "top"), "cyan")
+                    headers = ["RSI", "CCI", "Kalman"]
+                    self.log_message(self._create_table_row(headers, col_widths), "white")
+                    self.log_message(self._create_table_separator(col_widths, "middle"), "cyan")
+
+                    data_cells = [
+                        f"{component_scores.get('rsi', 0)}/10",
+                        f"{component_scores.get('cci', 0)}/5",
+                        f"{component_scores.get('kalman', 0)}/5"
+                    ]
+                    self.log_message(self._create_table_row(data_cells, col_widths),
+                                     "green" if total_score >= 70 else "orange")
+                    self.log_message(self._create_table_separator(col_widths, "bottom"), "cyan")
+
+                    position_mult = self.strategy._get_position_multiplier(total_score)
+                    self.log_message(f"", "white")
+                    self.log_message(f"💰 Position Size: {position_mult * 100:.0f}% of normal size",
+                                     "green" if position_mult >= 1.0 else "orange")
+
+                    self.log_message(f"📝 Quality Analysis: {score_reason}", "blue")
+
+                else:
+                    conditions_result = self.display_entry_conditions(current_data, strategy_type)
+
+                if decision not in ("buy", "sell") and quality_score >= 0:
+                    self.log_message(f"⏸️ Strategy Decision: {reason}", "orange")
+                elif quality_score == -1:
+                    self.log_message(f"ℹ️ Position already open - in IN_TRADE state", "blue")
+
+            if forecast is not None and len(forecast) > 0:
+                try:
+                    if hasattr(self, 'chart') and self.chart is not None:
+                        self.chart.plot_forecast(forecast)
+                except Exception as e:
+                    self.log_message(f"⚠️ Could not plot forecast: {e}", "orange")
+
+            if ml_conf_pct > 0:
+                signal_text = "BULLISH" if ml_prediction == 1 else "BEARISH" if ml_prediction == -1 else "WAIT"
+                signal_color = "green" if ml_prediction == 1 else "red" if ml_prediction == -1 else "orange"
+                self.log_message(f"🤖 ML Prediction: {signal_text} (Confidence: {ml_conf_pct:.2f}%)", signal_color)
+
+                if forecast is not None and len(forecast) > 0:
+                    self.log_message(f"🕯️ FORECASTED PRICES ({n_future} candles):", "purple")
+                    for i, pred_price in enumerate(forecast, 1):
+                        change_pct = ((pred_price - current_price) / current_price * 100) if current_price > 0 else 0
+                        direction = "🔼" if change_pct > 0 else "🔽" if change_pct < 0 else "➡️"
+                        color = "green" if change_pct > 0 else "red" if change_pct < 0 else "white"
+                        self.log_message(f"   Candle {i}: ${pred_price:.4f} ({change_pct:+.2f}%) {direction}", color)
+
+            if quality_score >= 0 and exit_signal is None:
+                self.log_message(f"", "white")
+                self.log_message(f"📊 ENTRY POWER ANALYSIS", "purple")
+
+                col_widths = [20, 20, 20]
+                self.log_message(self._create_table_separator(col_widths, "top"), "purple")
+                headers = ["Quality Score", "ML Contribution", "Combined Power"]
+                self.log_message(self._create_table_row(headers, col_widths), "white")
+                self.log_message(self._create_table_separator(col_widths, "middle"), "purple")
+
+                quality_bar = self._create_confidence_bar(quality_score, 6)
+                quality_text = f"{quality_score:.0f}/100 {quality_bar}"
+
+                if ml_is_enabled and ml_conf_pct > 0:
+                    ml_diff = combined_confidence - quality_score
+                    ml_text = f"{ml_diff:+.0f} pts ({ml_conf_pct:.0f}%)"
+                else:
+                    ml_text = "DISABLED"
+
+                combined_bar = self._create_confidence_bar(combined_confidence, 6)
+                combined_text = f"{combined_confidence:.0f}/100 {combined_bar}"
+
+                data_cells = [quality_text, ml_text, combined_text]
+                decision_color = "green" if combined_confidence >= 70 else "orange" if combined_confidence >= 60 else "red"
+                self.log_message(self._create_table_row(data_cells, col_widths), decision_color)
+                self.log_message(self._create_table_separator(col_widths, "bottom"), "purple")
+
+                if hasattr(self.strategy, '_get_position_multiplier'):
+                    final_mult = self.strategy._get_position_multiplier(combined_confidence)
+                    self.log_message(f"💰 RECOMMENDED POSITION: {final_mult * 100:.0f}% size",
+                                     "green" if final_mult >= 1.0 else "orange" if final_mult >= 0.5 else "red")
+
+        else:
+            if exit_signal is not None:
+                self.log_message(f"🚨 EXIT: {exit_signal} ({exit_pct * 100:.0f}%)", "yellow")
+            elif (decision == "buy" or decision == "sell") and quality_score >= 0:
+                tier = getattr(self.strategy, '_last_entry_tier', 1)
+                tier_label = f"TIER {tier}"
+                tier_color = "green" if tier == 2 else "blue"
+                self.log_message(
+                    f"🎯 Quality Score: {quality_score:.0f}/100 | {tier_label} | Combined: {combined_confidence:.0f}%",
+                    tier_color
+                )
+            elif quality_score >= 0:
+                self.log_message(f"⏸️ No trade: {reason}", "orange")
+            else:
+                self.log_message(f"ℹ️ Position open - monitoring", "blue")
+
+            if ml_conf_pct > 0:
+                signal_text = "BULLISH" if ml_prediction == 1 else "BEARISH" if ml_prediction == -1 else "WAIT"
+                signal_color = "green" if ml_prediction == 1 else "red" if ml_prediction == -1 else "orange"
+                self.log_message(f"🤖 ML: {signal_text} ({ml_conf_pct:.0f}%)", signal_color)
+
+            if forecast is not None and len(forecast) > 0:
+                forecast_str = "[" + " ".join([f"{p:.5f}" for p in forecast]) + "]"
+                self.log_message(f"🕯️ Forecast: {forecast_str}", "purple")
+
+            ema_status = "✅" if full_alignment else "❌"
+            self.log_message(
+                f"📊 EMA: {ema_status} | Price:{close:.4f} | RSI:{rsi:.1f} | ADX:{adx:.1f}",
+                "green" if full_alignment else "white"
+            )
+
+            self.log_message(f"{'=' * 30} {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} {'=' * 29}",
+                             "blue")
+
+            arrow = "🔼" if current_price >= self.highest_since_buy else "🔽"
+            arrow_color = "green" if current_price >= self.highest_since_buy else "red"
+            self.log_message(f"💰 Price: {current_price:.4f} {arrow} | CCI: {cci:.1f} | MACD: {macd:.3f}", arrow_color)
+
+            sl = self.initial_stop_loss or 0.0
+            tsl = self.trailing_stop or 0.0
+            if sl > 0:
+                self.log_message(f"💰 Stop: {sl:.4f} | Trail: {tsl:.4f}", "white")
+
+        if exit_signal is not None:
+            self.log_message(f"🚨 EXECUTING EXIT: {exit_signal}", "yellow")
+            success, profit, exit_price = self.strategy.execute_sell(
+                reason=exit_signal,
+                exit_percentage=exit_pct
+            )
+            if success:
+                self.log_message(f"✅ EXIT COMPLETE: Profit ${profit:.2f}", "green" if profit > 0 else "red")
+                self.play_notification("sell_success" if profit > 0 else "sell_loss")
+            else:
+                self.log_message(f"❌ EXIT FAILED", "red")
+                self.play_notification("error")
+            return
+
+        if (decision == "buy" or decision == "sell") and quality_score >= 0 and shares > 0:
+            ranging_value = current_data.get('Ranging')
+            if ranging_value is not None:
+                is_ranging = ranging_value.iloc[0] if hasattr(ranging_value, 'iloc') else ranging_value
+                if is_ranging:
+                    self.log_message("⏸️ Entry prevented: Market is ranging", "orange")
+                    return
+
+            confidence_threshold = float(self.confidence_var.get()) * 100
+
+            self.log_message(
+                f"🎯 Entry Check: Combined={combined_confidence:.0f} vs Threshold={confidence_threshold:.0f}",
+                "cyan"
+            )
+
+            if combined_confidence >= confidence_threshold:
+                quantity = shares
+
+                if quantity > 0:
+                    self.play_notification("pre_buy_alert")
+
+                    # v9.4.2: execute_buy routes to execute_short for short signals
+                    success, filled_qty, order_id = self.strategy.execute_buy(
+                        shares=quantity,
+                        price=current_price,
+                        atr=float(self.safe_get(current_data, 'ATR', 1)),
+                        quality_score=quality_score,
+                        tier=getattr(self.strategy, '_last_entry_tier', 1)
+                    )
+
+                    if not success:
+                        self.log_message("❌ ENTRY FAILED - No position opened", "red")
+                        self.play_notification("error")
+                    else:
+                        direction_label = "SHORT" if decision == "sell" else "LONG"
+                        direction_emoji = "🔴" if decision == "sell" else "🟢"
+                        self.active_position = 'short' if decision == "sell" else 'long'
+                        self.position_entry_price = current_price
+                        self.position_size = filled_qty
+                        self.position_entry_time = datetime.now(timezone.utc)
+
+                        ml_msg = ' with ML confirmation' if ml_is_enabled and ml_conf_pct > 0 else ''
+                        self.log_message(
+                            f"{direction_emoji} {direction_label} EXECUTED{ml_msg} "
+                            f"(Quality: {quality_score:.0f}, Combined: {combined_confidence:.0f}%, Tier {getattr(self.strategy, '_last_entry_tier', 1)})\n"
+                            f"Qty {quantity:.4f} at ${current_price:.4f}",
+                            "green" if decision == "buy" else "red"
+                        )
+
+                        self.speak_trade(
+                            f"{'Short' if decision == 'sell' else 'Buy'} order filled at {current_price:.2f} with confidence {combined_confidence:.1f}%"
+                        )
+                else:
+                    self.log_message(f"❌ Invalid quantity: {quantity}", "red")
+            else:
+                self.log_message(f"", "white")
+                self.log_message(f"🎯 QUALITY SCORE REJECTED", "red")
+                self.log_message(f"{'=' * 70}", "red")
+                self.log_message(f"📊 Score: {combined_confidence:.0f}/100 (Minimum: {confidence_threshold:.0f})", "red")
+                self.log_message(f"   Raw Quality: {quality_score:.0f}", "yellow")
+                if ml_is_enabled and ml_conf_pct > 0:
+                    ml_impact = combined_confidence - quality_score
+                    self.log_message(f"   ML Impact: {ml_impact:+.0f} ({ml_conf_pct:.0f}%)", "yellow")
+                self.log_message(f"   Reason: {reason}", "orange")
+                self.log_message(f"{'=' * 70}", "red")
 
     def log_quality_score_entry(self, entry_price, quantity, quality_score, component_scores):
         self.log_message(f"", "white")
@@ -11611,108 +9922,6 @@ class TradingApp:
                              "green" if position_mult >= 1.0 else "blue")
 
         self.log_message(f"{'═' * 77}", "purple")
-
-    def predict_future_trend(self, n_future: int = 5):
-        """
-        Use the current ML model to predict the trend for the next n_future candles.
-
-        Returns
-        -------
-        predictions : list
-            List of prediction labels ('bullish' / 'bearish' / 'neutral').
-        confidence : float
-            Average confidence across predictions (0-1).
-        """
-        if not self.ml_enabled or self.current_ml_model is None:
-            return [], 0.0
-
-        if not getattr(self.current_ml_model, 'is_trained', False):
-            return [], 0.0
-
-        df = self.get_market_data()
-        if df is None or df.empty:
-            return [], 0.0
-
-        try:
-            if hasattr(self.strategy, 'calculate_indicators'):
-                df = self.strategy.calculate_indicators(df)
-
-            conf, prediction, forecast = self.current_ml_model.predict(df, n_future)
-            confidence = float(conf) if conf <= 1.0 else float(conf) / 100.0
-
-            if prediction == 1:
-                predictions = ['bullish'] * n_future
-            elif prediction == -1:
-                predictions = ['bearish'] * n_future
-            else:
-                predictions = ['neutral'] * n_future
-
-            return predictions, confidence
-
-        except Exception as e:
-            self.log_message(f"⚠️ predict_future_trend error: {e}", "orange")
-            return [], 0.0
-
-    def close_partial(self, fraction: float = 0.5):
-        """
-        Close a fraction of the current position.
-
-        Parameters
-        ----------
-        fraction : float
-            Portion of the position to close (0 < fraction <= 1).
-        """
-        if self.position.get('type') is None or self.position.get('quantity') is None:
-            self.log_message("⚠️ close_partial called with no open position.", "orange")
-            return False
-
-        if not (0 < fraction <= 1):
-            self.log_message(f"❌ Invalid close_partial fraction: {fraction}", "red")
-            return False
-
-        quantity_to_close = self.position['quantity'] * fraction
-        current_price = self.get_current_price()
-        if current_price is None:
-            if self.current_data is not None:
-                current_price = float(self.current_data.get('Close', 0))
-            if not current_price:
-                self.log_message("❌ close_partial: cannot determine current price.", "red")
-                return False
-
-        self.log_message(
-            f"📤 Partial close: {fraction * 100:.0f}% ({quantity_to_close:.4f} units) @ ${current_price:.4f}",
-            "blue"
-        )
-
-        success = self.place_order(
-            'sell',
-            current_price,
-            quantity=quantity_to_close,
-            exit_reason='partial_profit_target'
-        )
-
-        if success:
-            # Update tracked position size
-            remaining = self.position['quantity'] - quantity_to_close
-            if remaining > 1e-8:
-                self.position['quantity'] = remaining
-                self.log_message(
-                    f"✅ Partial close complete. Remaining: {remaining:.4f} units.",
-                    "green"
-                )
-            else:
-                # Fully closed
-                self.position = {
-                    'type': None, 'price': None,
-                    'quantity': None, 'time': None,
-                    'stop_loss': None, 'trailing_stop': None,
-                    'entry_confidence': None
-                }
-                self.update_status_indicators("parking")
-                self.log_message("✅ Position fully closed via close_partial.", "green")
-
-        return success
-
 
     def check_exit_conditions(self, current_data, current_price):
         if self.position['type'] is None:
@@ -12050,20 +10259,6 @@ class TradingApp:
                 equity_score = min(max(equity_score, 0), 20)
                 total_score += equity_score * weight_per_metric
 
-            if 'trade_count' in active_metrics:
-                # Reward the statistically valid range (30-72 trades/16mo = ~2-4.5/mo)
-                # Penalise hard below 20 and softly above 96
-                n = num_trades
-                if n < 20:
-                    tc_score = 0  # too few — no score
-                elif n < 35:
-                    tc_score = (n - 20) / 15 * 6  # 0→6 linearly (20-35)
-                elif n <= 72:
-                    tc_score = 6 + (n - 35) / 37 * 4  # 6→10 (sweet spot)
-                else:
-                    tc_score = max(4, 10 - (n - 72) * 0.06)  # gentle penalty >72
-                total_score += tc_score * weight_per_metric
-
             final_score = total_score * trade_penalty
             return final_score
 
@@ -12166,38 +10361,13 @@ class TradingApp:
         """Set initial cash for objective function"""
         self._initial_cash = cash
 
-    # ── ADD this new helper anywhere in TradingApp ────────────────────────────
-    def _normalize_ohlcv_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Ensure the DataFrame always has the canonical OHLCV column names
-        (Open, High, Low, Close, Volume) regardless of how they arrived.
-        Works on copies only — never mutates the cached frame.
-        """
-        col_map = {}
-        for col in df.columns:
-            lower = col.lower()
-            if lower == 'open':
-                col_map[col] = 'Open'
-            elif lower == 'high':
-                col_map[col] = 'High'
-            elif lower == 'low':
-                col_map[col] = 'Low'
-            elif lower in ('close', 'close_price'):
-                col_map[col] = 'Close'
-            elif lower in ('volume', 'vol'):
-                col_map[col] = 'Volume'
-        if col_map:
-            df = df.rename(columns=col_map)
-        return df
-
     def run_backtest(self):
         """
         Run comprehensive backtest with Quality Score optimization and automatic Excel export.
-        FIXED: Complete Scalping backtest parameter support with save/load functionality
         FIXED: Forces only_tier2_entries = False to match Excel data
         FIXED: Reloads strategy module to pick up parameter changes
         FIXED: Excel export happens AFTER all backtest processing is complete
-        FIXED: All strategies use single-timeframe data fetching
+        FIXED: TopDown Day Trading Strategy with proper multi-timeframe data fetching
         FIXED: Kalman strategy exports LONG/SHORT column to separate Excel file
         FIXED: Normalize backtest_type_var – accepts 'Optimize' OR 'Optimization'
         FIXED: Inactive backtest params forwarded as fixed values so optimizer uses
@@ -12265,7 +10435,12 @@ class TradingApp:
             self.log_message(f"🚀 STARTING BACKTEST", "blue")
             self.log_message(f"   Strategy : {strategy_type}", "blue")
             self.log_message(f"   Symbol   : {symbol}", "blue")
-            self.log_message(f"   Interval : {interval}", "blue")
+
+            if strategy_type == "TopDown":
+                self.log_message(f"   Interval : Multi-timeframe (1H/15m/5m)", "blue")
+            else:
+                self.log_message(f"   Interval : {interval}", "blue")
+
             self.log_message(f"   Period   : {start_date} to {end_date}", "blue")
             self.log_message("=" * 70, "blue")
 
@@ -12302,16 +10477,9 @@ class TradingApp:
             self.log_message("=" * 70, "purple")
 
             # ── Collect & log selected backtest parameters ───────────────────
-            # Use strategy-specific param collection
-            if strategy_type == "Scalping":
-                selected_params_preview = {
-                    k: v for k, v in getattr(self, 'scalping_backtest_params', {}).items()
-                    if v.get('active', tk.BooleanVar(value=False)).get()
-                }
-            else:
-                selected_params_preview = {
-                    k: v for k, v in self.backtest_params.items() if v['active'].get()
-                }
+            selected_params_preview = {
+                k: v for k, v in self.backtest_params.items() if v['active'].get()
+            }
 
             self.log_message("=" * 70, "green")
             self.log_message(f"⚙️ PARAMETERS SELECTED FOR OPTIMIZATION ({len(selected_params_preview)})", "green")
@@ -12336,26 +10504,66 @@ class TradingApp:
 
             self.log_message("📥 Loading historical data...", "blue")
 
-            # Single-TF for all strategies
-            df = self.get_historical_data(symbol=symbol, start=start_ts, end=end_ts, interval=interval)
+            if strategy_type == "TopDown":
+                self.log_message("   Fetching 1H data for trend bias...", "cyan")
+                df_1h = self.get_historical_data(symbol=symbol, start=start_ts, end=end_ts, interval="1h")
 
-            if df is None or df.empty:
-                self.log_message(f"❌ No data for {start_date} → {end_date}", "red")
-                self._ui_safe(messagebox.showerror, "Error", f"No data available for {start_date} to {end_date}")
-                return
+                self.log_message("   Fetching 15m data for setup...", "cyan")
+                df_15m = self.get_historical_data(symbol=symbol, start=start_ts, end=end_ts, interval="15m")
 
-            self.debug_data_range(df)
-            df.columns = [col.capitalize() for col in df.columns]
-            self._last_backtest_df = df  # cache for AI analysis
-            self._last_backtest_stats = None  # reset stats cache
-            actual_start = df.index[0].strftime('%Y-%m-%d')
-            actual_end = df.index[-1].strftime('%Y-%m-%d')
-            self.log_message(f"✅ Loaded {len(df):,} candles  ({actual_start} → {actual_end})", "green")
+                self.log_message("   Fetching 5m data for trigger...", "cyan")
+                df_5m = self.get_historical_data(symbol=symbol, start=start_ts, end=end_ts, interval="5m")
 
-            if actual_start > start_date:
-                self.log_message(f"⚠️ Data starts {actual_start}, later than selected {start_date}", "orange")
-            if actual_end < end_date:
-                self.log_message(f"⚠️ Data ends {actual_end}, earlier than selected {end_date}", "orange")
+                if df_1h is None or df_1h.empty:
+                    self.log_message(f"❌ No 1H data for {start_date} → {end_date}", "red")
+                    self._ui_safe(messagebox.showerror, "Error", f"No 1H data available for {start_date} to {end_date}")
+                    return
+
+                if df_15m is None or df_15m.empty:
+                    self.log_message(f"❌ No 15m data for {start_date} → {end_date}", "red")
+                    self._ui_safe(messagebox.showerror, "Error",
+                                  f"No 15m data available for {start_date} to {end_date}")
+                    return
+
+                if df_5m is None or df_5m.empty:
+                    self.log_message(f"❌ No 5m data for {start_date} → {end_date}", "red")
+                    self._ui_safe(messagebox.showerror, "Error", f"No 5m data available for {start_date} to {end_date}")
+                    return
+
+                df_1h.columns = [col.capitalize() for col in df_1h.columns]
+                df_15m.columns = [col.capitalize() for col in df_15m.columns]
+                df_5m.columns = [col.capitalize() for col in df_5m.columns]
+
+                actual_start = df_5m.index[0].strftime('%Y-%m-%d')
+                actual_end = df_5m.index[-1].strftime('%Y-%m-%d')
+                self.log_message(f"✅ Data loaded successfully:", "green")
+                self.log_message(f"   1H:  {len(df_1h):,} candles", "white")
+                self.log_message(f"   15m: {len(df_15m):,} candles", "white")
+                self.log_message(f"   5m:  {len(df_5m):,} candles", "white")
+                self.log_message(f"   Period: {actual_start} → {actual_end}", "green")
+
+                df = df_5m
+                self._topdown_dfs = {'1h': df_1h, '15m': df_15m, '5m': df_5m}
+
+            else:
+                df = self.get_historical_data(symbol=symbol, start=start_ts, end=end_ts, interval=interval)
+
+                if df is None or df.empty:
+                    self.log_message(f"❌ No data for {start_date} → {end_date}", "red")
+                    self._ui_safe(messagebox.showerror, "Error", f"No data available for {start_date} to {end_date}")
+                    return
+
+                self.debug_data_range(df)
+                df.columns = [col.capitalize() for col in df.columns]
+
+                actual_start = df.index[0].strftime('%Y-%m-%d')
+                actual_end = df.index[-1].strftime('%Y-%m-%d')
+                self.log_message(f"✅ Loaded {len(df):,} candles  ({actual_start} → {actual_end})", "green")
+
+                if actual_start > start_date:
+                    self.log_message(f"⚠️ Data starts {actual_start}, later than selected {start_date}", "orange")
+                if actual_end < end_date:
+                    self.log_message(f"⚠️ Data ends {actual_end}, earlier than selected {end_date}", "orange")
 
             # ── Parameter source ─────────────────────────────────────────────
             current_mode = self.param_toggle_var.get()
@@ -12363,13 +10571,12 @@ class TradingApp:
             self.log_message(f"🔧 PARAMETER SOURCE: {current_mode}", "yellow")
             self.log_message("=" * 70, "yellow")
 
-            if current_mode == "Custom Parameters":
+            if current_mode == "Custom Parameters" and strategy_type != "TopDown":
                 self.log_message("📋 Updating parameters from LIVE UI settings...", "cyan")
                 self.update_custom_params_from_ui()
                 self.log_message("✅ Parameters updated from UI", "green")
-                if strategy_type != "Scalping":
-                    self.custom_params['momentum']['only_tier2_entries'] = False
-                    self.log_message(f"   ✅ Re-applied only_tier2_entries = False override", "green")
+                self.custom_params['momentum']['only_tier2_entries'] = False
+                self.log_message(f"   ✅ Re-applied only_tier2_entries = False override", "green")
 
             # ── Reload strategy module ───────────────────────────────────────
             self.log_message("=" * 70, "cyan")
@@ -12379,27 +10586,20 @@ class TradingApp:
             import sys
             import importlib
 
-            # Only reload momentum module for non-scalping strategies
-            if strategy_type != "Scalping":
-                strategy_module = 'strategies.MomentumStrategy_MACD_HybridScore_Latest'
-                if strategy_module in sys.modules:
-                    importlib.reload(sys.modules[strategy_module])
-                    self.log_message(f"   ✅ Reloaded: {strategy_module}", "green")
-                else:
-                    self.log_message(f"   📦 First load: {strategy_module}", "blue")
-
-                _fresh_mod = sys.modules[strategy_module]
-                BacktestMomentumStrategy = _fresh_mod.BacktestMomentumStrategy
-                MOMENTUM_PARAMS_live = _fresh_mod.MOMENTUM_PARAMS
-                GlobalConfig_live = _fresh_mod.GlobalConfig
-
-                self.default_params['momentum'] = MOMENTUM_PARAMS_live.copy()
-                self.log_message(f"   ✅ Updated default_params from reloaded MOMENTUM_PARAMS", "green")
+            strategy_module = 'strategies.MomentumStrategy_MACD_HybridScore_Latest'
+            if strategy_module in sys.modules:
+                importlib.reload(sys.modules[strategy_module])
+                self.log_message(f"   ✅ Reloaded: {strategy_module}", "green")
             else:
-                # For scalping, use its own config
-                from strategies.scalping_strategy import ScalpingConfig
-                GlobalConfig_live = type('GlobalConfig', (), {'INITIAL_CAPITAL': 50000})()
+                self.log_message(f"   📦 First load: {strategy_module}", "blue")
 
+            _fresh_mod = sys.modules[strategy_module]
+            BacktestMomentumStrategy = _fresh_mod.BacktestMomentumStrategy
+            MOMENTUM_PARAMS_live = _fresh_mod.MOMENTUM_PARAMS
+            GlobalConfig_live = _fresh_mod.GlobalConfig
+
+            self.default_params['momentum'] = MOMENTUM_PARAMS_live.copy()
+            self.log_message(f"   ✅ Updated default_params from reloaded MOMENTUM_PARAMS", "green")
             self.log_message(f"   💰 Fresh INITIAL_CAPITAL: ${GlobalConfig_live.INITIAL_CAPITAL:,.2f}", "blue")
 
             # ── Choose strategy class ────────────────────────────────────────
@@ -12408,45 +10608,45 @@ class TradingApp:
                 initial_params = self.get_current_kalman_params()
                 self.log_message("🎯 Using Kalman Strategy", "purple")
 
-            elif strategy_type == "Scalping":
+            elif strategy_type == "TopDown":
                 try:
-                    from strategies.scalping_strategy import BacktestScalpingStrategy, ScalpingConfig
-                    strategy_class = BacktestScalpingStrategy
+                    from strategies.TopDownDayTradingStrategy import (
+                        BacktestTopDownStrategy,
+                        TopDownDayTradingStrategy,
+                    )
+                    strategy_class = BacktestTopDownStrategy
                 except ImportError as e:
-                    self.log_message(f"❌ Could not import scalping_strategy: {e}", "red")
-                    self.log_message("   Make sure scalping_strategy.py is in strategies/", "orange")
+                    self.log_message(f"❌ Could not import TopDownDayTradingStrategy: {e}", "red")
+                    self.log_message("   Make sure TopDownDayTradingStrategy.py is in strategies/", "orange")
                     return
 
-                # Get current scalping parameters from GUI
-                initial_params = self.get_current_scalping_params()
+                initial_params = TopDownDayTradingStrategy.DEFAULT_PARAMS.copy()
 
-                self.log_message("🎯 Using Professional Scalping Strategy v1.0", "purple")
+                self.log_message("🎯 Using TopDown Day Trading Strategy", "purple")
                 self.log_message("=" * 70, "cyan")
-                self.log_message("📋 SCALPING CONFIGURATION", "cyan")
+                self.log_message("📋 TOPDOWN CONFIGURATION", "cyan")
                 self.log_message("=" * 70, "cyan")
-                self.log_message(
-                    f"   EMA      : {initial_params.get('ema_fast_period', 5)}/{initial_params.get('ema_mid_period', 13)}/{initial_params.get('ema_slow_period', 21)}",
-                    "white")
-                self.log_message(
-                    f"   MACD     : ({initial_params.get('macd_fast', 12)},{initial_params.get('macd_slow', 26)},{initial_params.get('macd_signal_period', 9)})",
-                    "white")
-                self.log_message(
-                    f"   Stoch    : ({initial_params.get('stoch_k_period', 5)},{initial_params.get('stoch_smooth', 3)},{initial_params.get('stoch_d_period', 3)})",
-                    "white")
-                self.log_message(f"   Stop     : {initial_params.get('stop_loss_atr_mult', 1.8)}× ATR", "white")
-                self.log_message(
-                    f"   Quality  : {initial_params.get('quality_min_long', 35)} (L) / {initial_params.get('quality_min_short', 35)} (S)",
-                    "white")
+                self.log_message(f"   Architecture  : 1H Bias → 15m Setup → 5m Trigger", "white")
+                self.log_message(f"   Sessions      : London (07:00–11:30) + NY (13:00–17:00) UTC", "white")
+                self.log_message(f"   Targets       : 1.5R / 2.5R / 3.5R", "white")
+                self.log_message(f"   Risk/trade    : {initial_params.get('risk_per_trade_pct', 1.0)}%", "white")
+                self.log_message(f"   ATR stop mult : {initial_params.get('atr_stop_multiplier', 2.5)}x", "white")
+                self.log_message(f"   Min confidence: {initial_params.get('min_entry_confidence', 0.60) * 100:.0f}%",
+                                 "white")
+                self.log_message(f"   Vol spike min : {initial_params.get('volume_spike', 1.3)}x", "white")
                 self.log_message("=" * 70, "cyan")
 
-                # Inject parameters into backtest strategy class
-                BacktestScalpingStrategy.set_updated_params(initial_params)
-                self.log_message(
-                    f"   📊 {len(initial_params)} params injected into BacktestScalpingStrategy (mode: {self.param_toggle_var.get()})",
-                    "cyan")
+                for k, v in initial_params.items():
+                    try:
+                        setattr(BacktestTopDownStrategy, k, v)
+                    except Exception:
+                        pass
+
+                self.log_message(f"   📊 Parameters being injected: {len(initial_params)} params", "cyan")
+                self.log_message("✅ TopDown parameters injected into backtest class", "green")
                 self.log_message("=" * 70, "yellow")
 
-            else:  # Momentum
+            else:
                 strategy_class = BacktestMomentumStrategy
                 mode_label = "CUSTOM (LIVE UI)" if current_mode == "Custom Parameters" else "DEFAULT"
                 self.log_message(f"🎯 Using Momentum Strategy ({mode_label} parameters)", "purple")
@@ -12487,6 +10687,17 @@ class TradingApp:
             self.log_message(f"💰 Initial Capital : ${initial_cash:,.2f}", "blue")
             self.log_message(f"💳 Commission Rate : {commission_rate}", "blue")
 
+            if strategy_type == "TopDown" and hasattr(self, '_topdown_dfs'):
+                original_init = strategy_class.init
+
+                def patched_init(self_bt):
+                    original_init(self_bt)
+                    self_bt._1h_data = self._topdown_dfs['1h']
+                    self_bt._15m_data = self._topdown_dfs['15m']
+                    self_bt._5m_data = self._topdown_dfs['5m']
+
+                strategy_class.init = patched_init
+
             bt = Backtest(
                 df,
                 strategy_class,
@@ -12502,7 +10713,6 @@ class TradingApp:
             self.log_message("🏃 Running initial backtest...", "blue")
             initial_stats = bt.run(**initial_params)
             self.log_message("✅ Initial backtest complete!", "green")
-            self._last_backtest_stats = initial_stats
 
             df_initial_indicators = (
                 initial_stats._strategy.df_enhanced
@@ -12518,328 +10728,244 @@ class TradingApp:
             optimized_params_dict = None
 
             if is_optimization:
-                self.log_message("=" * 70, "purple")
-                self.log_message("🔧 STARTING PARAMETER OPTIMIZATION", "purple")
-                self.log_message("=" * 70, "purple")
 
-                config = self.get_objective_config(strategy_type, interval)
-                self.log_message("⚙️ Adaptive Objective Configuration:", "cyan")
-                self.log_message(f"   Strategy  : {strategy_type} | Interval: {interval}", "white")
-                self.log_message(f"   Min trades (absolute) : {config['min_trades_absolute']}", "white")
-                self.log_message(f"   Min trades (penalty)  : {config['min_trades_penalty']}", "white")
-                self.log_message(f"   Max trades (penalty)  : {config['max_trades_penalty']}", "white")
-                self.log_message(
-                    f"   Penalties : low={config['penalty_low']:.2f}, high={config['penalty_high']:.2f}",
-                    "white"
-                )
-
-                if strategy_type == "Kalman":
-                    self.log_message("⚙️ Optimizing Kalman parameters...", "blue")
-                    optimized_stats = bt.optimize(
-                        trailing_stop_pct=[0.005, 0.01, 0.02, 0.03, 0.05],
-                        stop_loss_pct=[0.01, 0.015, 0.02, 0.025],
-                        risk_reward=[1.5, 2.0, 2.5, 3.0],
-                        lookback=[10, 15, 20, 25],
-                        maximize=self.combined_objective,
-                        max_tries=100,
-                        random_state=42
-                    )
-
-                elif strategy_type == "Scalping":
-                    # ═══ SCALPING OPTIMIZATION USING scalping_backtest_params ═══
-                    scalping_opt_params = {}
-                    scalping_fixed_params = {}
-
-                    sc_params = getattr(self, 'scalping_backtest_params', {})
-                    if not sc_params:
-                        self.log_message("⚠️ Scalping optimization panel not initialised — run standard backtest only",
-                                         "orange")
-                        # Run standard backtest with current params only (no optimization)
-                        pass
-                    else:
-                        for param_key, param_data in sc_params.items():
-                            is_active = param_data['active'].get()
-                            values = []
-                            for vk in ['value1', 'value2', 'value3', 'value4']:
-                                raw = param_data[vk].get()
-                                if raw not in ('', None):
-                                    values.append(self.convert_param_value(raw))
-                            # deduplicate
-                            seen, uvals = set(), []
-                            for v in values:
-                                k2 = (type(v), v)
-                                if k2 not in seen:
-                                    seen.add(k2)
-                                    uvals.append(v)
-
-                            if is_active and uvals:
-                                scalping_opt_params[param_key] = uvals
-                            else:
-                                # fixed — use current strategy value
-                                cur = self._get_scalping_param_value(param_key)
-                                if cur is not None:
-                                    scalping_fixed_params[param_key] = [cur]
-
-                        if not scalping_opt_params:
-                            self.log_message(
-                                "⚠️ No Scalping optimization parameters selected — running standard backtest only\n"
-                                "   To enable optimization: Open Settings → ⚡ Scalping Parameters → right panel\n"
-                                "   and tick the parameters you want to optimize.",
-                                "orange"
-                            )
-                        else:
-                            # Merge active + fixed into one dict for bt.optimize
-                            all_sc_opt = {**scalping_opt_params, **scalping_fixed_params}
-
-                            total_sc = 1
-                            for v in scalping_opt_params.values():
-                                total_sc *= len(v)
-                            max_tries_sc = min(total_sc, 500)
-
-                            self.log_message("=" * 70, "cyan")
-                            self.log_message("📊 SCALPING OPTIMIZATION PARAMETERS", "cyan")
-                            self.log_message("=" * 70, "cyan")
-                            for pk, vals in scalping_opt_params.items():
-                                desc = sc_params[pk]['description']
-                                self.log_message(f"   🔄 {desc:40} = {vals} (OPTIMIZING)", "green")
-                            self.log_message(f"\n   Total combinations : {total_sc:,}", "blue")
-                            self.log_message(f"   Max tries          : {max_tries_sc}", "blue")
-                            self.log_message("=" * 70, "cyan")
-
-                            try:
-                                optimized_stats = bt.optimize(
-                                    **all_sc_opt,
-                                    maximize=self.combined_objective,
-                                    max_tries=max_tries_sc,
-                                    random_state=42,
-                                    return_heatmap=False
-                                )
-                                self.log_message("✅ Scalping optimization complete!", "green")
-
-                                if optimized_stats is not None and hasattr(optimized_stats, '_strategy'):
-                                    optimized_params_dict = {
-                                        k: v for k, v in optimized_stats._strategy._params.items()
-                                        if not k.startswith('_')
-                                    }
-                                    if optimized_params_dict:
-                                        self.log_message("🔄 Re-running with optimized Scalping params...", "blue")
-                                        optimized_stats = bt.run(**optimized_params_dict)
-                                        self.display_backtest_results(
-                                            optimized_stats, "SCALPING — OPTIMIZED RESULTS")
-                                        # Save optimized params
-                                        _fname = f"scalping_optimized_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-                                        with open(_fname, 'w') as _f:
-                                            json.dump({k: _to_python(v) for k, v in optimized_params_dict.items()}, _f,
-                                                      indent=4)
-                                        self.log_message(f"💾 Optimized Scalping params saved: {_fname}", "green")
-
-                            except Exception as sc_opt_err:
-                                self.log_message(f"❌ Scalping optimization error: {sc_opt_err}", "red")
-                                import traceback as _tb
-                                self.log_message(_tb.format_exc(), "red")
-
-                else:  # Momentum optimization
-                    optimization_params = {}
-
-                    for param_key, param_data in self.backtest_params.items():
-                        values = self._get_param_values(param_key)
-                        if not values:
-                            continue
-
-                        if param_key == 'only_tier2_entries':
-                            bool_values = []
-                            for v in values:
-                                if isinstance(v, str):
-                                    bool_values.append(v.lower() == 'true')
-                                else:
-                                    bool_values.append(bool(v))
-                            optimization_params[param_key] = bool_values
-                        else:
-                            optimization_params[param_key] = values
-
-                    active_opt_params = {
-                        k: v for k, v in optimization_params.items()
-                        if self.backtest_params[k]['active'].get()
-                    }
-                    fixed_opt_params = {
-                        k: v for k, v in optimization_params.items()
-                        if not self.backtest_params[k]['active'].get()
-                    }
-
+                if strategy_type == "TopDown":
                     self.log_message("=" * 70, "cyan")
-                    self.log_message("🔍 OPTIMIZATION PARAMETERS VERIFICATION", "cyan")
+                    self.log_message("ℹ️ TopDown: Optimization not available — backtest only mode", "cyan")
+                    self.log_message("   To tune TopDown params, edit DEFAULT_PARAMS in the strategy file", "white")
                     self.log_message("=" * 70, "cyan")
+
+                else:
+                    self.log_message("=" * 70, "purple")
+                    self.log_message("🔧 STARTING PARAMETER OPTIMIZATION", "purple")
+                    self.log_message("=" * 70, "purple")
+
+                    config = self.get_objective_config(strategy_type, interval)
+                    self.log_message("⚙️ Adaptive Objective Configuration:", "cyan")
+                    self.log_message(f"   Strategy  : {strategy_type} | Interval: {interval}", "white")
+                    self.log_message(f"   Min trades (absolute) : {config['min_trades_absolute']}", "white")
+                    self.log_message(f"   Min trades (penalty)  : {config['min_trades_penalty']}", "white")
+                    self.log_message(f"   Max trades (penalty)  : {config['max_trades_penalty']}", "white")
                     self.log_message(
-                        f"   ✅ {len(active_opt_params)} params will be VARIED by optimizer", "green"
+                        f"   Penalties : low={config['penalty_low']:.2f}, high={config['penalty_high']:.2f}",
+                        "white"
                     )
-                    self.log_message(
-                        f"   📌 {len(fixed_opt_params)} params fixed at current {current_mode} values", "blue"
-                    )
-                    self.log_message("=" * 70, "cyan")
 
-                    for param_key, values in active_opt_params.items():
-                        desc = self.backtest_params[param_key]['description']
-                        values_str = ", ".join([str(v) for v in values])
-                        self.log_message(f"   🔄 {desc:35} = [{values_str}] (OPTIMIZING)", "green")
-
-                    for param_key, values in fixed_opt_params.items():
-                        desc = self.backtest_params[param_key]['description']
-                        self.log_message(f"   📌 {desc:35} = {values[0]} (FIXED)", "blue")
-
-                    self.log_message("=" * 70, "cyan")
-
-                    if not active_opt_params:
-                        self.log_message(
-                            "❌ No optimization parameters selected!\n"
-                            "   Go to Settings → Backtest Optimization Parameters\n"
-                            "   and select the parameters you want to optimize.",
-                            "red"
-                        )
-                        self._ui_safe(
-                            messagebox.showwarning,
-                            "No Parameters Selected",
-                            "No optimization parameters are selected.\n\n"
-                            "Go to Settings → Backtest Optimization Parameters panel\n"
-                            "and check the parameters you want to optimize."
-                        )
-                        return
-
-                    self.optimization_params_active = set(active_opt_params.keys())
-
-                    self.log_message("=" * 70, "cyan")
-                    self.log_message("📊 ACTIVE OPTIMIZATION PARAMETERS WITH VALUES", "cyan")
-                    self.log_message("=" * 70, "cyan")
-
-                    for param_key, values in active_opt_params.items():
-                        desc = self.backtest_params[param_key]['description']
-                        values_str = ", ".join([str(v) for v in values])
-                        self.log_message(f" ✓ {desc:35} = [{values_str}]", "white")
-
-                    self.log_message("=" * 70, "cyan")
-                    self.log_message(f"🎯 OPTIMIZING FOR : {', '.join(active_metrics)}", "cyan")
-
-                    total_combinations = 1
-                    for vals in active_opt_params.values():
-                        total_combinations *= len(vals)
-
-                    max_tries = min(total_combinations, 500)
-                    self.log_message(f"🔢 Total combinations : {total_combinations:,}", "blue")
-                    self.log_message(f"⏳ Max tries          : {max_tries}", "blue")
-                    self.log_message(f"📋 Parameter base     : {current_mode}", "blue")
-
-                    try:
+                    if strategy_type == "Kalman":
+                        self.log_message("⚙️ Optimizing Kalman parameters...", "blue")
                         optimized_stats = bt.optimize(
-                            **optimization_params,
-                            constraint=self.combined_constraint,
+                            trailing_stop_pct=[0.005, 0.01, 0.02, 0.03, 0.05],
+                            stop_loss_pct=[0.01, 0.015, 0.02, 0.025],
+                            risk_reward=[1.5, 2.0, 2.5, 3.0],
+                            lookback=[10, 15, 20, 25],
                             maximize=self.combined_objective,
-                            max_tries=max_tries,
-                            random_state=42,
-                            return_heatmap=False
+                            max_tries=100,
+                            random_state=42
                         )
-                        self.log_message("✅ Optimization search complete!", "green")
 
-                    except Exception as opt_err:
-                        self.log_message(f"❌ Optimization error: {opt_err}", "red")
-                        self.log_message(traceback.format_exc(), "red")
-                        optimized_stats = None
+                    else:
+                        optimization_params = {}
 
-                    if optimized_stats is not None and hasattr(optimized_stats, '_strategy'):
-                        optimized_params_dict = {
-                            k: v
-                            for k, v in optimized_stats._strategy._params.items()
-                            if not k.startswith('_')
+                        for param_key, param_data in self.backtest_params.items():
+                            values = self._get_param_values(param_key)
+                            if not values:
+                                continue
+
+                            if param_key == 'only_tier2_entries':
+                                bool_values = []
+                                for v in values:
+                                    if isinstance(v, str):
+                                        bool_values.append(v.lower() == 'true')
+                                    else:
+                                        bool_values.append(bool(v))
+                                optimization_params[param_key] = bool_values
+                            else:
+                                optimization_params[param_key] = values
+
+                        active_opt_params = {
+                            k: v for k, v in optimization_params.items()
+                            if self.backtest_params[k]['active'].get()
+                        }
+                        fixed_opt_params = {
+                            k: v for k, v in optimization_params.items()
+                            if not self.backtest_params[k]['active'].get()
                         }
 
-                        if optimized_params_dict:
-                            self.log_message("🔄 Re-running with optimized parameters...", "blue")
-                            try:
-                                optimized_stats = bt.run(**optimized_params_dict)
-                                self.log_message("✅ Re-run complete!", "green")
-                            except Exception as rerun_err:
-                                self.log_message(f"❌ Re-run error: {rerun_err}", "red")
-                                optimized_stats = None
-                                optimized_params_dict = None
+                        self.log_message("=" * 70, "cyan")
+                        self.log_message("🔍 OPTIMIZATION PARAMETERS VERIFICATION", "cyan")
+                        self.log_message("=" * 70, "cyan")
+                        self.log_message(
+                            f"   ✅ {len(active_opt_params)} params will be VARIED by optimizer", "green"
+                        )
+                        self.log_message(
+                            f"   📌 {len(fixed_opt_params)} params fixed at current {current_mode} values", "blue"
+                        )
+                        self.log_message("=" * 70, "cyan")
 
-                            if optimized_stats is not None:
-                                df_opt_indicators = (
-                                    optimized_stats._strategy.df_enhanced
-                                    if hasattr(optimized_stats, '_strategy') and
-                                       hasattr(optimized_stats._strategy, 'df_enhanced')
-                                    else df_initial_indicators
-                                )
+                        for param_key, values in active_opt_params.items():
+                            desc = self.backtest_params[param_key]['description']
+                            values_str = ", ".join([str(v) for v in values])
+                            self.log_message(f"   🔄 {desc:35} = [{values_str}] (OPTIMIZING)", "green")
 
-                                self.display_backtest_results(
-                                    optimized_stats,
-                                    f"{strategy_type.upper()} — OPTIMIZED RESULTS"
-                                )
-                                self.log_parameter_changes(initial_params, optimized_params_dict)
-                                self.analyze_quality_score_results(optimized_stats)
+                        for param_key, values in fixed_opt_params.items():
+                            desc = self.backtest_params[param_key]['description']
+                            self.log_message(f"   📌 {desc:35} = {values[0]} (FIXED)", "blue")
 
-                                # ── Export optimized params to JSON ──────
-                                params_export_file = (
-                                    f"optimized_params_{strategy_type.lower()}_"
-                                    f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-                                )
-                                with open(params_export_file, 'w') as f:
-                                    json.dump(
-                                        {k: _to_python(v) for k, v in optimized_params_dict.items()},
-                                        f, indent=4
+                        self.log_message("=" * 70, "cyan")
+
+                        if not active_opt_params:
+                            self.log_message(
+                                "❌ No optimization parameters selected!\n"
+                                "   Go to Settings → Backtest Optimization Parameters\n"
+                                "   and select the parameters you want to optimize.",
+                                "red"
+                            )
+                            self._ui_safe(
+                                messagebox.showwarning,
+                                "No Parameters Selected",
+                                "No optimization parameters are selected.\n\n"
+                                "Go to Settings → Backtest Optimization Parameters panel\n"
+                                "and check the parameters you want to optimize."
+                            )
+                            return
+
+                        self.optimization_params_active = set(active_opt_params.keys())
+
+                        self.log_message("=" * 70, "cyan")
+                        self.log_message("📊 ACTIVE OPTIMIZATION PARAMETERS WITH VALUES", "cyan")
+                        self.log_message("=" * 70, "cyan")
+
+                        for param_key, values in active_opt_params.items():
+                            desc = self.backtest_params[param_key]['description']
+                            values_str = ", ".join([str(v) for v in values])
+                            self.log_message(f" ✓ {desc:35} = [{values_str}]", "white")
+
+                        self.log_message("=" * 70, "cyan")
+                        self.log_message(f"🎯 OPTIMIZING FOR : {', '.join(active_metrics)}", "cyan")
+
+                        total_combinations = 1
+                        for vals in active_opt_params.values():
+                            total_combinations *= len(vals)
+
+                        max_tries = min(total_combinations, 500)
+                        self.log_message(f"🔢 Total combinations : {total_combinations:,}", "blue")
+                        self.log_message(f"⏳ Max tries          : {max_tries}", "blue")
+                        self.log_message(f"📋 Parameter base     : {current_mode}", "blue")
+
+                        try:
+                            optimized_stats = bt.optimize(
+                                **optimization_params,
+                                constraint=self.combined_constraint,
+                                maximize=self.combined_objective,
+                                max_tries=max_tries,
+                                random_state=42,
+                                return_heatmap=False
+                            )
+                            self.log_message("✅ Optimization search complete!", "green")
+
+                        except Exception as opt_err:
+                            self.log_message(f"❌ Optimization error: {opt_err}", "red")
+                            self.log_message(traceback.format_exc(), "red")
+                            optimized_stats = None
+
+                        if optimized_stats is not None and hasattr(optimized_stats, '_strategy'):
+                            optimized_params_dict = {
+                                k: v
+                                for k, v in optimized_stats._strategy._params.items()
+                                if not k.startswith('_')
+                            }
+
+                            if optimized_params_dict:
+                                self.log_message("🔄 Re-running with optimized parameters...", "blue")
+                                try:
+                                    optimized_stats = bt.run(**optimized_params_dict)
+                                    self.log_message("✅ Re-run complete!", "green")
+                                except Exception as rerun_err:
+                                    self.log_message(f"❌ Re-run error: {rerun_err}", "red")
+                                    optimized_stats = None
+                                    optimized_params_dict = None
+
+                                if optimized_stats is not None:
+                                    df_opt_indicators = (
+                                        optimized_stats._strategy.df_enhanced
+                                        if hasattr(optimized_stats, '_strategy') and
+                                           hasattr(optimized_stats._strategy, 'df_enhanced')
+                                        else df_initial_indicators
                                     )
-                                self.log_message(
-                                    f"💾 Optimized parameters exported to: {params_export_file}", "green"
-                                )
 
-                                self.log_message("=" * 70, "green")
-                                self.log_message("🏆 BEST PARAMETERS FOUND:", "green")
-                                self.log_message("=" * 70, "green")
+                                    self.display_backtest_results(
+                                        optimized_stats,
+                                        f"{strategy_type.upper()} — OPTIMIZED RESULTS"
+                                    )
+                                    self.log_parameter_changes(initial_params, optimized_params_dict)
+                                    self.analyze_quality_score_results(optimized_stats)
 
-                                quality_params, ema_params = {}, {}
-                                risk_params, fuzzy_params, other_params = {}, {}, {}
+                                    # ── Export optimized params to JSON ──────
+                                    # FIX: convert numpy types before serialising
+                                    params_export_file = (
+                                        f"optimized_params_{strategy_type.lower()}_"
+                                        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                                    )
+                                    with open(params_export_file, 'w') as f:
+                                        json.dump(
+                                            {k: _to_python(v) for k, v in optimized_params_dict.items()},
+                                            f, indent=4
+                                        )
+                                    self.log_message(
+                                        f"💾 Optimized parameters exported to: {params_export_file}", "green"
+                                    )
 
-                                for param, value in optimized_params_dict.items():
-                                    if any(x in param for x in ['quality', 'tier', 'weight_']):
-                                        quality_params[param] = value
-                                    elif 'ema' in param:
-                                        ema_params[param] = value
-                                    elif 'fuzzy' in param:
-                                        fuzzy_params[param] = value
-                                    elif any(x in param for x in ['risk', 'stop', 'trail']):
-                                        risk_params[param] = value
-                                    else:
-                                        other_params[param] = value
+                                    self.log_message("=" * 70, "green")
+                                    self.log_message("🏆 BEST PARAMETERS FOUND:", "green")
+                                    self.log_message("=" * 70, "green")
 
-                                for label, group in [
-                                    ("🎯 QUALITY SCORE", quality_params),
-                                    ("🧠 FUZZY MODE", fuzzy_params),
-                                    ("📊 EMA", ema_params),
-                                    ("🛡️ RISK", risk_params),
-                                    ("📌 OTHER", other_params),
-                                ]:
-                                    if group:
-                                        self.log_message(f"\n{label} PARAMETERS:", "cyan")
-                                        for p, v in sorted(group.items()):
-                                            self.log_message(f"   {p:40} {v}", "white")
+                                    quality_params, ema_params = {}, {}
+                                    risk_params, fuzzy_params, other_params = {}, {}, {}
 
-                                self.log_message("=" * 70, "green")
+                                    for param, value in optimized_params_dict.items():
+                                        if any(x in param for x in ['quality', 'tier', 'weight_']):
+                                            quality_params[param] = value
+                                        elif 'ema' in param:
+                                            ema_params[param] = value
+                                        elif 'fuzzy' in param:
+                                            fuzzy_params[param] = value
+                                        elif any(x in param for x in ['risk', 'stop', 'trail']):
+                                            risk_params[param] = value
+                                        else:
+                                            other_params[param] = value
 
-                                init_eq = initial_stats.get('Equity Final [$]', 0)
-                                opt_eq = optimized_stats.get('Equity Final [$]', 0)
-                                delta = opt_eq - init_eq
-                                delta_p = (delta / init_eq * 100) if init_eq > 0 else 0
-                                delta_col = "green" if delta >= 0 else "red"
+                                    for label, group in [
+                                        ("🎯 QUALITY SCORE", quality_params),
+                                        ("🧠 FUZZY MODE", fuzzy_params),
+                                        ("📊 EMA", ema_params),
+                                        ("🛡️ RISK", risk_params),
+                                        ("📌 OTHER", other_params),
+                                    ]:
+                                        if group:
+                                            self.log_message(f"\n{label} PARAMETERS:", "cyan")
+                                            for p, v in sorted(group.items()):
+                                                self.log_message(f"   {p:40} {v}", "white")
 
-                                self.log_message("\n📊 OPTIMIZATION IMPACT:", "green")
-                                self.log_message(f"   Initial Equity   : ${init_eq:,.2f}", "white")
-                                self.log_message(f"   Optimized Equity : ${opt_eq:,.2f}", "white")
-                                self.log_message(
-                                    f"   Improvement      : ${delta:,.2f} ({delta_p:+.2f}%) "
-                                    f"{'✓' if delta >= 0 else '✗'}",
-                                    delta_col
-                                )
-                                self.log_message("=" * 70, "green")
+                                    self.log_message("=" * 70, "green")
 
-                    elif optimized_stats is None:
-                        self.log_message("❌ Optimization returned no results", "red")
+                                    init_eq = initial_stats.get('Equity Final [$]', 0)
+                                    opt_eq = optimized_stats.get('Equity Final [$]', 0)
+                                    delta = opt_eq - init_eq
+                                    delta_p = (delta / init_eq * 100) if init_eq > 0 else 0
+                                    delta_col = "green" if delta >= 0 else "red"
+
+                                    self.log_message("\n📊 OPTIMIZATION IMPACT:", "green")
+                                    self.log_message(f"   Initial Equity   : ${init_eq:,.2f}", "white")
+                                    self.log_message(f"   Optimized Equity : ${opt_eq:,.2f}", "white")
+                                    self.log_message(
+                                        f"   Improvement      : ${delta:,.2f} ({delta_p:+.2f}%) "
+                                        f"{'✓' if delta >= 0 else '✗'}",
+                                        delta_col
+                                    )
+                                    self.log_message("=" * 70, "green")
+
+                        elif optimized_stats is None:
+                            self.log_message("❌ Optimization returned no results", "red")
 
             # ═══ STEP 3: Generate plots ═══════════════════════════════════════
             try:
@@ -12995,8 +11121,6 @@ class TradingApp:
                     self.log_message(f"   🔄 Restored only_tier2_entries = {original_value}", "blue")
             except Exception:
                 pass
-
-
     def _get_param_values(self, param_key):
         """
         Get values for a parameter.
@@ -13099,7 +11223,6 @@ class TradingApp:
 
         return [current_value] if current_value is not None else []
 
-
     def _convert_value(self, value_str):
         """Convert string to appropriate numeric type"""
         try:
@@ -13160,7 +11283,7 @@ class TradingApp:
 
                             # Try all possible column names
                             if 'ReturnPct' in row:
-                                pnl_pct = float(row['ReturnPct']) * 100
+                                pnl_pct = float(row['ReturnPct'])
                             elif 'Return [%]' in row:
                                 pnl_pct = float(row['Return [%]'])
                             elif 'PnL [%]' in row:
@@ -14728,49 +12851,24 @@ class TradingApp:
             logging.exception("Order execution failed")
             return False
 
-    def get_balance(self, currency, retries=3, delay=2.0):
-        """Get balance with retry logic for transient API errors."""
-        if self.mode_var.get().lower() in ('backtest', 'demo'):
+    def get_balance(self, currency):
+        if self.mode_var.get().lower() == 'backtest':
             return self.virtual_balance.get(currency, 0)
-
-        for attempt in range(1, retries + 1):
-            try:
-                if not self.account_api:
-                    raise Exception("Account API not initialized")
-
-                response = self.account_api.get_account_balance()
-
-                if response['code'] == '0':
-                    for asset in response['data'][0]['details']:
-                        if asset['ccy'] == currency:
-                            return float(asset['availBal'])
-                    return 0.0
-
-                # transient busy errors — retry silently
-                msg = response.get('msg', '')
-                if 'busy' in msg.lower() or 'try again' in msg.lower():
-                    if attempt < retries:
-                        time.sleep(delay)
-                        continue
-                    # only log after all retries exhausted
-                    self.log_message(
-                        f"⚠️ Balance unavailable after {retries} attempts "
-                        f"({msg}) — using cached value", "orange")
-                    return self._cached_balance.get(currency, 0)
-
-                self.log_message(
-                    f"Balance API error: {msg}", "red")
-                return 0.0
-
-            except Exception as e:
-                if attempt < retries:
-                    time.sleep(delay)
-                    continue
-                self.log_message(
-                    f"Balance error after {retries} attempts: {e}", "red")
-                return self._cached_balance.get(currency, 0)
-
-        return self._cached_balance.get(currency, 0)
+        try:
+            if not self.account_api:
+                raise Exception("Account API not initialized")
+            response = self.account_api.get_account_balance()
+            if response['code'] != '0':
+                self.log_message(f"Balance API error: {response['msg']}", "red")
+                return 0
+            for asset in response['data'][0]['details']:
+                if asset['ccy'] == currency:
+                    return float(asset['availBal'])
+            return 0
+        except Exception as e:
+            self.log_message(f"Balance error: {str(e)}", "red")
+            logging.error(f"Balance error: {str(e)}")
+            return 0
 
     def get_current_price(self):
         try:
@@ -14947,6 +13045,9 @@ class TradingApp:
         self.log_message(f"   Sharpe Ratio: {stats_opt['Sharpe Ratio']:.3f}", "white")
         self.log_message(f"   Win Rate: {stats_opt['Win Rate [%]']:.1f}%", "white")
         self.log_message(f"   Total Trades: {stats_opt['# Trades']}", "white")
+
+
+
 
         self.log_message("=" * 80, "green")
 

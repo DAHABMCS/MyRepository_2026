@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block content %}
+<!-- Hero Section -->
+<section class="relative h-[80vh] flex items-center justify-center bg-slate-900 overflow-hidden">
+    <img src="https://images.unsplash.com/photo-1612547848777-1a7a1f77982d?auto=format&fit=crop&w=1920&q=80"
+         alt="Luxury Glassware"
+         class="absolute inset-0 w-full h-full object-cover opacity-50">
+    <div class="relative z-10 text-center px-4">
+        <h1 class="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">The Art of <br><span class="luxury-gold">Pure Clarity</span></h1>
+        <p class="text-slate-300 text-lg md:text-xl max-w-2xl mx-auto mb-10 font-light leading-relaxed">
+            Experience the fusion of tradition and modernity with our hand-curated collection of luxury glassware.
+        </p>
+        <a href="#catalog" class="bg-white text-slate-900 px-8 py-4 text-sm uppercase tracking-widest font-semibold hover:bg-slate-100 transition-colors">
+            Explore Collection
+        </a>
+    </div>
+</section>
+
+<!-- Category Quick Links -->
+<section class="py-12 bg-white border-b border-slate-100">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+            {% for cat in categories %}
+            <a href="/category/{{ cat.slug }}" class="group flex items-center justify-center p-4 border border-slate-200 hover:border-slate-900 transition-all">
+                <span class="text-sm font-medium uppercase tracking-widest text-slate-500 group-hover:text-slate-900 transition-colors">{{ cat.name }}</span>
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+
+<!-- Featured Catalog -->
+<section id="catalog" class="py-24 bg-slate-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="text-center mb-16">
+            <h2 class="text-4xl font-bold text-slate-900 mb-4">Curated Samples</h2>
+            <div class="h-1 w-20 bg-luxury-gold mx-auto"></div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-x-12 gap-y-16">
+            {% for product in featured_products %}
+            <div class="group">
+                <div class="relative overflow-hidden bg-white aspect-[4/5] mb-6 hover-scale shadow-sm">
+                    <img src="{{ product.image_url }}"
+                         alt="{{ product.name }}"
+                         class="w-full h-full object-cover transition-opacity group-hover:opacity-90">
+                    <div class="absolute bottom-0 left-0 right-0 p-4 translate-y-full group-hover:translate-y-0 transition-transform duration-300 bg-white/90 backdrop-blur-sm">
+                        <a href="/product/{{ product.slug }}" class="block w-full text-center text-xs uppercase tracking-widest font-bold text-slate-900 py-3 border border-slate-900 hover:bg-slate-900 hover:text-white transition-colors">
+                            View Details
+                        </a>
+                    </div>
+                </div>
+                <div class="text-center">
+                    <h3 class="text-xl font-bold text-slate-900 mb-2">{{ product.name }}</h3>
+                    <p class="text-slate-500 text-sm mb-2 line-clamp-1">{{ product.description }}</p>
+                    <p class="text-lg font-medium text-slate-900">${{ "%.2f"|format(product.price) }}</p>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+{% endblock %}
