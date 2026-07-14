@@ -5,18 +5,32 @@ Author: Amr Aboueldahab
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import json
 import time
 import threading
 import numpy as np
+import ccxt
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+import sys
+import importlib
+import importlib.util
+
+# Anchor all relative file/folder lookups (config.json, strategies/, etc.) to
+# this script's own directory, and make sure that directory is on sys.path so
+# the strategies/, models/, and utils/ packages import correctly regardless
+# of the working directory the app was launched from.
+ROOT_DIR = Path(__file__).resolve().parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 # websocket-client is optional — the app works fully without it (falls back
 # to clock-aligned REST polling only). Install with: pip install websocket-client
 try:
-    import websocket as _ws_client  # provided by the "websocket-client" package
+    import websocket as _ws_client
+
     _WS_CLIENT_AVAILABLE = True
 except ImportError:
     _ws_client = None
@@ -42,7 +56,7 @@ html, body, [class*="css"] { font-family:'Exo 2',sans-serif; background:#080a12;
 .main .block-container { background:#080a12; padding-top:1rem; }
 
 [data-testid="metric-container"] { background:linear-gradient(135deg,#0e1528,#111a30); border:1px solid #1e4080; border-radius:8px; padding:12px 16px; box-shadow:0 0 10px #0050aa22; }
-[data-testid="metric-container"] label { color:#7eb8e8 !important; font-size:0..65rem !important; font-weight:600 !important; letter-spacing:0.08em !important; }
+[data-testid="metric-container"] label { color:#7eb8e8 !important; font-size:0.5rem !important; font-weight:600 !important; letter-spacing:0.08rem !important; }
 [data-testid="metric-container"] [data-testid="stMetricValue"] { color:#00e5ff !important; font-family:'Share Tech Mono',monospace !important; font-size:1.5rem !important; text-shadow:0 0 8px #00e5ff88 !important; }
 [data-testid="metric-container"] [data-testid="stMetricDelta"] { font-size:0.85rem !important; }
 
@@ -72,7 +86,6 @@ html, body, [class*="css"] { font-family:'Exo 2',sans-serif; background:#080a12;
 
 p, span, div, li { color:#b8ccee; }
 
-/* Fix date picker visibility and clickability */
 [data-testid="stDateInput"] input { 
     color: #ccd6f6 !important; 
     background: #0b0f1e !important; 
@@ -120,33 +133,183 @@ hr { border-color:#1a3060 !important; }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# STRATEGY LOADER - DYNAMICALLY LOADS DESKTOP STRATEGY FILES
+# ═══════════════════════════════════════════════════════════════════════════
+
+def find_strategy_files():
+    """Find all strategy files in the project"""
+    strategies = {}
+
+    # Get the current directory where the script is running
+    current_dir = Path(__file__).parent if '__file__' in globals() else Path.cwd()
+
+    # Look in strategies/ folder (primary location based on your file structure)
+    strategies_dir = current_dir / "strategies"
+    if strategies_dir.exists():
+        for file in strategies_dir.glob('*Strategy*.py'):
+            strategies[file.stem] = str(file)
+        for file in strategies_dir.glob('*strategy*.py'):
+            strategies[file.stem] = str(file)
+
+    # Also look in current directory
+    for file in current_dir.glob('*Strategy*.py'):
+        strategies[file.stem] = str(file)
+    for file in current_dir.glob('*strategy*.py'):
+        strategies[file.stem] = str(file)
+
+    # Also look in parent directory (in case we're in a subfolder)
+    parent_dir = current_dir.parent
+    strategies_parent = parent_dir / "strategies"
+    if strategies_parent.exists():
+        for file in strategies_parent.glob('*Strategy*.py'):
+            strategies[file.stem] = str(file)
+
+    return strategies
+
+
+def load_strategy_class(file_path: str, class_name: str = None):
+    """Load a strategy class from a .py file.
+
+    Strategy files (KalmanTrendStrategy_New.py, MomentumStrategy_MACD_HybridScore_Latest.py,
+    scalping_strategy.py) use relative imports like `from .base3_New import BaseStrategy`,
+    which only resolve if the file is imported as a real submodule of its package
+    (e.g. `strategies.KalmanTrendStrategy_New`), not as a bare top-level module loaded
+    directly from a file path. importlib.import_module() below preserves that package
+    context; the old __import__/spec_from_file_location approach did not, which is why
+    strategies would silently fail to load ("Desktop strategy not found").
+    """
+    try:
+        file_path = Path(file_path)
+        if not file_path.exists():
+            return None
+
+        package_name = file_path.parent.name  # e.g. "strategies"
+        module_name = f"{package_name}.{file_path.stem}"  # e.g. "strategies.KalmanTrendStrategy_New"
+
+        try:
+            mod = importlib.import_module(module_name)
+        except Exception as e:
+            add_log(f"Error importing {module_name}: {e}", "warn")
+            return None
+
+        if class_name:
+            return getattr(mod, class_name, None)
+
+        # Find any Strategy class
+        for attr_name in dir(mod):
+            if 'Strategy' in attr_name and not attr_name.startswith('_'):
+                attr = getattr(mod, attr_name)
+                if isinstance(attr, type):
+                    return attr
+        return None
+
+    except Exception as e:
+        add_log(f"Error loading strategy from {file_path}: {e}", "warn")
+        return None
+
+
+def get_strategy_class(strategy_name: str, for_backtest: bool = False):
+    """
+    Get the appropriate strategy class for the given strategy name
+    Returns: (class, error_message)
+    """
+    strategy_map = {
+        "Momentum": {
+            "files": [
+                "MomentumStrategy_MACD_HybridScore_Latest",
+                "MomentumStrategy",
+                "momentum_strategy",
+                "TradingStrategy3",
+                "base3_New",
+            ],
+            "backtest_class": "BacktestMomentumStrategy",
+            "live_class": "MomentumStrategy"
+        },
+        "Kalman": {
+            "files": [
+                "KalmanTrendStrategy_New",
+                "KalmanTrendStrategy",
+                "kalman_strategy",
+            ],
+            "backtest_class": "BacktestKalmanTrendStrategy",
+            "live_class": "KalmanTrendStrategy"
+        },
+        "Scalping": {
+            "files": [
+                "scalping_strategy",
+                "ScalpingStrategy",
+            ],
+            "backtest_class": "BacktestScalpingStrategy",
+            "live_class": "ScalpingStrategy"
+        }
+    }
+
+    if strategy_name not in strategy_map:
+        return None, f"Unknown strategy: {strategy_name}"
+
+    config = strategy_map[strategy_name]
+    class_name = config["backtest_class"] if for_backtest else config["live_class"]
+
+    # Get the current directory
+    current_dir = Path(__file__).parent if '__file__' in globals() else Path.cwd()
+
+    # Try to find and load the strategy
+    for file_name in config["files"]:
+        # Try multiple locations
+        locations = [
+            current_dir / "strategies" / f"{file_name}.py",
+            current_dir / f"{file_name}.py",
+            current_dir.parent / "strategies" / f"{file_name}.py",
+        ]
+
+        for location in locations:
+            if location.exists():
+                cls = load_strategy_class(location, class_name)
+                if cls:
+                    add_log(f"✅ Loaded {strategy_name} from {location}", "info")
+                    return cls, None
+
+        # Try without path
+        file_path = ROOT_DIR / f"{file_name}.py"
+        if file_path.exists():
+            cls = load_strategy_class(file_path, class_name)
+            if cls:
+                return cls, None
+
+    return None, f"Could not find strategy files for {strategy_name} in strategies/ folder"
+
+
+# Cache for strategy classes
+_STRATEGY_CLASS_CACHE = {}
+
+
+def get_cached_strategy_class(strategy_name: str, for_backtest: bool = False):
+    """Get cached strategy class"""
+    cache_key = f"{strategy_name}_{'backtest' if for_backtest else 'live'}"
+
+    if cache_key in _STRATEGY_CLASS_CACHE:
+        return _STRATEGY_CLASS_CACHE[cache_key], None
+
+    cls, error = get_strategy_class(strategy_name, for_backtest)
+    if cls:
+        _STRATEGY_CLASS_CACHE[cache_key] = cls
+        add_log(f"✅ Loaded {strategy_name} strategy", "info")
+        st.session_state.strategy_status[strategy_name] = "Desktop Strategy Loaded ✅"
+    else:
+        add_log(f"⚠️ Could not load {strategy_name}: {error}", "warn")
+        st.session_state.strategy_status[strategy_name] = f"Not found: {error[:50]}"
+
+    return cls, error
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # CLOCK-ALIGNED CANDLE SYNC
 # ═══════════════════════════════════════════════════════════════════════════
-# Candle boundaries on OKX (and exchanges generally) are aligned to the UTC
-# wall clock: 15m bars close on :00/:15/:30/:45, 1H on the top of every hour,
-# 4H on 00/04/08/12/16/20 UTC, 1D at 00:00 UTC, etc. Because UTC midnight is
-# also the Unix epoch's day boundary, we can find the next boundary for any
-# of these timeframes with simple integer division on the epoch timestamp —
-# no per-timeframe special-casing and no DST headaches.
 
 TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1H": 60, "4H": 240, "1D": 1440}
 
 
 def seconds_until_next_candle_close(interval: str, buffer_sec: float = 3.0) -> float:
-    """
-    Seconds to sleep (from right now, UTC) until the *next* clock-aligned
-    candle-close boundary for `interval`.
-
-    Example: interval="15m" at 10:07:42 UTC -> returns time until 10:15:00
-    UTC (+ buffer_sec). This keeps the trading cycle's data-read/process tick
-    locked to the exchange's actual bar boundaries instead of drifting on a
-    free-running fixed-second timer that started whenever "Start Trading"
-    happened to be clicked.
-
-    buffer_sec is a small grace period added after the boundary so the
-    exchange has finished publishing/finalizing the just-closed candle
-    before we fetch it.
-    """
     period_sec = TF_MINUTES.get(interval, 15) * 60
     now = datetime.now(timezone.utc).timestamp()
     next_boundary = (int(now // period_sec) + 1) * period_sec
@@ -154,30 +317,13 @@ def seconds_until_next_candle_close(interval: str, buffer_sec: float = 3.0) -> f
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# WEBSOCKET CANDLE-CLOSE TRIGGER  (hybrid Tier-1 / Tier-2 design)
+# WEBSOCKET CANDLE-CLOSE TRIGGER
 # ═══════════════════════════════════════════════════════════════════════════
-# The WebSocket connection is used ONLY to learn *when* a candle has closed,
-# as fast as possible. It never supplies the actual OHLCV used for signal
-# processing — that always comes from the normal REST fetch in
-# run_trading_cycle(). This means the fast (WS) and safety-net (clock-aligned
-# REST deadline) paths can never disagree on data, only on timing:
-#   - If the WS confirms the close quickly       -> we react almost instantly.
-#   - If the WS is slow, disconnected, or absent -> the clock-aligned deadline
-#     (the same logic as seconds_until_next_candle_close) guarantees we still
-#     fetch and process every single candle close, just a few seconds later.
-# No candle is ever silently skipped either way.
 
 OKX_WS_BUSINESS_URL = "wss://ws.okx.com:8443/ws/v5/business"
 
 
 class _CandleWSBridge:
-    """
-    One persistent background thread per (symbol, interval) pair, shared
-    across all Streamlit reruns/sessions in this process. Streamlit reruns
-    the whole script on every interaction, so st.session_state can't hold a
-    live socket — this lives at module scope instead, guarded by a lock so
-    only one connection is ever opened per symbol/interval combination.
-    """
     _registry = {}
     _registry_lock = threading.Lock()
 
@@ -186,12 +332,11 @@ class _CandleWSBridge:
         self.interval = interval
         self._lock = threading.Lock()
         self._connected = False
-        self._last_confirmed_ts = None   # epoch seconds of the last CONFIRMED candle close
+        self._last_confirmed_ts = None
         self._last_message_at = 0.0
         self._thread = None
         self._stop = False
 
-    # ── thread-safe read for the main script ──────────────────────────
     def snapshot(self) -> dict:
         with self._lock:
             return {
@@ -200,7 +345,6 @@ class _CandleWSBridge:
                 "last_message_at": self._last_message_at,
             }
 
-    # ── lifecycle ───────────────────────────────────────────────────────
     def start(self):
         if self._thread and self._thread.is_alive():
             return
@@ -208,8 +352,9 @@ class _CandleWSBridge:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    # ── worker loop: connect, subscribe, listen, reconnect w/ backoff ──
     def _run(self):
+        if not _WS_CLIENT_AVAILABLE:
+            return
         bar_channel = f"candle{self.interval}"
         backoff = 1.0
         while not self._stop:
@@ -223,15 +368,13 @@ class _CandleWSBridge:
                 with self._lock:
                     self._connected = True
                     self._last_message_at = time.time()
-                backoff = 1.0  # reset after a successful (re)connect
+                backoff = 1.0
                 ws.settimeout(25)
 
                 while not self._stop:
                     try:
                         raw = ws.recv()
                     except Exception:
-                        # Quiet for 25s — OKX expects an app-level "ping" or
-                        # it will drop the connection after ~30s of silence.
                         ws.send("ping")
                         with self._lock:
                             self._last_message_at = time.time()
@@ -254,13 +397,11 @@ class _CandleWSBridge:
                     if not data:
                         continue
                     candle = data[0]
-                    # OKX candle arrays end with a "confirm" flag: "1" once
-                    # the bar is final, "0" while it is still forming.
                     if len(candle) >= 2 and candle[-1] == "1":
                         with self._lock:
                             self._last_confirmed_ts = int(candle[0]) / 1000.0
             except Exception:
-                pass  # fall through to reconnect-with-backoff below
+                pass
             finally:
                 with self._lock:
                     self._connected = False
@@ -277,7 +418,6 @@ class _CandleWSBridge:
     def stop(self):
         self._stop = True
 
-    # ── singleton accessor ───────────────────────────────────────────────
     @classmethod
     def get(cls, symbol: str, interval: str) -> "_CandleWSBridge":
         key = (symbol, interval)
@@ -291,14 +431,6 @@ class _CandleWSBridge:
 
 
 def wait_for_next_trigger(symbol: str, interval: str) -> str:
-    """
-    Blocks until the next trading cycle should fire, and returns which
-    mechanism triggered it:
-      "websocket" — OKX confirmed the candle close in real time (fast path)
-      "fallback"  — clock-aligned deadline reached without a WS confirm
-                    (guarantees no candle is ever missed)
-      "fixed"     — legacy fixed-interval mode (sync_to_clock disabled)
-    """
     if not st.session_state.get("sync_to_clock", True):
         time.sleep(st.session_state.refresh_interval)
         return "fixed"
@@ -319,9 +451,6 @@ def wait_for_next_trigger(symbol: str, interval: str) -> str:
     while time.time() < deadline:
         snap = bridge.snapshot()
         confirmed_ts = snap.get("last_confirmed_ts")
-        # A confirm timestamp at/after the boundary means OKX has finalized
-        # the candle we're waiting for — react now rather than waiting out
-        # the rest of the buffer.
         if confirmed_ts and confirmed_ts >= boundary_epoch - 2:
             return "websocket"
         time.sleep(poll_step)
@@ -341,12 +470,9 @@ def init_state():
         "logs": [],
         "trade_history": [],
         "current_status": "PARKING",
-        # Single position slot (Long or Short mode)
         "position": None,
-        # Dual position slots for Both mode
         "position_long": None,
         "position_short": None,
-        # Stats — total and per-side
         "stats": {
             "trades": 0, "wins": 0, "pnl": 0.0, "win_rate": 0.0,
             "long_trades": 0, "long_wins": 0, "long_pnl": 0.0,
@@ -367,11 +493,11 @@ def init_state():
         "last_bar_ts": None,
         "cycle_count": 0,
         "refresh_interval": 10,
-        "sync_to_clock": True,   # lock the trading cycle to the wall-clock candle-close
-        "use_ws_trigger": True,  # fast-path: react to OKX's WS confirm instead of waiting out the buffer
-        "last_trigger_source": None,  # "websocket" | "fallback" | "fixed" — which path fired last cycle
-        "clock_sync_buffer": 3,  # grace seconds added after the boundary tick
-        "chart_markers": [],  # {ts, price, kind, pnl_pct}
+        "sync_to_clock": True,
+        "use_ws_trigger": True,
+        "last_trigger_source": None,
+        "clock_sync_buffer": 3,
+        "chart_markers": [],
         "trading_windows": {
             "Momentum": {"enabled": False, "start": "00:00", "end": "23:59",
                          "days": [0, 1, 2, 3, 4, 5, 6], "tz": "UTC"},
@@ -383,12 +509,10 @@ def init_state():
                          "days": [0, 1, 2, 3, 4, 5, 6], "tz": "UTC"},
         },
         "tw_panel_open": False,
-        "session_start_time": None,  # UTC datetime when trading started
+        "session_start_time": None,
         "session_start_balance": 5000.0,
-        "commission_rate": 0.001,  # 0.1% — mirrors desktop's commission_var default,
-                                    # applied per fill (entry + exit) in the real-engine path
-        "session_summary": None,  # dict populated when session ends
-        # Ranging market detection settings
+        "commission_rate": 0.001,
+        "session_summary": None,
         "ranging_settings": {
             "enabled": True,
             "momentum_min_adx": 20.0,
@@ -408,12 +532,14 @@ def init_state():
         },
         "ranging_cooldown_counter": 0,
         "ranging_analysis": None,
-        # ── Real strategy engine (Momentum/Kalman/Scalping parity with desktop) ──
         "use_real_engine": True,
-        "confidence_threshold": 65.0,   # mirrors desktop's confidence_var / BaseStrategy.min_combined_threshold
-          "_live_strategies": {},
+        "confidence_threshold": 65.0,
+        "_live_strategies": {},
         "_last_symbol": None,
         "_windows_loaded": False,
+        "strategy_status": {},
+        # Clock sync UI controls
+        "show_timing_controls": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -435,7 +561,7 @@ def add_log(message: str, level: str = "info"):
 
 
 def load_config():
-    cfg_path = Path("config.json")
+    cfg_path = ROOT_DIR / "config.json"
     if cfg_path.exists():
         try:
             with open(cfg_path) as f:
@@ -447,7 +573,7 @@ def load_config():
 
 
 def load_strategy_settings():
-    path = Path("strategy_settings.json")
+    path = ROOT_DIR / "strategy_settings.json"
     if path.exists():
         try:
             with open(path) as f:
@@ -458,7 +584,7 @@ def load_strategy_settings():
 
 def save_strategy_settings(data: dict):
     try:
-        with open("strategy_settings.json", "w") as f:
+        with open(ROOT_DIR / "strategy_settings.json", "w") as f:
             json.dump(data, f, indent=2)
         add_log("✅ Strategy settings saved.", "info")
     except Exception as e:
@@ -471,12 +597,9 @@ if not st.session_state.strategy_settings:
     load_strategy_settings()
 
 
-
-
 @st.cache_data(ttl=120, show_spinner=False)
 def _read_windows_file() -> dict:
-    """Cached disk read — only hits the file system once per 2 minutes."""
-    path = Path("trading_windows.json")
+    path = ROOT_DIR / "trading_windows.json"
     if path.exists():
         try:
             with open(path) as f:
@@ -487,7 +610,6 @@ def _read_windows_file() -> dict:
 
 
 def load_trading_windows():
-    """Merge saved trading window settings from disk into session state."""
     data = _read_windows_file()
     if data:
         for strat, cfg in data.items():
@@ -499,45 +621,252 @@ def load_trading_windows():
     return False
 
 
-# Load trading windows ONCE per session (not every rerun)
 if not st.session_state.get("_windows_loaded", False):
     if load_trading_windows():
         add_log("⏱ Trading windows loaded from disk.", "info")
     st.session_state["_windows_loaded"] = True
 
+
 def save_trading_windows():
-    """Persist trading window settings to disk."""
     try:
-        with open("trading_windows.json", "w") as f:
+        with open(ROOT_DIR / "trading_windows.json", "w") as f:
             json.dump(st.session_state.trading_windows, f, indent=2)
         add_log("⏱ Trading windows saved to disk.", "info")
     except Exception as e:
         add_log(f"⚠️ Could not save trading_windows.json: {e}", "warn")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SAVE BACKTEST EXCEL
+# ═══════════════════════════════════════════════════════════════════════════
+
+def save_backtest_excel(results, symbol, interval, strategy):
+    """Save backtest results to Excel file on disk"""
+    try:
+        from pathlib import Path
+
+        results_dir = ROOT_DIR / "backtest_results"
+        results_dir.mkdir(exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = results_dir / f"backtest_{symbol}_{interval}_{strategy}_{timestamp}.xlsx"
+
+        with pd.ExcelWriter(filename, engine="openpyxl") as writer:
+            pd.DataFrame(list(results["metrics"].items()),
+                         columns=["Metric", "Value"]).to_excel(writer, sheet_name="Summary", index=False)
+
+            if results.get("trades") is not None:
+                results["trades"].to_excel(writer, sheet_name="Trades")
+
+            data_info = pd.DataFrame([
+                ["Symbol", symbol],
+                ["Interval", interval],
+                ["Strategy", strategy],
+                ["Start Date", results.get("requested_range", ["?", "?"])[0]],
+                ["End Date", results.get("requested_range", ["?", "?"])[1]],
+                ["Actual Start", results.get("data_range", ["?", "?", 0])[0]],
+                ["Actual End", results.get("data_range", ["?", "?", 0])[1]],
+                ["Bars Used", results.get("data_range", ["?", "?", 0])[2]],
+                ["Export Time", datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+            ], columns=["Info", "Value"])
+            data_info.to_excel(writer, sheet_name="Info", index=False)
+
+            if results.get("monte_carlo"):
+                mc_data = results["monte_carlo"].copy()
+                if "final_equities" in mc_data:
+                    del mc_data["final_equities"]
+                pd.DataFrame([mc_data]).to_excel(writer, sheet_name="MonteCarlo", index=False)
+
+            if results.get("is_optimization") and results.get("optimization_results") is not None:
+                results["optimization_results"].to_excel(writer, sheet_name="Optimization", index=False)
+
+        add_log(f"✅ Excel saved: {filename}", "buy")
+        return str(filename)
+    except Exception as e:
+        add_log(f"❌ Excel save error: {e}", "err")
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MONTE CARLO SIMULATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+def run_monte_carlo_backtest(df, strategy_class, capital, n_simulations=1000, commission=0.001):
+    from backtesting import Backtest
+
+    bt = Backtest(df, strategy_class, cash=float(capital), commission=commission)
+    initial_stats = bt.run()
+
+    trades = initial_stats.get("_trades", None)
+    if trades is None or len(trades) == 0:
+        return None, "No trades to simulate"
+
+    trade_returns = trades["Return [%]"].values if "Return [%]" in trades.columns else []
+    if len(trade_returns) == 0:
+        return None, "No trade return data"
+
+    final_equities = []
+    max_drawdowns = []
+    sharpe_ratios = []
+
+    for i in range(n_simulations):
+        shuffled_returns = np.random.permutation(trade_returns)
+        cumulative = np.cumprod(1 + shuffled_returns / 100)
+        final_equity = capital * cumulative[-1]
+        final_equities.append(final_equity)
+
+        peak = np.maximum.accumulate(cumulative)
+        drawdown = (peak - cumulative) / peak * 100
+        max_drawdowns.append(np.max(drawdown))
+
+        returns_pct = shuffled_returns / 100
+        if len(returns_pct) > 1:
+            sharpe = np.mean(returns_pct) / (np.std(returns_pct) + 1e-9)
+            sharpe_ratios.append(sharpe)
+
+        if (i + 1) % 100 == 0:
+            add_log(f"   Monte Carlo: {i + 1}/{n_simulations} simulations complete", "sys")
+
+    results = {
+        "mean_final_equity": np.mean(final_equities),
+        "median_final_equity": np.median(final_equities),
+        "std_final_equity": np.std(final_equities),
+        "min_final_equity": np.min(final_equities),
+        "max_final_equity": np.max(final_equities),
+        "percentile_5": np.percentile(final_equities, 5),
+        "percentile_25": np.percentile(final_equities, 25),
+        "percentile_75": np.percentile(final_equities, 75),
+        "percentile_95": np.percentile(final_equities, 95),
+        "mean_max_drawdown": np.mean(max_drawdowns),
+        "max_drawdown_95": np.percentile(max_drawdowns, 95),
+        "mean_sharpe": np.mean(sharpe_ratios) if sharpe_ratios else 0,
+        "probability_profit": np.mean(np.array(final_equities) > capital) * 100,
+        "n_simulations": n_simulations,
+        "final_equities": final_equities,
+    }
+
+    return results, None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PARAMETER OPTIMIZATION ENGINE
+# ═══════════════════════════════════════════════════════════════════════════
+
+def run_parameter_optimization(df, strategy_class, capital, param_grid, optimization_metric="Return %",
+                               commission=0.001):
+    from backtesting import Backtest
+    import itertools
+
+    param_names = list(param_grid.keys())
+    param_values = list(param_grid.values())
+    combinations = list(itertools.product(*param_values))
+
+    all_results = []
+    total_combos = len(combinations)
+
+    add_log(f"🔍 Running parameter optimization: {total_combos} combinations", "info")
+
+    for idx, combo in enumerate(combinations):
+        params = dict(zip(param_names, combo))
+
+        class OptimizedStrategy(strategy_class):
+            pass
+
+        for param_name, param_value in params.items():
+            setattr(OptimizedStrategy, param_name, param_value)
+
+        try:
+            bt = Backtest(df, OptimizedStrategy, cash=float(capital), commission=commission)
+            stats = bt.run()
+
+            result = {
+                **params,
+                "Return %": stats['Return [%]'],
+                "Sharpe Ratio": stats['Sharpe Ratio'],
+                "Win Rate %": stats['Win Rate [%]'],
+                "Max Drawdown %": stats['Max. Drawdown [%]'],
+                "Total Trades": stats['# Trades'],
+                "Profit Factor": stats.get('Profit Factor', 0),
+                "Final Equity": stats['Equity Final [$]'],
+            }
+            all_results.append(result)
+
+            if (idx + 1) % 10 == 0:
+                add_log(f"   Optimization progress: {idx + 1}/{total_combos} combinations tested", "sys")
+
+        except Exception as e:
+            add_log(f"⚠️ Combination {idx + 1} failed: {e}", "warn")
+            continue
+
+    if not all_results:
+        return None, None, None
+
+    results_df = pd.DataFrame(all_results)
+
+    metric_map = {
+        "Return %": "Return %",
+        "Sharpe Ratio": "Sharpe Ratio",
+        "Win Rate": "Win Rate %",
+        "Profit Factor": "Profit Factor",
+        "Final Equity": "Final Equity",
+    }
+
+    metric_col = metric_map.get(optimization_metric, "Return %")
+    results_df_sorted = results_df.sort_values(metric_col, ascending=False)
+    best_params = results_df_sorted.iloc[0].to_dict()
+
+    best_params_dict = {k: best_params[k] for k in param_names}
+    best_metrics = {k: best_params[k] for k in
+                    ['Return %', 'Sharpe Ratio', 'Win Rate %', 'Max Drawdown %', 'Total Trades', 'Profit Factor',
+                     'Final Equity']}
+
+    add_log(f"✅ Optimization complete! Best {optimization_metric}: {best_metrics.get(metric_col, 'N/A')}", "buy")
+
+    return results_df, best_params_dict, best_metrics
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# OPTIMIZATION PARAMETER GRIDS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def get_optimization_param_grid(strategy: str) -> dict:
+    if strategy == "Momentum":
+        return {
+            "ema_fast": [5, 8, 10, 12],
+            "ema_slow": [20, 26, 30, 40],
+            "ema_trend": [50, 60, 75, 100],
+            "rsi_min": [30, 35, 40, 45],
+            "rsi_max": [65, 70, 75, 80],
+        }
+    elif strategy == "Kalman":
+        return {
+            "kalman_q": [0.005, 0.01, 0.02, 0.05],
+            "kalman_r": [100, 300, 500, 800],
+            "rsi_min": [35, 40, 45],
+            "rsi_max": [60, 65, 70],
+        }
+    elif strategy == "Scalping":
+        return {
+            "ema_fast": [3, 5, 8, 10],
+            "ema_slow": [15, 20, 25, 30],
+            "rsi_period": [10, 14, 18],
+            "stop_loss_pct": [0.3, 0.5, 0.8, 1.0],
+            "take_profit_pct": [0.8, 1.0, 1.5, 2.0],
+        }
+    else:
+        return {
+            "ema_fast": [5, 8, 12],
+            "ema_slow": [20, 30, 40],
+            "rsi_min": [30, 40],
+            "rsi_max": [60, 70],
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # RANGING MARKET DETECTION ENGINE
 # ═══════════════════════════════════════════════════════════════════════════
-def detect_ranging_market(df: pd.DataFrame, lookback: int = 50) -> dict:
-    """
-    Detect if market is ranging (sideways/choppy) vs trending.
-    Returns dict with:
-        - is_ranging: bool
-        - ranging_strength: float (0-100)
-        - reason: str
-        - adx: float
-        - bb_width_pct: float
-        - slope_pct: float
-        - efficiency_ratio: float
-        - range_width_pct: float
 
-    Safe for all strategies — Momentum, Kalman, Enhanced, Scalping.
-    Per-strategy skip decisions are made in should_skip_due_to_ranging().
-    """
-    # Fix 1: insufficient data returns False so strategies are not
-    # blocked at startup before 50 bars have loaded
+def detect_ranging_market(df: pd.DataFrame, lookback: int = 50) -> dict:
     if len(df) < lookback:
         return {
             "is_ranging": False,
@@ -553,9 +882,6 @@ def detect_ranging_market(df: pd.DataFrame, lookback: int = 50) -> dict:
     d = df.copy().iloc[-lookback:]
     close = d["Close"].values
 
-    # ── ADX (trend strength) ─────────────────────────────────────────────
-    # Fix 2: use pre-computed ADX column when available — avoids
-    # duplicating the numpy calculation already done in compute_indicators()
     if 'adx' in df.columns and not df['adx'].isna().all():
         adx = float(df['adx'].dropna().iloc[-1])
     else:
@@ -576,7 +902,6 @@ def detect_ranging_market(df: pd.DataFrame, lookback: int = 50) -> dict:
         dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-9)
         adx = dx.ewm(span=14, adjust=False).mean().iloc[-1]
 
-    # ── Bollinger Band Width (compression = ranging) ─────────────────────
     period = 20
     if len(close) >= period:
         std = close[-period:].std()
@@ -586,26 +911,21 @@ def detect_ranging_market(df: pd.DataFrame, lookback: int = 50) -> dict:
         bb_middle = close.mean()
     bb_width = (2 * std / bb_middle) * 100 if bb_middle != 0 else 0
 
-    # ── Linear Regression Slope (directional bias) ───────────────────────
     x = np.arange(len(close))
     slope, _ = np.polyfit(x, close, 1)
     slope_pct = (slope / (close[-1] + 1e-9)) * 100
 
-    # ── Price position relative to recent range ──────────────────────────
     range_high = np.max(close)
     range_low = np.min(close)
     range_width_pct = ((range_high - range_low) / (range_low + 1e-9)) * 100
 
-    # ── Efficiency Ratio (how direct the price moves) ────────────────────
     gross_move = np.abs(close[-1] - close[0])
     net_move = np.sum(np.abs(np.diff(close)))
     efficiency_ratio = gross_move / (net_move + 1e-9)
 
-    # ── Combine signals ──────────────────────────────────────────────────
     ranging_signals = []
     ranging_score = 0
 
-    # ADX threshold
     if adx < 20:
         ranging_signals.append(f"ADX={adx:.1f} (<20)")
         ranging_score += 35
@@ -613,9 +933,8 @@ def detect_ranging_market(df: pd.DataFrame, lookback: int = 50) -> dict:
         ranging_signals.append(f"ADX={adx:.1f} (<25)")
         ranging_score += 20
     elif adx > 35:
-        ranging_score -= 20  # Trending bonus
+        ranging_score -= 20
 
-    # Bollinger Band width (squeeze = ranging)
     if bb_width < 3.0:
         ranging_signals.append(f"BB squeeze {bb_width:.1f}%")
         ranging_score += 30
@@ -625,7 +944,6 @@ def detect_ranging_market(df: pd.DataFrame, lookback: int = 50) -> dict:
     elif bb_width > 10.0:
         ranging_score -= 10
 
-    # Slope (flat = ranging)
     if abs(slope_pct) < 0.15:
         ranging_signals.append(f"Slope={slope_pct:.2f}%/bar (flat)")
         ranging_score += 25
@@ -635,7 +953,6 @@ def detect_ranging_market(df: pd.DataFrame, lookback: int = 50) -> dict:
     elif abs(slope_pct) > 0.8:
         ranging_score -= 15
 
-    # Efficiency Ratio (low = choppy)
     if efficiency_ratio < 0.3:
         ranging_signals.append(f"ER={efficiency_ratio:.2f} (very choppy)")
         ranging_score += 20
@@ -645,14 +962,12 @@ def detect_ranging_market(df: pd.DataFrame, lookback: int = 50) -> dict:
     elif efficiency_ratio > 0.6:
         ranging_score -= 10
 
-    # Range width (tight = ranging)
     if range_width_pct < 2.0:
         ranging_signals.append(f"Range={range_width_pct:.1f}% (tight)")
         ranging_score += 15
     elif range_width_pct > 8.0:
         ranging_score -= 10
 
-    # Determine if ranging
     is_ranging = ranging_score >= 40
     ranging_strength = min(100, ranging_score)
 
@@ -679,52 +994,25 @@ def should_skip_due_to_ranging(df: pd.DataFrame,
                                min_adx: float = 20.0,
                                max_bb_width: float = 5.0,
                                min_slope_pct: float = 0.15) -> tuple[bool, dict]:
-    """
-    Check if trading should be skipped due to ranging market.
-    Returns (skip: bool, analysis: dict)
-
-    Each strategy has independent thresholds configurable from the UI.
-    The global ranging_strength check (Fix 3) also respects per-strategy
-    limits so Kalman (mean-reversion) is not blocked by the same ceiling
-    as Scalping (trend-following).
-
-    Default strength limits per strategy:
-        Scalping  → 45  (strict — trend-following, very sensitive)
-        Momentum  → 55  (balanced)
-        Enhanced  → 55  (balanced — uses Momentum thresholds)
-        Kalman    → 70  (tolerant — mean-reversion works in ranging)
-    """
     analysis = detect_ranging_market(df, lookback=50)
-
-    # Get strategy-specific thresholds from session state
     ranging_cfg = st.session_state.get("ranging_settings", {})
 
-    # Strategy-specific thresholds for ADX, BB width, slope, and
-    # ranging strength ceiling. Kalman uses looser thresholds because
-    # mean-reversion entries are valid in mild ranging conditions.
-    # Enhanced uses Momentum thresholds — both are trend-following at core.
     if strategy == "Scalping":
-        adx_threshold    = ranging_cfg.get("scalping_min_adx", 18.0)
-        max_bb           = ranging_cfg.get("scalping_max_bb_width", 4.0)
-        min_slope        = ranging_cfg.get("scalping_min_slope", 0.1)
-        # Fix 3: per-strategy strength ceiling — Scalping is strict
-        strength_limit   = ranging_cfg.get("scalping_max_ranging_strength", 45.0)
-
+        adx_threshold = ranging_cfg.get("scalping_min_adx", 18.0)
+        max_bb = ranging_cfg.get("scalping_max_bb_width", 4.0)
+        min_slope = ranging_cfg.get("scalping_min_slope", 0.1)
+        strength_limit = ranging_cfg.get("scalping_max_ranging_strength", 45.0)
     elif strategy == "Kalman":
-        adx_threshold    = ranging_cfg.get("kalman_min_adx", 20.0)
-        max_bb           = ranging_cfg.get("kalman_max_bb_width", 6.0)
-        min_slope        = ranging_cfg.get("kalman_min_slope", 0.12)
-        # Fix 3: Kalman tolerates more ranging — it trades mean-reversion
-        strength_limit   = ranging_cfg.get("kalman_max_ranging_strength", 70.0)
+        adx_threshold = ranging_cfg.get("kalman_min_adx", 20.0)
+        max_bb = ranging_cfg.get("kalman_max_bb_width", 6.0)
+        min_slope = ranging_cfg.get("kalman_min_slope", 0.12)
+        strength_limit = ranging_cfg.get("kalman_max_ranging_strength", 70.0)
+    else:
+        adx_threshold = ranging_cfg.get("momentum_min_adx", min_adx)
+        max_bb = ranging_cfg.get("momentum_max_bb_width", max_bb_width)
+        min_slope = ranging_cfg.get("momentum_min_slope", min_slope_pct)
+        strength_limit = ranging_cfg.get("momentum_max_ranging_strength", 55.0)
 
-    else:  # Momentum and Enhanced
-        adx_threshold    = ranging_cfg.get("momentum_min_adx", min_adx)
-        max_bb           = ranging_cfg.get("momentum_max_bb_width", max_bb_width)
-        min_slope        = ranging_cfg.get("momentum_min_slope", min_slope_pct)
-        # Fix 3: balanced ceiling for trend-following strategies
-        strength_limit   = ranging_cfg.get("momentum_max_ranging_strength", 55.0)
-
-    # Decision logic
     skip = False
     reasons = []
 
@@ -740,8 +1028,6 @@ def should_skip_due_to_ranging(df: pd.DataFrame,
         skip = True
         reasons.append(f"Slope={analysis['slope_pct']:.3f}%/bar")
 
-    # Fix 3: ranging strength check now uses per-strategy ceiling
-    # instead of a flat global threshold that ignored strategy intent
     if analysis["ranging_strength"] > strength_limit:
         skip = True
         reasons.append(
@@ -754,12 +1040,12 @@ def should_skip_due_to_ranging(df: pd.DataFrame,
 
     return skip, analysis
 
+
 # ═══════════════════════════════════════════════════════════════════════════
 # OKX CONNECTION
 # ═══════════════════════════════════════════════════════════════════════════
 
 def check_connection(mode: str):
-    # Demo mode never needs API keys — auto-succeed
     if mode.lower() == "demo":
         add_log("✅ Demo mode active — no API keys required.", "buy")
         st.session_state.connected = True
@@ -794,43 +1080,28 @@ def check_connection(mode: str):
 
 def fetch_public_ohlcv(symbol: str, interval: str, limit: int = 1000,
                        silent: bool = False) -> "pd.DataFrame | None":
-    """
-    Fetch real OHLCV data from OKX public REST API — no API key required.
-    Works in Demo mode, Backtest, and anywhere else a key-free feed is needed.
-
-    Parameters
-    ----------
-    symbol   : OKX instrument id  e.g. "SOL-USDT"
-    interval : OKX bar string      e.g. "15m", "1H"
-    limit    : number of bars to return (max 1000; OKX caps each request at 300)
-    silent   : when True, suppresses the routine "X bars fetched" log entry so
-               the auto-cycle does not flood the log every refresh interval.
-
-    Returns a clean DataFrame indexed by timezone-naive UTC timestamp, or None.
-    """
     try:
         import requests
-        # OKX public candles endpoint — unauthenticated, 40 req / 2 s rate limit
         url = "https://www.okx.com/api/v5/market/candles"
         fetched: list = []
         after_param = ""
-        remaining = min(limit, 1000)  # absolute hard cap
+        remaining = min(limit, 1000)
 
         while remaining > 0:
-            batch = min(remaining, 300)  # OKX max per request
+            batch = min(remaining, 300)
             params: dict = {"instId": symbol, "bar": interval, "limit": str(batch)}
             if after_param:
-                params["after"] = after_param  # fetch candles older than this ts
+                params["after"] = after_param
             resp = requests.get(url, params=params, timeout=10)
             data = resp.json()
             if data.get("code") != "0" or not data.get("data"):
                 break
-            rows = data["data"]  # returned newest → oldest
+            rows = data["data"]
             fetched.extend(rows)
             remaining -= len(rows)
             if len(rows) < batch:
-                break  # no more history available
-            after_param = rows[-1][0]  # cursor = oldest ts in this batch
+                break
+            after_param = rows[-1][0]
 
         if not fetched:
             return None
@@ -841,7 +1112,6 @@ def fetch_public_ohlcv(symbol: str, interval: str, limit: int = 1000,
         df["timestamp"] = pd.to_datetime(df["timestamp"].astype(float), unit="ms")
         for col in ["Open", "High", "Low", "Close", "Volume"]:
             df[col] = pd.to_numeric(df[col])
-        # Sort ascending, remove any duplicates that can arise from pagination
         df = (df.sort_values("timestamp")
               .drop_duplicates("timestamp")
               .set_index("timestamp"))
@@ -858,21 +1128,17 @@ def fetch_public_ohlcv(symbol: str, interval: str, limit: int = 1000,
 
 def fetch_historical_data_ccxt(symbol: str, exchange_name: str = "binance", start=None, end=None,
                                interval: str = "15m", days: int = 360, limit: "int | None" = None) -> "pd.DataFrame":
-    """
-    Streamlit port of the desktop app's get_historical_data(): pages through
-    ccxt (Binance by default) with a real while-loop that keeps requesting
-    since=<last_candle+1> until end_ms is reached, instead of a single
-    capped request. This is what actually lets the desktop app honor
-    arbitrary start/end dates — OKX's public endpoints only ever serve a
-    limited recent window regardless of pagination depth, so Binance via
-    ccxt is the correct primary source for backtest history, matching
-    desktop behavior exactly.
-    """
-    import ccxt, time as _time
+    import time as _time
 
     try:
         if exchange_name.lower() == "binance":
-            exchange = ccxt.binance({"enableRateLimit": True, "timeout": 30000})
+            exchange = ccxt.binance({
+                "enableRateLimit": True,
+                "timeout": 30000,
+                "options": {
+                    "defaultType": "spot",
+                }
+            })
         elif exchange_name.lower() == "okx":
             exchange = ccxt.okx({"enableRateLimit": True})
         else:
@@ -882,7 +1148,13 @@ def fetch_historical_data_ccxt(symbol: str, exchange_name: str = "binance", star
         add_log(f"❌ Failed to initialize {exchange_name}: {e}", "err")
         return pd.DataFrame()
 
-    ccxt_interval = interval.lower() if interval in ("1H", "4H", "1D") else interval
+    ccxt_interval = interval.lower()
+    interval_map = {
+        "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
+        "1h": "1h", "2h": "2h", "4h": "4h", "6h": "6h", "8h": "8h",
+        "12h": "12h", "1d": "1d", "3d": "3d", "1w": "1w", "1M": "1M",
+    }
+    ccxt_interval = interval_map.get(ccxt_interval, ccxt_interval)
 
     if end is None:
         end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -897,18 +1169,21 @@ def fetch_historical_data_ccxt(symbol: str, exchange_name: str = "binance", star
     timeframe_ms = {
         "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
         "1h": 3_600_000, "2h": 7_200_000, "4h": 14_400_000, "6h": 21_600_000,
-        "8h": 28_800_000, "12h": 43_200_000, "1d": 86_400_000, "3d": 259_200_000, "1w": 604_800_000,
+        "8h": 28_800_000, "12h": 43_200_000, "1d": 86_400_000, "3d": 259_200_000,
+        "1w": 604_800_000, "1M": 2_592_000_000,
     }
     interval_ms = timeframe_ms.get(ccxt_interval, 900_000)
 
     limit_per_request = 1000
-    all_data: list = []
+    all_data = []
     since = start_ms
-    max_iterations = 1000  # safety cap on request count, not on date range
+    max_iterations = 1000
     iteration = 0
 
+    ccxt_symbol = symbol.replace("-", "/")
+
     add_log(
-        f"🔍 Fetching {symbol} {interval} from {exchange_name.upper()} "
+        f"🔍 Fetching {ccxt_symbol} {ccxt_interval} from {exchange_name.upper()} "
         f"({pd.to_datetime(start_ms, unit='ms', utc=True):%Y-%m-%d} → "
         f"{pd.to_datetime(end_ms, unit='ms', utc=True):%Y-%m-%d})",
         "info"
@@ -917,66 +1192,82 @@ def fetch_historical_data_ccxt(symbol: str, exchange_name: str = "binance", star
     while since < end_ms and iteration < max_iterations:
         iteration += 1
         try:
-            candles = exchange.fetch_ohlcv(symbol.replace("-", "/"), ccxt_interval,
-                                           since=since, limit=limit_per_request)
+            candles = exchange.fetch_ohlcv(
+                ccxt_symbol,
+                ccxt_interval,
+                since=since,
+                limit=limit_per_request
+            )
+
             if not candles:
                 break
+
             filtered = [c for c in candles if c[0] <= end_ms]
             if not filtered:
                 break
+
             all_data.extend(filtered)
             last_ts = filtered[-1][0]
+
             if last_ts >= end_ms:
                 break
-            since = last_ts + interval_ms
+
+            since = last_ts + 1
+
             _time.sleep(exchange.rateLimit / 1000)
+
+            if iteration % 5 == 0:
+                progress_pct = min(100, int(((since - start_ms) / (end_ms - start_ms)) * 100))
+                add_log(f"   Fetch progress: {progress_pct}% ({len(all_data)} candles so far)", "sys")
+
         except Exception as e:
-            add_log(f"⚠️ ccxt fetch error: {e} — stopping pagination early", "warn")
+            add_log(f"⚠️ ccxt fetch error at iteration {iteration}: {e}", "warn")
             break
 
     if iteration >= max_iterations:
         add_log(f"⚠️ Reached maximum pagination requests ({max_iterations})", "warn")
 
     if not all_data:
+        add_log(f"⚠️ No data fetched for {ccxt_symbol} {ccxt_interval}", "warn")
         return pd.DataFrame()
 
     df = pd.DataFrame(all_data, columns=["timestamp", "Open", "High", "Low", "Close", "Volume"])
     df = df.drop_duplicates(subset=["timestamp"], keep="first")
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True).tz_localize(None)
+    # Convert timestamp properly without stripping timezone info
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
     df = df.set_index("timestamp").sort_index()
 
-    start_disp = pd.to_datetime(start_ms, unit="ms", utc=True).tz_localize(None)
-    end_disp = pd.to_datetime(end_ms, unit="ms", utc=True).tz_localize(None)
+    # Ensure index is a proper DatetimeIndex
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df.index = pd.to_datetime(df.index)
+
+    start_disp = pd.to_datetime(start_ms, unit="ms", utc=True)
+    end_disp = pd.to_datetime(end_ms, unit="ms", utc=True)
     df = df[(df.index >= start_disp) & (df.index <= end_disp)]
 
     if limit is not None:
         df = df.tail(min(len(df), limit))
 
     if not df.empty:
-        add_log(f"✅ {exchange_name.upper()} fetch complete: {len(df)} candles "
-                f"({df.index[0]} → {df.index[-1]})", "buy")
+        add_log(
+            f"✅ {exchange_name.upper()} fetch complete: {len(df)} candles "
+            f"({df.index[0].strftime('%Y-%m-%d')} → {df.index[-1].strftime('%Y-%m-%d')})",
+            "buy"
+        )
+    else:
+        add_log(f"⚠️ No data found in the requested date range after filtering", "warn")
 
     return df
 
 
 def fetch_okx_history_range(symbol: str, interval: str, start_ts: "pd.Timestamp",
                             end_ts: "pd.Timestamp", max_bars: int = 3000) -> "pd.DataFrame | None":
-    """
-    Fetch OHLCV covering an ARBITRARY historical date range using OKX's
-    /market/history-candles endpoint (this is the endpoint that actually
-    serves older data — /market/candles used by fetch_public_ohlcv() only
-    ever returns the most recent ~1000 bars, which is why backtests were
-    silently ignoring older start dates before).
-
-    Pages backward from end_ts using the 'after' cursor until start_ts is
-    reached or max_bars/rate-limit safety caps kick in.
-    """
     try:
         import requests, time
         url = "https://www.okx.com/api/v5/market/history-candles"
         fetched: list = []
         after_param = str(int(end_ts.timestamp() * 1000))
-        max_pages = max(1, max_bars // 100)  # history-candles caps at 100/request
+        max_pages = max(1, max_bars // 100)
 
         for _ in range(max_pages):
             params = {"instId": symbol, "bar": interval, "limit": "100", "after": after_param}
@@ -984,13 +1275,13 @@ def fetch_okx_history_range(symbol: str, interval: str, start_ts: "pd.Timestamp"
             data = resp.json()
             if data.get("code") != "0" or not data.get("data"):
                 break
-            rows = data["data"]  # newest → oldest within this page
+            rows = data["data"]
             fetched.extend(rows)
             oldest_ts = pd.to_datetime(float(rows[-1][0]), unit="ms")
             after_param = rows[-1][0]
             if oldest_ts <= start_ts or len(rows) < 100:
                 break
-            time.sleep(0.05)  # stay polite to OKX's rate limit
+            time.sleep(0.05)
 
         if not fetched:
             return None
@@ -998,9 +1289,7 @@ def fetch_okx_history_range(symbol: str, interval: str, start_ts: "pd.Timestamp"
         df = pd.DataFrame(fetched, columns=[
             "timestamp", "Open", "High", "Low", "Close", "Volume",
             "volCcy", "volBase", "turnover"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"].astype(float), unit="ms")
-        for col in ["Open", "High", "Low", "Close", "Volume"]:
-            df[col] = pd.to_numeric(df[col])
+        df["timestamp"] = pd.to_datetime(df["timestamp"].astype(float), unit="ms", utc=True)
         df = (df.sort_values("timestamp")
               .drop_duplicates("timestamp")
               .set_index("timestamp"))
@@ -1013,30 +1302,16 @@ def fetch_okx_history_range(symbol: str, interval: str, start_ts: "pd.Timestamp"
 
 def fetch_market_data(symbol: str, interval: str, limit: int = 500,
                       silent: bool = False):
-    """
-    Unified market data fetcher.
-    • Demo mode  → OKX public API (no key) first; falls back to generated data only on failure.
-    • Live/Paper → authenticated OKX SDK (api_key required); falls back to public API on error.
-    • Generated data is NEVER used unless the public fetch also fails in demo mode.
-
-    Parameters
-    ----------
-    silent : suppress routine "X bars fetched" log — set True during auto-cycle
-             so the log only shows trading events, not every poll.
-    """
     try:
         cfg_key = st.session_state.connection_mode or "demo"
 
-        # ── DEMO MODE: use real OKX public data, no API key needed ──────────
         if cfg_key == "demo":
             df = fetch_public_ohlcv(symbol, interval, limit, silent=silent)
             if df is not None and len(df) >= 30:
                 return df
-            # Public fetch failed — fall back to generated data and always warn
             add_log("⚠️ OKX public feed unavailable — falling back to generated demo data.", "warn")
             return generate_demo_data(symbol, interval, limit)
 
-        # ── LIVE / PAPER: authenticated OKX SDK ─────────────────────────────
         cfg = st.session_state.config.get(cfg_key, {})
         if not cfg or not cfg.get("api_key"):
             add_log(f"⚠️ No API config for '{cfg_key}' — trying public feed as fallback.", "warn")
@@ -1059,7 +1334,6 @@ def fetch_market_data(symbol: str, interval: str, limit: int = 500,
         df["timestamp"] = pd.to_datetime(df["timestamp"].astype(float), unit="ms")
         for col in ["Open", "High", "Low", "Close", "Volume"]:
             df[col] = pd.to_numeric(df[col])
-        # Sort ascending + deduplicate (authenticated API can return repeated bars near live edge)
         df = (df.sort_values("timestamp")
               .drop_duplicates("timestamp")
               .set_index("timestamp"))
@@ -1076,13 +1350,6 @@ def fetch_market_data(symbol: str, interval: str, limit: int = 500,
 
 def generate_demo_data(symbol: str, interval: str, limit: int = 300,
                        anchor_end: "pd.Timestamp | None" = None) -> pd.DataFrame:
-    """Realistic synthetic OHLCV for demo mode — no API needed.
-    anchor_end: if provided, the generated series ends at this timestamp
-    instead of "now" — required for the backtest tab's last-resort fallback
-    so changing the selected date range actually changes the output. Without
-    this, every call anchored to "now" regardless of what dates were picked,
-    which made backtests look identical across different date selections
-    whenever real data sources were unavailable."""
     base_prices = {
         "SOL-USDT": 142.0, "BTC-USDT": 65000.0, "ETH-USDT": 3200.0,
         "BNB-USDT": 580.0, "XRP-USDT": 0.58,
@@ -1091,9 +1358,9 @@ def generate_demo_data(symbol: str, interval: str, limit: int = 300,
     if anchor_end is not None:
         _end_for_seed = pd.Timestamp(anchor_end)
         _end_for_seed = _end_for_seed.tz_localize(None) if _end_for_seed.tzinfo else _end_for_seed
-        rng = np.random.default_rng(int(_end_for_seed.timestamp()) // 60)  # seeded by selected end date
+        rng = np.random.default_rng(int(_end_for_seed.timestamp()) // 60)
     else:
-        rng = np.random.default_rng(int(pd.Timestamp.now().timestamp()) // 60)  # changes each minute
+        rng = np.random.default_rng(int(pd.Timestamp.now().timestamp()) // 60)
     rets = rng.normal(0.0001, 0.008, limit)
     trend = np.sin(np.linspace(0, 6 * np.pi, limit)) * 0.0015
     rets = rets + trend
@@ -1131,20 +1398,14 @@ def generate_demo_data(symbol: str, interval: str, limit: int = 300,
 # ═══════════════════════════════════════════════════════════════════════════
 
 def is_within_trading_window(strategy: str) -> tuple[bool, str]:
-    """
-    Returns (allowed: bool, reason: str).
-    If window is disabled → always allowed.
-    Checks day-of-week and time range in UTC.
-    Overnight windows (e.g. 22:00–06:00) are supported.
-    """
     windows = st.session_state.get("trading_windows", {})
     cfg = windows.get(strategy)
     if not cfg or not cfg.get("enabled", False):
         return True, "No window restriction"
 
     now_utc = datetime.now(timezone.utc)
-    day_now = now_utc.weekday()  # 0=Mon … 6=Sun
-    time_now = now_utc.hour * 60 + now_utc.minute  # minutes since midnight
+    day_now = now_utc.weekday()
+    time_now = now_utc.hour * 60 + now_utc.minute
 
     allowed_days = cfg.get("days", list(range(7)))
     if day_now not in allowed_days:
@@ -1158,10 +1419,8 @@ def is_within_trading_window(strategy: str) -> tuple[bool, str]:
     end_mins = end_h * 60 + end_m
 
     if start_mins <= end_mins:
-        # Normal window e.g. 09:00 – 17:00
         in_window = start_mins <= time_now <= end_mins
     else:
-        # Overnight window e.g. 22:00 – 06:00
         in_window = time_now >= start_mins or time_now <= end_mins
 
     if not in_window:
@@ -1171,7 +1430,6 @@ def is_within_trading_window(strategy: str) -> tuple[bool, str]:
 
 
 def render_window_indicator(strategy: str):
-    """Small coloured badge showing window status."""
     allowed, reason = is_within_trading_window(strategy)
     windows = st.session_state.get("trading_windows", {})
     cfg = windows.get(strategy, {})
@@ -1200,7 +1458,6 @@ def render_window_indicator(strategy: str):
 
 def compute_indicators(df: pd.DataFrame, strategy: str = "Momentum") -> pd.DataFrame:
     d = df.copy()
-    # Read EMA spans from Parameters tab (session state), with safe defaults
     if strategy == "Scalping":
         span_fast = int(st.session_state.get("scal_ema_fast", 5.0))
         span_mid = int(st.session_state.get("scal_ema_slow", 20.0))
@@ -1209,7 +1466,6 @@ def compute_indicators(df: pd.DataFrame, strategy: str = "Momentum") -> pd.DataF
         span_fast = int(st.session_state.get("mom_ema_fast", 5.0))
         span_mid = int(st.session_state.get("mom_ema_mid", 26.0))
         span_slow = int(st.session_state.get("mom_ema_slow", 60.0))
-    # Clamp to valid range
     span_fast = max(2, span_fast)
     span_mid = max(span_fast + 1, span_mid)
     span_slow = max(span_mid + 1, span_slow)
@@ -1239,33 +1495,17 @@ def compute_indicators(df: pd.DataFrame, strategy: str = "Momentum") -> pd.DataF
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SELF-CONTAINED ML ENGINE  (works without external model files)
+# SELF-CONTAINED ML ENGINE
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _safe_predict(model, df: pd.DataFrame) -> tuple[int, float]:
-    """
-    Call model.predict(df) and normalise the result to (pred: int, conf: float)
-    regardless of what the model returns.
-
-    Handles all known return shapes:
-      • (int, float)              — BuiltinMLModel standard  → use as-is
-      • (int, float, *extras)     — external model with extra fields → take first two
-      • (label_str, float, ...)   — string label → convert to int
-      • numpy array / single val  — raw sklearn predict → map to int, default conf
-      • nested tuple / list       — flatten first element
-
-    Never raises — returns (0, 0.5) on any unexpected shape so the UI degrades
-    gracefully instead of crashing.
-    """
     try:
         result = model.predict(df)
     except Exception as e:
         add_log(f"⚠️ model.predict() raised: {e}", "err")
         return 0, 0.5
 
-    # ── Normalise pred (first element) ──────────────────────────────────
     def _to_int(v) -> int:
-        """Convert any label representation to 1 / -1 / 0."""
         if isinstance(v, (int, np.integer)):
             return int(v)
         if isinstance(v, float):
@@ -1275,7 +1515,6 @@ def _safe_predict(model, df: pd.DataFrame) -> tuple[int, float]:
             if u in ("1", "BUY", "LONG", "BULLISH", "UP"):   return 1
             if u in ("-1", "SELL", "SHORT", "BEARISH", "DOWN"): return -1
             return 0
-        # numpy array or sequence with one element
         if hasattr(v, '__len__') and len(v) == 1:
             return _to_int(v[0])
         try:
@@ -1284,33 +1523,26 @@ def _safe_predict(model, df: pd.DataFrame) -> tuple[int, float]:
             return 0
 
     def _to_conf(v) -> float:
-        """Clamp confidence / probability to [0, 1]."""
         try:
             f = float(v) if not hasattr(v, '__len__') else float(v[0])
-            # Values > 1 are assumed to be percentages (e.g. 75.3 → 0.753)
             return min(1.0, f / 100.0 if f > 1.0 else f)
         except Exception:
             return 0.6
 
-    # ── Handle return shapes ─────────────────────────────────────────────
     if isinstance(result, (tuple, list)):
         n = len(result)
         if n == 0:
             return 0, 0.5
         if n == 1:
-            # Single-element tuple — may itself be (pred, conf) or just pred
             inner = result[0]
             if isinstance(inner, (tuple, list)) and len(inner) >= 2:
                 return _to_int(inner[0]), _to_conf(inner[1])
             return _to_int(inner), 0.6
-        # n >= 2: take first two elements as (pred, conf)
         return _to_int(result[0]), _to_conf(result[1])
 
-    # Bare numpy array (e.g. sklearn model.predict returns ndarray)
     if hasattr(result, '__len__'):
         return _to_int(result[0]) if len(result) > 0 else 0, 0.6
 
-    # Scalar — just a prediction with no confidence
     return _to_int(result), 0.6
 
 
@@ -1322,37 +1554,6 @@ def _ml_direction_gate(
         conf_thr: float,
         auto_exec: bool,
 ) -> tuple[str, str]:
-    """
-    Apply the ML prediction as a direction-aware gate on the strategy signal.
-    Returns (final_signal: str, gate_reason: str).
-
-    ╔══════════════════════════════════════════════════════════════════╗
-    ║  DIRECTION  │  ML SIGNAL  │  STRATEGY    │  OUTCOME             ║
-    ╠══════════════════════════════════════════════════════════════════╣
-    ║  Long       │  BULLISH    │  BUY         │  ✅ ALIGNED — confirm ║
-    ║  Long       │  BULLISH    │  HOLD        │  ✅ AUTO-EXEC if on   ║
-    ║  Long       │  BEARISH    │  BUY         │  ⚠️ CONFLICT — block  ║
-    ║  Long       │  BEARISH    │  SELL/HOLD   │  pass-through         ║
-    ╠══════════════════════════════════════════════════════════════════╣
-    ║  Short      │  BEARISH    │  SELL        │  ✅ ALIGNED — confirm ║
-    ║  Short      │  BEARISH    │  HOLD        │  ✅ AUTO-EXEC if on   ║
-    ║  Short      │  BULLISH    │  SELL        │  ⚠️ CONFLICT — block  ║
-    ║  Short      │  BULLISH    │  BUY/HOLD    │  pass-through         ║
-    ╠══════════════════════════════════════════════════════════════════╣
-    ║  Both       │  BULLISH    │  BUY         │  ✅ long leg aligned  ║
-    ║  Both       │  BULLISH    │  SELL        │  ⚠️ long-entry block  ║
-    ║  Both       │  BULLISH    │  HOLD        │  ✅ AUTO-EXEC BUY     ║
-    ║  Both       │  BEARISH    │  SELL        │  ✅ short leg aligned ║
-    ║  Both       │  BEARISH    │  BUY         │  ⚠️ short-entry block ║
-    ║  Both       │  BEARISH    │  HOLD        │  ✅ AUTO-EXEC SELL    ║
-    ╚══════════════════════════════════════════════════════════════════╝
-
-    Key safety rule: exits (stop-loss / trailing stop) are NEVER blocked by
-    the ML gate — only new position ENTRIES are filtered or promoted.
-    SELL on an open Long position and BUY on an open Short position are
-    always exit signals and always pass through unchanged.
-    """
-    # ── Gate is inactive when ML isn't ready or below confidence threshold ─
     if not ml_pred or ml_pred == "NEUTRAL" or ml_conf < conf_thr:
         if ml_pred and ml_pred != "NEUTRAL" and ml_conf < conf_thr:
             neutral_why = "ML below confidence threshold"
@@ -1362,32 +1563,23 @@ def _ml_direction_gate(
             neutral_why = "ML not trained / no prediction"
         return signal, neutral_why
 
-    ml = ml_pred.upper()  # "BULLISH" or "BEARISH"
+    ml = ml_pred.upper()
     ml_bull = (ml == "BULLISH")
     ml_bear = (ml == "BEARISH")
     conf_str = f"{ml_conf:.0f}%"
 
-    # ── LONG MODE ────────────────────────────────────────────────────────
-    # Only relevant signals: BUY (new entry) and HOLD (potential auto-exec).
-    # SELL is always an exit — never blocked.
     if direction == "Long":
         if ml_bull:
             if signal == "BUY":
                 return "BUY", f"✅ ML ALIGNED: BULLISH ({conf_str}) confirms LONG entry"
             if signal == "HOLD" and auto_exec:
                 return "BUY", f"✅ ML AUTO-EXEC: BULLISH ({conf_str}) → BUY (Long mode)"
-            # HOLD without auto-exec, or SELL exit — pass through unchanged
             return signal, f"ML BULLISH ({conf_str}) — awaiting BUY setup"
         if ml_bear:
             if signal == "BUY":
-                # ML conflicts with a new long entry — block it to protect capital
                 return "HOLD", f"⚠️ ML CONFLICT: BEARISH ({conf_str}) suppresses LONG entry"
-            # SELL (exit of open long) always passes — never block an exit
             return signal, f"ML BEARISH ({conf_str}) — exit/hold passes through (Long mode)"
 
-    # ── SHORT MODE ───────────────────────────────────────────────────────
-    # Only relevant signals: SELL (new entry) and HOLD (potential auto-exec).
-    # BUY is always an exit (covers a short) — never blocked.
     elif direction == "Short":
         if ml_bear:
             if signal == "SELL":
@@ -1397,18 +1589,9 @@ def _ml_direction_gate(
             return signal, f"ML BEARISH ({conf_str}) — awaiting SELL setup"
         if ml_bull:
             if signal == "SELL":
-                # ML conflicts with a new short entry — block it
                 return "HOLD", f"⚠️ ML CONFLICT: BULLISH ({conf_str}) suppresses SHORT entry"
-            # BUY (exit of open short) always passes — never block an exit
             return signal, f"ML BULLISH ({conf_str}) — exit/hold passes through (Short mode)"
 
-    # ── BOTH MODE ────────────────────────────────────────────────────────
-    # Two independent legs.  The ML gates each leg's NEW ENTRY independently:
-    #   BUY  → long leg entry  : BULLISH confirms, BEARISH blocks
-    #   SELL → short leg entry : BEARISH confirms, BULLISH blocks
-    #   HOLD + auto_exec       : BULLISH promotes to BUY, BEARISH to SELL
-    # Note: in Both mode exits are implicit (each leg has its own SL/trail),
-    # so a signal-level block here only prevents opening, not closing.
     else:
         if signal == "BUY":
             if ml_bull:
@@ -1426,12 +1609,10 @@ def _ml_direction_gate(
             if ml_bear:
                 return "SELL", f"✅ ML AUTO-EXEC: BEARISH ({conf_str}) → SELL (short leg, Both)"
 
-    # Fallback — no applicable gate rule matched
     return signal, f"ML {ml} ({conf_str}) — no gate rule matched for {direction}/{signal}"
 
 
 def build_ml_features(df: pd.DataFrame):
-    """Build feature matrix + binary target from indicator dataframe."""
     d = compute_indicators(df).copy()
     d["ema_spread"] = (d["ema5"] - d["ema60"]) / (d["ema60"] + 1e-9)
     d["price_ema26"] = (d["Close"] - d["ema26"]) / (d["ema26"] + 1e-9)
@@ -1439,7 +1620,6 @@ def build_ml_features(df: pd.DataFrame):
     d["macd_hist_prev"] = d["macd_hist"].shift(1)
     d["vol_change"] = d["Volume"].pct_change()
     d["hl_ratio"] = (d["High"] - d["Low"]) / (d["Close"] + 1e-9)
-    # Target: 1 = next close higher, -1 = next close lower
     d["target"] = np.where(d["Close"].shift(-1) > d["Close"], 1, -1)
     d = d.dropna()
     if len(d) < 60:
@@ -1451,8 +1631,6 @@ def build_ml_features(df: pd.DataFrame):
 
 
 class BuiltinMLModel:
-    """Self-contained sklearn-based model. Falls back gracefully."""
-
     def __init__(self, model_type: str = "rf"):
         self.model_type = model_type
         self.model = None
@@ -1487,7 +1665,7 @@ class BuiltinMLModel:
                 from sklearn.ensemble import GradientBoostingClassifier
                 self.model = GradientBoostingClassifier(n_estimators=150, max_depth=4,
                                                         learning_rate=0.05, random_state=42)
-        else:  # LSTM — approximate with deeper GBM
+        else:
             from sklearn.ensemble import GradientBoostingClassifier
             self.model = GradientBoostingClassifier(n_estimators=300, max_depth=4,
                                                     learning_rate=0.03, random_state=42)
@@ -1498,7 +1676,6 @@ class BuiltinMLModel:
         return self
 
     def predict(self, df: pd.DataFrame):
-        """Returns (pred: int 1/-1, confidence: float 0-1)."""
         if not self.trained or self.model is None:
             raise RuntimeError("Model not trained yet.")
         X, _ = build_ml_features(df)
@@ -1511,7 +1688,6 @@ class BuiltinMLModel:
         return pred, conf
 
     def forecast(self, df: pd.DataFrame, n: int = 5):
-        """Simple multi-step price forecast using last known indicators."""
         if not self.trained:
             return []
         forecasts = []
@@ -1520,7 +1696,7 @@ class BuiltinMLModel:
             pred, conf = self.predict(df_tmp)
             last_close = float(df_tmp["Close"].iloc[-1])
             atr = float(compute_indicators(df_tmp)["atr"].iloc[-1])
-            next_close = last_close * (1 + 0.002 * pred)  # small directional nudge
+            next_close = last_close * (1 + 0.002 * pred)
             new_row = pd.DataFrame([{
                 "Open": last_close, "High": last_close + atr * 0.5,
                 "Low": last_close - atr * 0.5, "Close": next_close,
@@ -1532,13 +1708,12 @@ class BuiltinMLModel:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# STRATEGY SIGNAL FUNCTIONS
+# STRATEGY SIGNAL FUNCTIONS (SIMPLIFIED BUILT-IN)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def momentum_signal(df, stop_loss_pct, order_size_pct):
     row = df.iloc[-1]
     prev = df.iloc[-2] if len(df) > 1 else row
-    # Read parameters from session state (Parameters tab) with safe defaults
     rsi_min = float(st.session_state.get("mom_rsi_min", 40.0))
     rsi_max = float(st.session_state.get("mom_rsi_max", 70.0))
     vol_thr = float(st.session_state.get("mom_vol_ratio", 1.3))
@@ -1547,10 +1722,8 @@ def momentum_signal(df, stop_loss_pct, order_size_pct):
     bull_stack = row["ema5"] > row["ema26"] > row["ema60"]
     bear_stack = row["ema5"] < row["ema26"] < row["ema60"]
 
-    # MACD: symmetric crossover for all directions
     macd_bull = row["macd"] > row["macd_signal"] and prev["macd"] <= prev["macd_signal"]
     macd_bear = row["macd"] < row["macd_signal"] and prev["macd"] >= prev["macd_signal"]
-    # Symmetric RSI zones: buy 40-70, sell 30-60
     rsi_buy = rsi_min < row["rsi"] < rsi_max
     rsi_sell = (100 - rsi_max) < row["rsi"] < (100 - rsi_min)
 
@@ -1575,7 +1748,6 @@ def momentum_signal(df, stop_loss_pct, order_size_pct):
 def kalman_signal(df, stop_loss_pct, order_size_pct):
     row = df.iloc[-1]
     close = df["Close"].values.astype(float)
-    # Read Kalman parameters from Parameters tab
     q_val = float(st.session_state.get("kal_proc_noise1", 0.01))
     r_val = float(st.session_state.get("kal_meas_noise", 500.0))
     rsi_min = float(st.session_state.get("kal_rsi_min", 40.0))
@@ -1630,19 +1802,9 @@ def scalping_signal(df, stop_loss_pct, order_size_pct):
 
 
 def enhanced_signal(df, stop_loss_pct, order_size_pct, interval="15m"):
-    """
-    Interval-aware hybrid scoring strategy.
-    Combines Momentum + Kalman + Scalping signals with
-    weights that shift based on the selected timeframe.
-
-    Fast  (1m, 5m)      → scalping crossover dominates
-    Medium (15m, 30m)   → momentum + kalman balanced
-    Slow  (1H, 4H, 1D)  → kalman + ema stack dominates
-    """
     row = df.iloc[-1]
     prev = df.iloc[-2] if len(df) > 1 else row
 
-    # ── Shared condition flags ───────────────────────────────────────────
     bull_stack = row["ema5"] > row["ema26"] > row["ema60"]
     bear_stack = row["ema5"] < row["ema26"] < row["ema60"]
     macd_bull = row["macd"] > row["macd_signal"] and prev["macd"] <= prev["macd_signal"]
@@ -1654,7 +1816,6 @@ def enhanced_signal(df, stop_loss_pct, order_size_pct, interval="15m"):
     vol_ok = row["vol_ratio"] > 1.3
     adx_ok = row["adx"] > 18
 
-    # ── Kalman direction ─────────────────────────────────────────────────
     close = df["Close"].values.astype(float)
     x, p, q, r = close[0], 1.0, 0.01, 500.0
     for c in close[1:]:
@@ -1667,20 +1828,12 @@ def enhanced_signal(df, stop_loss_pct, order_size_pct, interval="15m"):
     kalman_bull = kalman_diff > 0 and kalman_strength > 0.5
     kalman_bear = kalman_diff < 0 and kalman_strength > 0.5
 
-    # ── Interval-aware weights ───────────────────────────────────────────
-    #
-    #  Each condition has a bull_weight and bear_weight.
-    #  Score > +threshold → BUY
-    #  Score < -threshold → SELL
-    #
     fast_intervals = {"1m", "5m"}
     medium_intervals = {"15m", "30m"}
-    # anything else (1H, 4H, 1D) is slow
 
     if interval in fast_intervals:
-        # Scalping crossover dominates; Kalman/EMA stack as secondary filters
         weights = {
-            "cross": (3, 3),  # (bull_pts, bear_pts)
+            "cross": (3, 3),
             "rsi": (2, 2),
             "volume": (1, 1),
             "macd": (1, 1),
@@ -1689,9 +1842,7 @@ def enhanced_signal(df, stop_loss_pct, order_size_pct, interval="15m"):
             "adx": (1, 1),
         }
         threshold = 7
-
     elif interval in medium_intervals:
-        # Balanced — all three strategies contribute equally
         weights = {
             "cross": (1, 1),
             "rsi": (1, 1),
@@ -1702,9 +1853,7 @@ def enhanced_signal(df, stop_loss_pct, order_size_pct, interval="15m"):
             "adx": (1, 1),
         }
         threshold = 7
-
     else:
-        # Slow (1H, 4H, 1D) — Kalman + EMA stack dominate; scalping cross ignored
         weights = {
             "cross": (0, 0),
             "rsi": (1, 1),
@@ -1716,7 +1865,6 @@ def enhanced_signal(df, stop_loss_pct, order_size_pct, interval="15m"):
         }
         threshold = 7
 
-    # ── Score calculation ────────────────────────────────────────────────
     bull_score = 0
     bear_score = 0
     score_log = []
@@ -1733,7 +1881,6 @@ def enhanced_signal(df, stop_loss_pct, order_size_pct, interval="15m"):
 
     add("cross", cross_up, cross_down)
     add("rsi", rsi_buy, rsi_sell)
-    # Volume only credited when aligned with a directional condition
     add("volume", vol_ok and (bull_stack or macd_bull or cross_up), vol_ok and (bear_stack or macd_bear or cross_down))
     add("macd", macd_bull, macd_bear)
     add("kalman", kalman_bull, kalman_bear)
@@ -1742,7 +1889,6 @@ def enhanced_signal(df, stop_loss_pct, order_size_pct, interval="15m"):
 
     max_score = sum(w[0] for w in weights.values())
 
-    # ── Signal decision ──────────────────────────────────────────────────
     signal = "HOLD"
     if bull_score >= threshold and bull_score > bear_score:
         signal = "BUY"
@@ -1778,54 +1924,13 @@ STRATEGY_FN = {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-# REAL STRATEGY ENGINE — wires the actual desktop classes (MomentumStrategy /
-# KalmanTrendStrategy / ScalpingStrategy) in so these three produce the same
-# decisions as the desktop app, instead of the simplified momentum_signal()/
-# kalman_signal()/scalping_signal() helpers above.
-#
-# "Enhanced" is NOT wired here — TradingStrategy3.py as supplied is a
-# placeholder (check_entry_conditions always returns a hardcoded 75/75/True,
-# check_exit_conditions always returns None), so there is no real logic to
-# port yet. It keeps using enhanced_signal() above until a working file is
-# provided.
-#
-# KNOWN, DELIBERATE DEVIATION FROM THE DESKTOP FILES AS SUPPLIED:
-# Short-side order ROUTING (not signal logic) was broken in all three files
-# as given to me:
-#   • MomentumStrategy.execute_buy() hardcodes `'type': 'long'` — there is
-#     no code path anywhere in the file that ever opens a short.
-#   • KalmanTrendStrategy.run_analysis_cycle() returns 'long'/'short' as the
-#     decision, but the desktop's generic dispatcher only routes decisions
-#     equal to 'buy'/'sell' — so live entries never fire for Kalman at all
-#     via that path (long OR short).
-#   • ScalpingLogic.check_entry_conditions() clears self._pending_signal to
-#     None and THEN returns the decision — so by the time execute_buy()
-#     reads self._pending_signal to decide long-vs-short, it's already gone
-#     and silently defaults to 'long'.
-# None of this changes any strategy's entry/exit DECISION logic (indicators,
-# thresholds, scoring — all untouched, called exactly as written). It only
-# fixes the plumbing that takes a decision and routes it to the correct
-# execute_* call. Momentum has no short logic to route to, so it stays
-# long-only here. Tell me if you'd rather I replicate these exactly as
-# bugs (i.e. shorts silently no-op) instead of fixing the routing.
+# REAL STRATEGY ENGINE - BRIDGES DESKTOP STRATEGIES TO STREAMLIT
 # ═══════════════════════════════════════════════════════════════════════════
 
 REAL_ENGINE_STRATEGIES = {"Momentum", "Kalman", "Scalping"}
 
 
 def get_current_momentum_params_for_backtest() -> dict:
-    """
-    Web-UI equivalent of the desktop app's get_current_momentum_params().
-    The desktop app reads its live GUI fields (quality sliders, tier
-    thresholds, etc.) and pushes them onto BacktestMomentumStrategy as
-    class attributes before running Backtest(), so the backtest reflects
-    whatever's currently configured instead of the class's hardcoded
-    defaults. The Streamlit sidebar only exposes a single "confidence
-    threshold" slider (mirroring desktop's confidence_var), so we derive
-    the tier thresholds from it using the same spread as the strategy's
-    own defaults (tier1_min = tier2_min + 3, short thresholds offset +5),
-    rather than inventing unrelated values.
-    """
     conf = float(st.session_state.get("confidence_threshold", 65.0))
     return {
         "quality_tier2_min": conf,
@@ -1835,42 +1940,47 @@ def get_current_momentum_params_for_backtest() -> dict:
     }
 
 
-def _import_live_strategy_class(name: str):
-    """Import the real strategy class. Tries a couple of likely package
-    layouts (a bare top-level import, and the `strategies.<module>` package
-    implied by the __init__.py you uploaded alongside these files) before
-    giving up. Adjust _CANDIDATE_PREFIXES below if your deployment uses a
-    different layout."""
-    module_map = {
-        "Momentum": ("MomentumStrategy_MACD_HybridScore_Latest", "MomentumStrategy"),
-        "Kalman": ("KalmanTrendStrategy_New", "KalmanTrendStrategy"),
-        "Scalping": ("scalping_strategy", "ScalpingStrategy"),
-    }
-    module_name, class_name = module_map[name]
-    last_err = None
-    for prefix in ("", "strategies."):
+def get_live_strategy(name: str):
+    """Get or create a live strategy instance from desktop files"""
+    cache = st.session_state.setdefault("_live_strategies", {})
+
+    if name not in cache:
         try:
-            mod = __import__(f"{prefix}{module_name}", fromlist=[class_name])
-            return getattr(mod, class_name)
+            # Try to get the strategy class from desktop files
+            StrategyClass, error = get_cached_strategy_class(name, for_backtest=False)
+
+            if StrategyClass is None:
+                add_log(f"⚠️ Could not load real {name} strategy: {error}", "warn")
+                add_log(f"   Using simplified built-in strategy instead", "info")
+                return None
+
+            # Create adapter and strategy instance
+            adapter = LiveTradingAdapter(st.session_state.get("_last_symbol", "SOL-USDT"))
+            cache[name] = StrategyClass(adapter)
+            add_log(f"⚙️ Real {name} engine initialized from desktop files", "info")
+            st.session_state.strategy_status[name] = "Desktop Strategy Loaded ✅"
+
         except Exception as e:
-            last_err = e
-    raise ImportError(
-        f"Could not import {class_name} from {module_name} under any of the tried "
-        f"package prefixes. Last error: {last_err}. Adjust _import_live_strategy_class()."
-    )
+            add_log(f"❌ Failed to initialize {name} strategy: {e}", "err")
+            st.session_state.strategy_status[name] = f"Error: {str(e)[:50]}"
+            return None
+
+    strat = cache[name]
+
+    # Apply direction filter if the strategy supports it
+    direction_filter = st.session_state.get("direction", "Long").lower()
+    if hasattr(strat, "trade_direction"):
+        strat.trade_direction = "both" if direction_filter == "both" else direction_filter
+
+    return strat
 
 
 class LiveTradingAdapter:
-    """Implements the trading_app contract the real strategy classes expect
-    (self.trading_app.* calls inside MomentumLogic / KalmanLogic /
-    ScalpingLogic / base3_New.BaseStrategy). Backed by Streamlit
-    session_state — virtual fills only, matching the rest of this app's
-    Demo-mode accounting. For Live mode, replace place_order()'s body with
-    a real exchange call and return its actual fill price/quantity."""
+    """Bridges desktop strategies to Streamlit's session state"""
 
     def __init__(self, symbol: str):
         self.symbol = symbol
-        self.current_data = None  # some strategies read trading_app.current_data directly
+        self.current_data = None
 
     def log_message(self, message, color="white"):
         level_map = {
@@ -1890,7 +2000,6 @@ class LiveTradingAdapter:
         return {"quantity": 0.0}
 
     def get_volume_ratio(self, df=None, current_data=None, default=1.0):
-        # Ported verbatim from the desktop App's get_volume_ratio().
         vol_ratio = None
         if df is not None and len(df) >= 2:
             for col_name in ["Volume_Ratio", "volume_ratio", "Vol_Ratio"]:
@@ -1929,13 +2038,7 @@ class LiveTradingAdapter:
         st.session_state.current_status = status
 
     def place_order(self, side, price=None, quantity=None, **kwargs):
-        """Virtual fill — Demo mode only. quantity here is in BASE units
-        (shares), unlike the rest of this file's order_size_pct-of-equity
-        model, because that's what the real strategy classes size and pass.
-        Commission charged per fill as price*quantity*commission_rate,
-        mirroring the desktop App's commission_var pattern (0.1% default) —
-        the strategy classes themselves have no fee awareness at all, so
-        this has to happen at the order-placement layer, same as desktop."""
+        """Virtual fill for demo mode"""
         if price is None:
             price = self.get_current_price()
         if price is None or quantity is None or quantity <= 0:
@@ -1947,30 +2050,8 @@ class LiveTradingAdapter:
                 "commission": commission}
 
 
-def get_live_strategy(name: str):
-    """One persistent instance per strategy per browser session — created
-    once and reused on every Streamlit rerun (stored in st.session_state),
-    exactly like the desktop app's long-running self.strategies[name]
-    instance. This is what lets internal state (position, bars_held, risk
-    controller, regime history, fuzzy thresholds) carry across cycles
-    instead of resetting every rerun."""
-    cache = st.session_state.setdefault("_live_strategies", {})
-    if name not in cache:
-        StrategyClass = _import_live_strategy_class(name)
-        adapter = LiveTradingAdapter(st.session_state.get("_last_symbol", "SOL-USDT"))
-        cache[name] = StrategyClass(adapter)
-        add_log(f"⚙️ Real {name} engine initialized (strategy defaults, no UI overrides applied)", "info")
-    strat = cache[name]
-    direction_filter = st.session_state.get("direction", "Long").lower()
-    if hasattr(strat, "trade_direction"):
-        strat.trade_direction = "both" if direction_filter == "both" else direction_filter
-    return strat
-
-
 def _mirror_strategy_position_to_ui(strategy):
-    """Reflect the real strategy's internal position dict into the same
-    session_state fields the rest of the UI (chart, status badge, stats
-    panels) already reads, so nothing else in the app needs to change."""
+    """Reflect the real strategy's internal position into UI"""
     pos = getattr(strategy, "position", None)
     if pos is None:
         pos = getattr(strategy, "position_state", None)
@@ -2009,94 +2090,91 @@ def _record_real_trade_close(strategy_name, profit, exit_price, reason, side="EX
 
 
 def run_real_strategy_cycle(strategy_name, current_data, current_price, df):
-    """Faithful port of the desktop App's _process_trading_result() /
-    _execute_trades_from_result(): calls the real strategy's
-    run_analysis_cycle(), applies the same confidence-threshold gate the
-    desktop GUI applies before entries, then calls the strategy's own
-    execute_buy/execute_sell/execute_short — which is what actually owns
-    ATR-based stops, trailing activation, position sizing and partial
-    exits, exactly as on desktop. See the module-level comment above
-    REAL_ENGINE_STRATEGIES for the short-side routing fix applied here."""
+    """Run the desktop strategy cycle"""
     strategy = get_live_strategy(strategy_name)
-    result = strategy.run_analysis_cycle(current_data, current_price, df)
+    if strategy is None:
+        return False
+
+    try:
+        result = strategy.run_analysis_cycle(current_data, current_price, df)
+    except Exception as e:
+        add_log(f"❌ [{strategy_name}] Strategy error: {e}", "err")
+        return False
 
     if not isinstance(result, tuple) or len(result) < 2:
-        return
+        return True
+
+    first = result[0]
 
     # ── EXIT PATH ────────────────────────────────────────────────────────
-    # Momentum: 2-tuple (signal, pct). Kalman: 3-tuple (signal, pct, type)
-    # when exiting, 5-tuple (-1, 0, 0, "IN_TRADE", type) when still in a
-    # trade with nothing to do. Handled generically by value, not length.
-    first = result[0]
     if first not in (None, "hold", "HOLD", -1, "buy", "sell", "long", "short", "sell_short"):
         exit_signal, exit_pct = first, result[1]
         add_log(f"🚨 [{strategy_name}] EXECUTING EXIT: {exit_signal}", "warn")
-        success, profit, exit_price = strategy.execute_sell(reason=exit_signal, exit_percentage=exit_pct)
-        if success:
-            add_log(f"✅ [{strategy_name}] EXIT COMPLETE: P&L ${profit:.2f}", "buy" if profit > 0 else "sell")
-            _record_real_trade_close(strategy_name, profit, exit_price, exit_signal)
-        else:
-            add_log(f"❌ [{strategy_name}] EXIT FAILED", "err")
+        try:
+            success, profit, exit_price = strategy.execute_sell(reason=exit_signal, exit_percentage=exit_pct)
+            if success:
+                add_log(f"✅ [{strategy_name}] EXIT COMPLETE: P&L ${profit:.2f}", "buy" if profit > 0 else "sell")
+                _record_real_trade_close(strategy_name, profit, exit_price, exit_signal)
+            else:
+                add_log(f"❌ [{strategy_name}] EXIT FAILED", "err")
+        except Exception as e:
+            add_log(f"❌ [{strategy_name}] EXIT error: {e}", "err")
         _mirror_strategy_position_to_ui(strategy)
-        return
+        return True
 
     # ── ENTRY PATH ───────────────────────────────────────────────────────
     if len(result) >= 4 and first in ("buy", "sell", "long", "short", "sell_short"):
         decision, quality_score, shares, reason = result[0], result[1], result[2], result[3]
         if quality_score is None or not shares or shares <= 0:
-            return
+            return True
 
         confidence_threshold = float(st.session_state.get("confidence_threshold", 65.0))
         if quality_score < confidence_threshold:
             add_log(
                 f"🎯 [{strategy_name}] ENTRY REJECTED — quality {quality_score:.0f} "
                 f"< threshold {confidence_threshold:.0f}", "warn")
-            return
+            return True
 
         is_short = decision in ("sell", "short", "sell_short")
         atr_val = float(current_data.get("ATR", 1)) if hasattr(current_data, "get") else 1.0
         tier = getattr(strategy, "_last_entry_tier", 1)
 
-        if is_short:
-            if hasattr(strategy, "execute_short"):
-                # Kalman: dedicated short-entry method.
-                success, filled_qty, order_id = strategy.execute_short(
-                    shares=shares, price=current_price, atr=atr_val,
-                    quality_score=quality_score, tier=tier)
-            elif hasattr(strategy, "_pending_signal"):
-                # Scalping: execute_buy() infers direction from
-                # self._pending_signal, which check_entry_conditions()
-                # already cleared. Re-supply it so the fill opens 'short'
-                # instead of silently defaulting to 'long'.
-                strategy._pending_signal = {"direction": "short"}
+        try:
+            if is_short:
+                if hasattr(strategy, "execute_short"):
+                    success, filled_qty, order_id = strategy.execute_short(
+                        shares=shares, price=current_price, atr=atr_val,
+                        quality_score=quality_score, tier=tier)
+                elif hasattr(strategy, "_pending_signal"):
+                    strategy._pending_signal = {"direction": "short"}
+                    success, filled_qty, order_id = strategy.execute_buy(
+                        shares=shares, price=current_price, atr=atr_val,
+                        quality_score=quality_score, tier=tier)
+                else:
+                    add_log(
+                        f"⚠️ [{strategy_name}] SHORT signal ignored — no short-entry logic.", "warn")
+                    return True
+            else:
                 success, filled_qty, order_id = strategy.execute_buy(
                     shares=shares, price=current_price, atr=atr_val,
                     quality_score=quality_score, tier=tier)
-            else:
-                # Momentum: no short-entry code path exists in the file
-                # as supplied — nothing to call.
+
+            if success:
                 add_log(
-                    f"⚠️ [{strategy_name}] SHORT signal ignored — this strategy's "
-                    f"execute path has no short-entry logic in the file provided.", "warn")
-                return
-        else:
-            success, filled_qty, order_id = strategy.execute_buy(
-                shares=shares, price=current_price, atr=atr_val,
-                quality_score=quality_score, tier=tier)
+                    f"{'🔴' if is_short else '🟢'} [{strategy_name}] "
+                    f"{'SHORT' if is_short else 'LONG'} EXECUTED — qty {filled_qty:.4f} @ "
+                    f"{current_price:.4f} (quality {quality_score:.0f}) | {reason}",
+                    "sell" if is_short else "buy")
+            else:
+                add_log(f"❌ [{strategy_name}] ENTRY FAILED", "err")
+        except Exception as e:
+            add_log(f"❌ [{strategy_name}] ENTRY error: {e}", "err")
 
-        if success:
-            add_log(
-                f"{'🔴' if is_short else '🟢'} [{strategy_name}] "
-                f"{'SHORT' if is_short else 'LONG'} EXECUTED — qty {filled_qty:.4f} @ "
-                f"{current_price:.4f} (quality {quality_score:.0f}) | {reason}",
-                "sell" if is_short else "buy")
-        else:
-            add_log(f"❌ [{strategy_name}] ENTRY FAILED", "err")
         _mirror_strategy_position_to_ui(strategy)
-        return
+        return True
 
-    # ── HOLD / IN_TRADE no-op ────────────────────────────────────────────
     _mirror_strategy_position_to_ui(strategy)
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2104,27 +2182,18 @@ def run_real_strategy_cycle(strategy_name, current_data, current_price, df):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, order_size_pct, mode):
-    # Real-engine strategies skip the web-only ranging gate below entirely —
-    # the desktop app has no such outer filter (should_skip_due_to_ranging
-    # doesn't exist there); MomentumStrategy/KalmanTrendStrategy/ScalpingStrategy
-    # already do their own internal regime/ranging detection, so this extra
-    # gate would only cause false-negative blocking vs. desktop.
     _use_real_now = strategy in REAL_ENGINE_STRATEGIES and st.session_state.get("use_real_engine", True)
 
-    # ── RANGING MARKET CHECK ──────────────────────────────────────────────
     ranging_settings = st.session_state.get("ranging_settings", {"enabled": True, "skip_on_ranging": True})
 
-    # Reset cooldown counter if trading stopped
     if not st.session_state.trading_running:
         st.session_state.ranging_cooldown_counter = 0
 
-    # Skip if in cooldown (web-only gate — not applied on the real-engine path)
     if not _use_real_now and st.session_state.ranging_cooldown_counter > 0:
         st.session_state.ranging_cooldown_counter -= 1
         add_log(f"⏸ Ranging cooldown: {st.session_state.ranging_cooldown_counter} bars remaining", "sys")
         return
 
-    # ── Trading window guard ──────────────────────────────────────────────
     allowed, window_reason = is_within_trading_window(strategy)
     if not allowed:
         add_log(f"⏱ WINDOW BLOCKED [{strategy}] — {window_reason}", "warn")
@@ -2134,14 +2203,12 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
             add_log(f"⏱ Trading auto-stopped — window closed for {strategy}.", "warn")
         return
 
-    # ── Fetch market data ────────────────────────────────────────────────────
     CHART_BARS = 300
     df = fetch_market_data(symbol, interval, limit=CHART_BARS, silent=True)
     if df is None or len(df) < 30:
         add_log("⚠️ Could not fetch candles — skipping cycle.", "warn")
         return
 
-    # ── RANGING MARKET DETECTION (web-only — bypassed for real engine) ────
     if not _use_real_now and ranging_settings.get("enabled", True) and ranging_settings.get("skip_on_ranging", True):
         skip, ranging_analysis = should_skip_due_to_ranging(
             df,
@@ -2151,7 +2218,6 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
             min_slope_pct=ranging_settings.get(f"{strategy.lower()}_min_slope", 0.15),
         )
 
-        # Store analysis for UI display
         st.session_state.ranging_analysis = ranging_analysis
 
         if skip:
@@ -2168,11 +2234,9 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
                 "warn"
             )
 
-            # Update price but don't process signals
             st.session_state.market_data = df
             st.session_state.last_price = float(df["Close"].iloc[-1])
 
-            # Update chart markers for ranging detection
             st.session_state.chart_markers.append({
                 "ts": df.index[-1],
                 "price": float(df["Close"].iloc[-1]),
@@ -2184,17 +2248,8 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
 
             return
 
-    # ── Continue with normal trading cycle ───────────────────────────────────
     st.session_state.market_data = df
 
-    # ── CANDLE SYNC: detect new CLOSED candle ────────────────────────────
-    # OKX's REST API always includes the currently forming candle as the
-    # last row. Using it for signals causes flickering indicators and
-    # premature entries. We only process signals when a newly CLOSED candle
-    # appears, matching exactly what you see on OKX's web chart.
-    #
-    # df.iloc[-1] = forming candle  → live price display ONLY
-    # df.iloc[-2] = last closed bar → signal computation
     if len(df) < 2:
         add_log('⚠️ Need at least 2 bars to detect candle boundaries.', 'warn')
         return
@@ -2202,41 +2257,45 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
     closed_bar_ts = str(df.index[-2])
     forming_price = float(df["Close"].iloc[-1])
 
-    # Always update live price from the forming candle
     st.session_state.last_price = forming_price
 
-    # Skip if no new closed candle since last cycle
     if closed_bar_ts == st.session_state.last_bar_ts:
         add_log(f"⏳ Waiting for new bar | Price: {forming_price:.4f}", "sys")
         return
 
-    # ── New closed candle detected — process signals ─────────────────────
     st.session_state.last_bar_ts = closed_bar_ts
     st.session_state.bars_processed += 1
     st.session_state.cycle_count += 1
-    st.session_state["_beep_on_rerun"] = True  # Trigger browser beep
+    st.session_state["_beep_on_rerun"] = True
     st.session_state["_last_symbol"] = symbol
     st.session_state.last_cycle_time = datetime.now().strftime("%H:%M:%S")
 
-    # ── REAL ENGINE PATH — Momentum / Kalman / Scalping ───────────────────
-    # The real strategy classes handle their own indicator computation and
-    # already use iloc[-2] internally, so we pass the full df.
+    # ── REAL ENGINE PATH (Desktop Strategies) ──────────────────────────
     if strategy in REAL_ENGINE_STRATEGIES and st.session_state.get("use_real_engine", True):
         try:
             real_strategy = get_live_strategy(strategy)
-            df_real = real_strategy.calculate_indicators(df)
-            if df_real is None or len(df_real) < 2:
-                add_log(f"⚠️ [{strategy}] Real engine: not enough bars for indicators yet.", "warn")
-                return
-            current_data = df_real.iloc[-2]
-            current_price = float(current_data["Close"])
-            st.session_state.last_price = current_price
-            run_real_strategy_cycle(strategy, current_data, current_price, df_real)
+            if real_strategy is None:
+                # Fall back to simplified if real strategy couldn't load
+                add_log(f"ℹ️ Falling back to simplified {strategy} strategy", "info")
+            else:
+                # Check if strategy has calculate_indicators method
+                if hasattr(real_strategy, 'calculate_indicators'):
+                    df_real = real_strategy.calculate_indicators(df)
+                    if df_real is None or len(df_real) < 2:
+                        add_log(f"⚠️ [{strategy}] Real engine: not enough bars for indicators yet.", "warn")
+                        return
+                    current_data = df_real.iloc[-2]
+                    current_price = float(current_data["Close"])
+                    st.session_state.last_price = current_price
+                    run_real_strategy_cycle(strategy, current_data, current_price, df_real)
+                    return
+                else:
+                    add_log(f"⚠️ [{strategy}] Strategy missing calculate_indicators method", "warn")
         except Exception as e:
             add_log(f"❌ [{strategy}] Real engine error: {e}", "err")
-        return
+        # Fall through to simplified if real engine fails
 
-    # ── SIMPLIFIED PATH — compute indicators on CLOSED candles only ──────
+    # ── SIMPLIFIED PATH (Built-in Strategies) ──────────────────────────
     df_closed = df.iloc[:-1].copy()
     df_ind = compute_indicators(df_closed, strategy=strategy).bfill().ffill()
     if df_ind.empty or df_ind['rsi'].isna().all():
@@ -2275,24 +2334,7 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
         "sys"
     )
 
-    # Position management delegated to _manage_trail / _close_position / _open_position helpers
-
-    # ══════════════════════════════════════════════════════════════════════
-    # DIRECTION ENGINE
-    # ══════════════════════════════════════════════════════════════════════
-    # Strategies are ALWAYS direction-unaware → generate BUY / SELL / HOLD
-    # freely based on market conditions only.
-    #
-    # Long  → opens LONG on BUY  | SELL signal exits the long  | ignores SELL entry
-    # Short → opens SHORT on SELL | BUY signal exits the short | ignores BUY entry
-    # Both  → opens LONG on BUY AND SHORT on SELL as two independent concurrent
-    #         positions, each with its own SL / trailing stop / P&L counter.
-    #         They close independently — neither is aware of the other.
-    # ══════════════════════════════════════════════════════════════════════
-
     direction_filter = st.session_state.get("direction", "Long")
-
-    # ── Shared helpers (defined inline for closure over local vars) ───────
 
     def _open_pos(slot_key, side_name, entry_price, sig):
         sl = entry_price * (1 - stop_loss_pct / 100) if side_name == "long" \
@@ -2316,7 +2358,6 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
         )
 
     def _trail_pos(slot_key):
-        """Update trailing stop. Returns True if stop was hit."""
         p = st.session_state[slot_key]
         if p is None:
             return False
@@ -2334,7 +2375,6 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
             return price >= p.get("trail_price", p["stop_loss"])
 
     def _close_pos(slot_key, close_price, reason_exit):
-        """Close position, update all stats (total + per-side), log."""
         p = st.session_state[slot_key]
         if p is None:
             return
@@ -2347,9 +2387,7 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
         fee_out = float(st.session_state.get("taker_pct", 0.0001)) * 100
         net_pct = raw_pct - fee_in - fee_out
         usdt = st.session_state.virtual_balance["USDT"] * (size_c / 100) * (net_pct / 100)
-        # Balance
         st.session_state.virtual_balance["USDT"] += usdt
-        # Total stats
         st.session_state.stats["pnl"] += usdt
         st.session_state.stats["trades"] += 1
         if net_pct > 0:
@@ -2357,13 +2395,11 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
         t = st.session_state.stats["trades"]
         w = st.session_state.stats["wins"]
         st.session_state.stats["win_rate"] = (w / t * 100) if t else 0.0
-        # Per-side stats
         sk = "long" if side_c == "long" else "short"
         st.session_state.stats[f"{sk}_trades"] += 1
         st.session_state.stats[f"{sk}_pnl"] += usdt
         if net_pct > 0:
             st.session_state.stats[f"{sk}_wins"] += 1
-        # Log
         sign = "+" if net_pct >= 0 else ""
         level = "buy" if net_pct >= 0 else "sell"
         add_log(
@@ -2387,15 +2423,6 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
         })
         st.session_state[slot_key] = None
 
-    # ── ML direction-aware gate ───────────────────────────────────────────
-    # Applies BEFORE the direction engine so every signal — BUY, SELL, or
-    # HOLD — is filtered through the ML gate.  The gate:
-    #   • Confirms aligned entries (logs ✅)
-    #   • Promotes HOLD → entry when auto-exec is on and ML agrees
-    #   • Suppresses entries that conflict with the ML prediction (logs ⚠️)
-    #   • Never blocks exits (stop-loss / trailing stop always fire)
-    #   • Is a no-op when ML is disabled, untrained, NEUTRAL, or below
-    #     the confidence threshold
     _ml_enabled_now = st.session_state.get("ml_toggle", False)
     if _ml_enabled_now:
         signal, _gate_reason = _ml_direction_gate(
@@ -2406,7 +2433,6 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
             conf_thr=float(st.session_state.get("ml_conf_slider", 75)),
             auto_exec=st.session_state.get("auto_exec", False),
         )
-        # Log gate outcome — only when it actually changed something or is notable
         _gate_notable = any(kw in _gate_reason for kw in ("ALIGNED", "CONFLICT", "AUTO-EXEC"))
         if _gate_notable:
             _gate_level = "buy" if "AUTO-EXEC" in _gate_reason or "ALIGNED" in _gate_reason else "warn"
@@ -2416,10 +2442,9 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
     elif signal == "HOLD":
         add_log(f"   ⬜ HOLD — {result['reason']}", "sys")
 
-    # ── LONG MODE ────────────────────────────────────────────────────────
     if direction_filter == "Long":
         if st.session_state.position:
-            _stop_hit_l = _trail_pos("position")  # evaluate ONCE
+            _stop_hit_l = _trail_pos("position")
             if _stop_hit_l or signal == "SELL":
                 _close_pos("position", price, "STOP" if _stop_hit_l else "SIGNAL")
                 st.session_state.current_status = "PARKING"
@@ -2427,10 +2452,9 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
             _open_pos("position", "long", price, signal)
             st.session_state.current_status = "BUY"
 
-    # ── SHORT MODE ───────────────────────────────────────────────────────
     elif direction_filter == "Short":
         if st.session_state.position:
-            _stop_hit_s = _trail_pos("position")  # evaluate ONCE
+            _stop_hit_s = _trail_pos("position")
             if _stop_hit_s or signal == "BUY":
                 _close_pos("position", price, "STOP" if _stop_hit_s else "SIGNAL")
                 st.session_state.current_status = "PARKING"
@@ -2438,33 +2462,25 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
             _open_pos("position", "short", price, signal)
             st.session_state.current_status = "SELL"
 
-    # ── BOTH MODE — two independent concurrent positions ─────────────────
-    # Long and Short legs are fully independent:
-    #   • BUY  signal → opens long leg  (if not open) AND closes short leg (if open)
-    #   • SELL signal → opens short leg (if not open) AND closes long leg  (if open)
-    #   Each leg tracks its own SL / trailing stop / P&L independently.
     else:
-        # ── Long leg ────────────────────────────────────────────────────────
         if st.session_state.position_long:
-            _stop_long = _trail_pos("position_long")  # evaluate ONCE
+            _stop_long = _trail_pos("position_long")
             if _stop_long or signal == "SELL":
                 _close_pos("position_long", price, "STOP" if _stop_long else "SIGNAL")
         if not st.session_state.position_long and signal == "BUY":
             _open_pos("position_long", "long", price, signal)
 
-        # ── Short leg ───────────────────────────────────────────────────────
         if st.session_state.position_short:
-            _stop_short = _trail_pos("position_short")  # evaluate ONCE
+            _stop_short = _trail_pos("position_short")
             if _stop_short or signal == "BUY":
                 _close_pos("position_short", price, "STOP" if _stop_short else "SIGNAL")
         if not st.session_state.position_short and signal == "SELL":
             _open_pos("position_short", "short", price, signal)
 
-        # ── Status badge ─────────────────────────────────────────────────────
         has_long = st.session_state.position_long is not None
         has_short = st.session_state.position_short is not None
         if has_long and has_short:
-            st.session_state.current_status = "BUY"  # both legs open
+            st.session_state.current_status = "BUY"
         elif has_long:
             st.session_state.current_status = "BUY"
         elif has_short:
@@ -2472,7 +2488,6 @@ def run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, o
         else:
             st.session_state.current_status = "PARKING"
 
-        # Expose active leg for chart display (prefer long when both open)
         st.session_state.position = (
                 st.session_state.position_long or st.session_state.position_short
         )
@@ -2503,7 +2518,6 @@ def render_candlestick_chart(df: pd.DataFrame, symbol: str):
                                         ("EMA60", "EMA60", "#cc44ff", 1.4)]:
                 fig.add_trace(go.Scatter(x=df2.index, y=df2[col], name=name,
                                          line=dict(color=color, width=w), opacity=1.0), row=1, col=1)
-        # Mark open position lines
         pos = st.session_state.position
         if pos:
             fig.add_hline(y=pos["price"], line_color="#ffcc00", line_dash="dash",
@@ -2513,10 +2527,8 @@ def render_candlestick_chart(df: pd.DataFrame, symbol: str):
             if "trail_price" in pos:
                 fig.add_hline(y=pos["trail_price"], line_color="#cc44ff", line_dash="dot",
                               line_width=2, annotation_text="TRAIL", row=1, col=1)
-        # ── Buy / Sell markers ──────────────────────────────────────────
         markers = st.session_state.get("chart_markers", [])
         if markers:
-            # Filter to markers whose timestamp falls within the chart range
             chart_start = df.index[0]
             chart_end = df.index[-1]
 
@@ -2553,7 +2565,6 @@ def render_candlestick_chart(df: pd.DataFrame, symbol: str):
                     ranging_px.append(m["price"]);
                     ranging_lbl.append(m["label"])
 
-            # BUY entry — green triangle up below bar
             if buy_ts:
                 fig.add_trace(go.Scatter(
                     x=buy_ts, y=[p * 0.9985 for p in buy_px],
@@ -2565,7 +2576,6 @@ def render_candlestick_chart(df: pd.DataFrame, symbol: str):
                     name="BUY", showlegend=True,
                 ), row=1, col=1)
 
-            # SELL entry — red triangle down above bar
             if sell_entry_ts:
                 fig.add_trace(go.Scatter(
                     x=sell_entry_ts, y=[p * 1.0015 for p in sell_px],
@@ -2577,7 +2587,6 @@ def render_candlestick_chart(df: pd.DataFrame, symbol: str):
                     name="SELL", showlegend=True,
                 ), row=1, col=1)
 
-            # Close WIN — gold circle
             if close_win_ts:
                 fig.add_trace(go.Scatter(
                     x=close_win_ts, y=[p * 1.002 for p in cw_px],
@@ -2589,7 +2598,6 @@ def render_candlestick_chart(df: pd.DataFrame, symbol: str):
                     name="WIN", showlegend=True,
                 ), row=1, col=1)
 
-            # Close LOSS — purple circle
             if close_loss_ts:
                 fig.add_trace(go.Scatter(
                     x=close_loss_ts, y=[p * 0.998 for p in cl_px],
@@ -2601,7 +2609,6 @@ def render_candlestick_chart(df: pd.DataFrame, symbol: str):
                     name="LOSS", showlegend=True,
                 ), row=1, col=1)
 
-            # Ranging marker — white X
             if ranging_ts:
                 fig.add_trace(go.Scatter(
                     x=ranging_ts, y=[p * 1.001 for p in ranging_px],
@@ -2638,11 +2645,6 @@ def render_candlestick_chart(df: pd.DataFrame, symbol: str):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def render_trading_window_panel(strategy: str):
-    """
-    Floating panel rendered inline below the chart area.
-    Opens when ⏱ Trading Window button is clicked.
-    Shows settings for the currently selected strategy.
-    """
     windows = st.session_state.setdefault("trading_windows", {})
     cfg = windows.setdefault(strategy, {
         "enabled": False, "start": "00:00", "end": "23:59",
@@ -2708,7 +2710,6 @@ letter-spacing:0.12em;margin-bottom:14px">
             if st.checkbox(day, value=checked, key=f"tw_day_{strategy}_{i}"):
                 selected_days.append(i)
 
-        # Live status preview
         st.markdown(
             '<div style="color:#7eb8e8;font-size:0.78rem;font-weight:600;margin:12px 0 4px">CURRENT STATUS</div>',
             unsafe_allow_html=True)
@@ -2727,7 +2728,6 @@ letter-spacing:0.12em;margin-bottom:14px">
                     unsafe_allow_html=True)
 
         if st.button("💾 Save", width="stretch", key=f"tw_save_{strategy}"):
-            # Apply preset if not Custom
             p = PRESETS.get(preset_choice)
             if p is not None:
                 p_enabled, p_start, p_end, p_days = p
@@ -2737,7 +2737,6 @@ letter-spacing:0.12em;margin-bottom:14px">
                 }
                 add_log(f"⏱ [{strategy}] window set to preset: {preset_choice}", "info")
             else:
-                # Validate custom time format
                 import re as _re
                 time_ok = bool(_re.match(r"^\d{2}:\d{2}$", start_time)) and bool(_re.match(r"^\d{2}:\d{2}$", end_time))
                 if not time_ok:
@@ -2771,7 +2770,6 @@ letter-spacing:0.12em;margin-bottom:14px">
             st.session_state.tw_panel_open = False
             st.rerun()
 
-        # Summary of all strategies
         st.markdown(
             '<div style="color:#7eb8e8;font-size:0.72rem;font-weight:600;margin:14px 0 4px">ALL STRATEGIES</div>',
             unsafe_allow_html=True)
@@ -2795,7 +2793,6 @@ letter-spacing:0.12em;margin-bottom:14px">
 # ═══════════════════════════════════════════════════════════════════════════
 
 def build_session_summary(stop_reason: str = "Manual Stop") -> dict:
-    """Build a full session summary dict from current session state."""
     now = datetime.now(timezone.utc)
     start_time = st.session_state.get("session_start_time")
     duration = ""
@@ -2835,7 +2832,6 @@ def build_session_summary(stop_reason: str = "Manual Stop") -> dict:
 
 
 def render_session_summary():
-    """Display the session summary panel with Excel export."""
     summary = st.session_state.get("session_summary")
     if not summary:
         return
@@ -2853,7 +2849,6 @@ color:{stop_color};letter-spacing:0.14em;margin-bottom:16px">
 📊 SESSION SUMMARY — {summary['stop_reason'].upper()}</div>""",
                 unsafe_allow_html=True)
 
-    # ── Row 1: time info ─────────────────────────────────────────
     r1c1, r1c2, r1c3 = st.columns(3)
     with r1c1:
         st.markdown('<div style="color:#7eb8e8;font-size:0.72rem;font-weight:600">SESSION START</div>'
@@ -2872,7 +2867,6 @@ color:{stop_color};letter-spacing:0.14em;margin-bottom:16px">
 
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
-    # ── Row 2: financial metrics ──────────────────────────────────
     m1, m2, m3, m4, m5, m6 = st.columns(6)
     metrics = [
         (m1, "Start Balance", f"${summary['start_balance']:.2f}", "#ccd6f6"),
@@ -2895,7 +2889,6 @@ color:{stop_color};letter-spacing:0.14em;margin-bottom:16px">
 
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
-    # ── Row 3: Long vs Short breakdown ──────────────────────────
     bc1, bc2 = st.columns(2)
     for col, side, trades, wins, pnl in [
         (bc1, "LONG", summary["long_trades"], summary["long_wins"], summary["long_pnl"]),
@@ -2918,7 +2911,6 @@ color:{stop_color};letter-spacing:0.14em;margin-bottom:16px">
                 unsafe_allow_html=True
             )
 
-    # ── Trade history table ───────────────────────────────────────
     if summary["trade_history"]:
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         with st.expander(f"📋 Trade History ({len(summary['trade_history'])} trades)", expanded=False):
@@ -2929,7 +2921,6 @@ color:{stop_color};letter-spacing:0.14em;margin-bottom:16px">
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ── Excel export ──────────────────────────────────────────────
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     ec1, ec2, ec3 = st.columns([2, 2, 1])
     with ec1:
@@ -2937,7 +2928,6 @@ color:{stop_color};letter-spacing:0.14em;margin-bottom:16px">
             import io
             buf = io.BytesIO()
             with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-                # Sheet 1: Summary metrics
                 rows = [
                     ["Session Summary", ""],
                     ["Stop Reason", summary["stop_reason"]],
@@ -2969,7 +2959,6 @@ color:{stop_color};letter-spacing:0.14em;margin-bottom:16px">
                 ]
                 pd.DataFrame(rows, columns=["Metric", "Value"]).to_excel(
                     writer, sheet_name="Summary", index=False)
-                # Sheet 2: Trade list
                 if summary["trade_history"]:
                     pd.DataFrame(summary["trade_history"]).to_excel(
                         writer, sheet_name="Trades", index=False)
@@ -3012,7 +3001,6 @@ def render_status_badge(status: str):
     st.markdown(f'<span class="status-badge {cls}">⬤ {status.upper()}</span>', unsafe_allow_html=True)
 
 
-# FIX: ML defaults defined before sidebar so they are always in scope
 ml_enabled = False
 ml_model = "XGBoost"
 ml_conf_thr = 75
@@ -3045,1425 +3033,768 @@ with st.sidebar:
     strategy = st.selectbox("Strategy", ["Momentum", "Kalman", "Scalping"], key="strategy_select",
                             label_visibility="collapsed")
 
-    # ── Real strategy engine toggle (Momentum/Kalman/Scalping parity) ─────
     _engine_on = st.session_state.get("use_real_engine", True)
     _is_real_engine_strategy = strategy in REAL_ENGINE_STRATEGIES
-    _badge = ("🟢 Real engine" if (_engine_on and _is_real_engine_strategy)
-              else "🟡 Simplified (Enhanced has no real file yet)" if strategy == "Enhanced"
-              else "⚪ Simplified (real engine off)")
+
+    # Eagerly attempt the load as soon as the strategy is selected, so the
+    # badge below reflects the real outcome instead of a stale "Unknown"
+    # that only updates after Start/backtest is actually clicked.
+    if _engine_on and _is_real_engine_strategy and strategy not in st.session_state.strategy_status:
+        try:
+            get_cached_strategy_class(strategy, for_backtest=False)
+        except Exception as e:
+            st.session_state.strategy_status[strategy] = f"Error: {str(e)[:50]}"
+            add_log(f"❌ Eager load of {strategy} failed: {e}", "err")
+
+    # Check if real strategy is loaded
+    _strategy_status = st.session_state.strategy_status.get(strategy, "Unknown")
+    _status_color = "🟢" if "Loaded" in _strategy_status else "🟡" if "Error" not in _strategy_status else "🔴"
+
+    _badge = ("🟢 Real engine" if (_engine_on and _is_real_engine_strategy and "Loaded" in _strategy_status)
+              else "🟡 Desktop strategy not found" if (_engine_on and _is_real_engine_strategy)
+    else "🟡 Simplified (Enhanced has no real file yet)" if strategy == "Enhanced"
+    else "⚪ Simplified (real engine off)")
+
     with st.expander(f"⚙️ Engine — {_badge}", expanded=False):
         st.toggle(
             "Use real desktop strategy classes (Momentum/Kalman/Scalping)",
             key="use_real_engine",
             help="When on, Momentum/Kalman/Scalping run the actual desktop "
-                 "strategy classes (calculate_indicators → run_analysis_cycle → "
-                 "execute_buy/execute_sell) instead of the simplified built-in "
-                 "signal functions. Enhanced always uses the simplified version "
-                 "until a working TradingStrategy3.py is supplied.",
+                 "strategy classes instead of the simplified built-in signal functions.",
         )
+
+        # Show status of desktop strategy files
+        if _is_real_engine_strategy:
+            st.markdown(f"**Strategy Status:** {_status_color} {_strategy_status}")
+
+            # Check if files exist
+            strategy_files = find_strategy_files()
+            if strategy_files:
+                st.caption(f"Found {len(strategy_files)} strategy file(s)")
+            else:
+                st.caption("⚠️ No strategy files found in current directory")
+
         st.slider(
             "Entry confidence threshold %", 50, 95,
             int(st.session_state.get("confidence_threshold", 65.0)),
             key="confidence_threshold",
-            help="Mirrors the desktop app's confidence_var slider — the real "
-                 "strategy's quality_score must clear this before an entry fires.",
+            help="Mirrors the desktop app's confidence_var slider.",
         )
         if strategy == "Momentum" and st.session_state.get("direction", "Long") in ("Short", "Both"):
             st.caption("⚠️ Short entries are ignored for Momentum — the supplied "
-                       "MomentumStrategy file has no short-entry execution path. "
-                       "Switch Direction to Long to remove this notice.")
+                       "MomentumStrategy file has no short-entry execution path.")
 
-    # ── Trading window — inline expander in sidebar ──────────────────────
-    st.markdown('<div class="section-header">Trading Window</div>', unsafe_allow_html=True)
-    _tw_cfg_now = st.session_state.trading_windows.get(strategy, {})
-    _tw_on_now = _tw_cfg_now.get("enabled", False)
-    _tw_status = f"ACTIVE {_tw_cfg_now.get('start', '?')}–{_tw_cfg_now.get('end', '?')}" if _tw_on_now else "24/7 (no limit)"
-    with st.expander(f"⏱ {_tw_status}", expanded=False):
-        _tw_win = st.session_state.trading_windows
-        _tw_cfg = _tw_win.setdefault(strategy, {
-            "enabled": False, "start": "00:00", "end": "23:59",
-            "days": list(range(7)), "tz": "UTC"
-        })
-        _TW_DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        _TW_PRESETS = {
-            "24/7": (False, "00:00", "23:59", list(range(7))),
-            "London": (True, "08:00", "17:00", [0, 1, 2, 3, 4]),
-            "New York": (True, "13:00", "22:00", [0, 1, 2, 3, 4]),
-            "Asian": (True, "00:00", "09:00", [0, 1, 2, 3, 4, 5, 6]),
-            "Crypto EU+US": (True, "07:00", "22:00", [0, 1, 2, 3, 4, 5, 6]),
-            "Scalping AM": (True, "08:30", "12:00", [0, 1, 2, 3, 4]),
-            "Custom": None,
-        }
-        _tw_preset = st.selectbox("Preset", list(_TW_PRESETS.keys()),
-                                  key=f"sb_tw_preset_{strategy}")
-        _tw_enabled = st.toggle("Enable restriction", value=_tw_cfg.get("enabled", False),
-                                key=f"sb_tw_enabled_{strategy}")
-        _col_s, _col_e = st.columns(2)
-        _tw_start = _col_s.text_input("Start UTC", value=_tw_cfg.get("start", "00:00"),
-                                      key=f"sb_tw_start_{strategy}", placeholder="09:00")
-        _tw_end = _col_e.text_input("End UTC", value=_tw_cfg.get("end", "23:59"),
-                                    key=f"sb_tw_end_{strategy}", placeholder="17:00")
-        _tw_days_sel = []
-        _tw_cur_days = _tw_cfg.get("days", list(range(7)))
-        _day_cols = st.columns(7)
-        for _di, _dn in enumerate(_TW_DAY_NAMES):
-            if _day_cols[_di].checkbox(_dn[:2], value=_di in _tw_cur_days,
-                                       key=f"sb_tw_d{_di}_{strategy}"):
-                _tw_days_sel.append(_di)
-        _bca, _bcb = st.columns(2)
-        if _bca.button("💾 Save", key=f"sb_tw_save_{strategy}", width="stretch"):
-            _p = _TW_PRESETS.get(_tw_preset)
-            if _p is not None:
-                _pe, _ps, _pend, _pd = _p
-                _tw_win[strategy] = {"enabled": _pe, "start": _ps, "end": _pend, "days": _pd, "tz": "UTC"}
-                add_log(f"⏱ [{strategy}] → preset: {_tw_preset}", "info")
-            else:
-                import re as _re
+    st.markdown('<div class="section-header">Trading</div>', unsafe_allow_html=True)
+    direction = st.radio("Direction", ["Long", "Short", "Both"], key="direction", horizontal=True)
+    stop_loss_pct = st.slider("Stop Loss %", 0.5, 5.0, 1.5, key="stop_loss")
+    trailing_pct = st.slider("Trailing %", 0.0, 2.0, 0.8, key="trailing")
+    order_size_pct = st.slider("Order Size %", 5, 100, 30, key="order_size")
 
-                if _re.match(r"^[0-2][0-9]:[0-5][0-9]$", _tw_start) and _re.match(r"^[0-2][0-9]:[0-5][0-9]$", _tw_end):
-                    _tw_win[strategy] = {
-                        "enabled": _tw_enabled,
-                        "start": _tw_start, "end": _tw_end,
-                        "days": _tw_days_sel or list(range(7)), "tz": "UTC"
-                    }
-                    add_log(f"⏱ [{strategy}] {_tw_start}–{_tw_end}", "info")
-                else:
-                    st.error("Use HH:MM format")
-            st.session_state.trading_windows = _tw_win
-            save_trading_windows()
-            st.rerun()
-        if _bcb.button("🔄 Reset", key=f"sb_tw_reset_{strategy}", width="stretch"):
-            _tw_win[strategy] = {"enabled": False, "start": "00:00", "end": "23:59",
-                                 "days": list(range(7)), "tz": "UTC"}
-            st.session_state.trading_windows = _tw_win
-            save_trading_windows()
-            add_log(f"⏱ [{strategy}] reset to 24/7", "info")
-            st.rerun()
-        # Live status
-        _tw_ok, _tw_r = is_within_trading_window(strategy)
-        st.caption(f"Now: {'✅ OPEN' if _tw_ok else '🚫 CLOSED'} — {_tw_r}")
-
-    st.markdown('<div class="section-header">Machine Learning</div>', unsafe_allow_html=True)
-    ml_enabled = st.toggle("Enable ML", key="ml_toggle", value=False)
-    if ml_enabled:
-        ml_model = st.selectbox("ML Model", ["Random Forest", "XGBoost", "LSTM"], index=1, key="ml_model_select")
-        ml_conf_thr = st.slider("Min Confidence %", 55, 95, 75, key="ml_conf_slider")
-        auto_exec = st.toggle("Auto-Execute ML", key="auto_exec", value=False)
-
-    st.markdown('<div class="section-header">Risk Management</div>', unsafe_allow_html=True)
-    order_size = st.slider("Order Size %", 5, 100, 30, key="order_size")
-    stop_loss = st.slider("Stop Loss %", 0.5, 10.0, 2.0, step=0.1, key="stop_loss_pct")
-    trailing = st.slider("Trailing Stop %", 0.5, 10.0, 3.0, step=0.1, key="trailing_pct")
-    st.markdown('<div class="section-header">Direction</div>', unsafe_allow_html=True)
-    direction = st.selectbox(
-        "Direction",
-        options=["Long", "Short", "Both"],
-        index=["Long", "Short", "Both"].index(
-            st.session_state.get("direction", "Long")
-        ),
-        key="direction_select",
-        label_visibility="collapsed",
-        format_func=lambda x: {"Long": "🟢  Long  (buy only)",
-                               "Short": "🔴  Short (sell only)",
-                               "Both": "⚡  Both  (long + short)"}[x],
-    )
-    st.session_state["direction"] = direction
-    maker_pct = st.number_input("Maker %", value=0.001, step=0.0001, format="%.4f", key="maker_pct",
-                                 help="Used by the simplified (non-real-engine) close-position math.")
-    taker_pct = st.number_input("Taker %", value=0.001, step=0.0001, format="%.4f", key="taker_pct",
-                                 help="Also used as the per-fill commission rate for the real engine "
-                                      "(Momentum/Kalman/Scalping) — matches desktop's commission_var default (0.1%).")
-    st.session_state.commission_rate = taker_pct
-
-    st.markdown('<div class="section-header">Live Refresh</div>', unsafe_allow_html=True)
-    sync_to_clock = st.toggle(
-        "⏱ Sync to Candle Close (Clock-Aligned)",
-        value=st.session_state.get("sync_to_clock", True),
-        key="sync_to_clock_toggle",
-        help="ON (recommended): the cycle fires right after each candle closes on the "
-             "wall clock — e.g. :00/:15/:30/:45 for a 15m timeframe, top-of-hour for 1H, "
-             "etc. — instead of a free-running fixed-second timer that drifts away from "
-             "the exchange's real bar boundaries.",
-    )
-    st.session_state.sync_to_clock = sync_to_clock
-
-    if sync_to_clock:
-        buffer_sec = st.slider("Buffer after close (sec)", 1, 15, st.session_state.get("clock_sync_buffer", 3),
-                                step=1, key="clock_buffer_slider",
-                                help="Small grace period after the boundary tick, giving the exchange "
-                                     "time to publish/finalize the new candle before we fetch it. "
-                                     "Acts as the hard fallback deadline if the WebSocket trigger "
-                                     "below is off, slow, or disconnected.")
-        st.session_state.clock_sync_buffer = buffer_sec
-        st.session_state.refresh_interval = buffer_sec  # keep legacy field in sync for any other readers
-
-        if _WS_CLIENT_AVAILABLE:
-            use_ws_trigger = st.toggle(
-                "⚡ WebSocket Trigger (faster close detection)",
-                value=st.session_state.get("use_ws_trigger", True),
-                key="use_ws_trigger_toggle",
-                help="ON (recommended): subscribes to OKX's live candle feed and reacts the instant "
-                     "the exchange confirms the bar closed, instead of waiting out the buffer above. "
-                     "The buffer above still applies as a guaranteed fallback if the socket is ever "
-                     "slow, disconnected, or drops — so no candle close is ever missed either way. "
-                     "The WebSocket is only ever used to detect *when* to fetch; the actual candle "
-                     "data always comes from the same REST source either path uses.",
-            )
-            st.session_state.use_ws_trigger = use_ws_trigger
-            if use_ws_trigger and st.session_state.trading_running:
-                _bridge = _CandleWSBridge.get(symbol, interval)
-                _snap = _bridge.snapshot()
-                _ws_dot = "🟢" if _snap["connected"] else "🟡"
-                _src = st.session_state.get("last_trigger_source")
-                _src_txt = {"websocket": "⚡ WS-confirmed", "fallback": "🛟 Fallback",
-                             "fixed": "🔌 Fixed"}.get(_src, "—")
-                st.caption(f"{_ws_dot} WS {'connected' if _snap['connected'] else 'connecting…'} "
-                           f"| Last trigger: {_src_txt}")
-        else:
-            st.session_state.use_ws_trigger = False
-            st.caption("⚠️ `websocket-client` not installed — running fallback-only "
-                       "(`pip install websocket-client` to enable the faster WS trigger).")
-    else:
-        buffer_sec = st.slider("Refresh (sec)", 5, 60, 10, step=5, key="refresh_slider")
-        st.session_state.refresh_interval = buffer_sec
-
-    refresh_interval = st.session_state.refresh_interval  # always defined, used by log line below
-
-    st.divider()
-    if st.button("🔗 Check Connection", width='stretch'):
-        with st.spinner("Connecting..."):
-            check_connection(mode.lower())
-
-# ═══════════════════════════════════════════════════════════════════════════
-# TOP BANNER
-# ═══════════════════════════════════════════════════════════════════════════
-
-conn_dot = "🟢" if st.session_state.connected else "🔴"
-conn_txt = f"{conn_dot} {(st.session_state.connection_mode or 'NOT').upper()} CONNECTED"
-running_txt = ""
-if st.session_state.trading_running:
-    running_txt = (
-        f'<span class="pulse-dot"></span>'
-        f'<span style="color:#00ff88;font-size:0.75rem">'
-        f'LIVE [{st.session_state.get("direction", "Long")}] — cycle #{st.session_state.cycle_count} | '
-        f'bars:{st.session_state.bars_processed} | '
-        f'last:{st.session_state.last_cycle_time or "—"}'
-        f'</span>'
-    )
-
-st.markdown(f"""
-<div class="top-banner">
-  <div>
-    <div class="banner-title">⚙ PROFESSIONAL TRADING PLATFORM</div>
-    <div style="color:#2a3a5a;font-size:0.7rem">Advanced Multi-Layered ML Trading System — X13.05</div>
-    <div style="margin-top:4px">{running_txt}</div>
-  </div>
-  <div style="text-align:right">
-    <div style="font-family:'Share Tech Mono',monospace;font-size:0.8rem;color:#6a8aaa">{conn_txt}</div>
-    <div style="color:#2a3a5a;font-size:0.7rem">{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}</div>
-  </div>
-</div>""", unsafe_allow_html=True)
-
-# ═══════════════════════════════════════════════════════════════════════════
-# TABS
-# ═══════════════════════════════════════════════════════════════════════════
-
-tab_live, tab_backtest, tab_ml, tab_params, tab_help = st.tabs([
-    "📡  Live Trading", "🔬  Backtest", "🤖  ML Predictions", "⚙  Parameters", "📖  Help"
-])
-
-# ────────────────────────────────────────────
-# TAB 1 — LIVE TRADING
-# ────────────────────────────────────────────
-with tab_live:
-    # ── Ranging Market Indicator (add after connection status) ──────────────
-    if st.session_state.get("ranging_analysis"):
-        ra = st.session_state.ranging_analysis
-        if ra.get("is_ranging", False):
-            ranging_color = "#ff2255"
-            ranging_icon = "⚠️"
-            ranging_text = f"RANGING MARKET — {ra.get('reason', 'Choppy conditions')[:80]}"
-        else:
-            ranging_color = "#00ff99"
-            ranging_icon = "✅"
-            ranging_text = f"TRENDING MARKET — ADX:{ra.get('adx', 0):.1f} | BB:{ra.get('bb_width_pct', 0):.1f}% | Slope:{ra.get('slope_pct', 0):.3f}%/bar"
-
-        st.markdown(
-            f'<div style="background:#080b14;border:1px solid {ranging_color}44;border-radius:6px;'
-            f'padding:6px 12px;margin-bottom:8px;font-family:monospace;font-size:0.72rem;'
-            f'color:{ranging_color}">{ranging_icon} {ranging_text}</div>',
-            unsafe_allow_html=True
+    # ── CLOCK SYNC CONTROLS ──────────────────────────────────────────────
+    with st.expander("⏱ Clock Sync Settings", expanded=False):
+        st.toggle(
+            "Sync to clock (candle closes)",
+            key="sync_to_clock",
+            value=st.session_state.get("sync_to_clock", True),
+            help="When ON, trades execute exactly at candle closes. When OFF, uses fixed interval polling."
         )
 
-    # Top metrics
-    def _format_session_duration():
-        start = st.session_state.get("session_start_time")
-        if not start:
-            return "—"
-        elapsed = datetime.now(timezone.utc) - start
-        total_sec = int(elapsed.total_seconds())
-        h, rem = divmod(total_sec, 3600)
-        m, s = divmod(rem, 60)
-        if h >= 24:
-            d, h = divmod(h, 24)
-            return f"{d}d {h:02d}:{m:02d}:{s:02d}"
-        return f"{h:02d}:{m:02d}:{s:02d}"
+        if not st.session_state.get("sync_to_clock", True):
+            st.slider("Refresh interval (seconds)", 1, 60,
+                      st.session_state.get("refresh_interval", 10),
+                      key="refresh_interval",
+                      help="How often to poll for new data when clock sync is OFF")
 
-    pnl = st.session_state.stats["pnl"]
-    dir_now = st.session_state.get("direction", "Long")
-    if dir_now == "Both":
-        s = st.session_state.stats
-        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1, 1, 1, 1, 1, 1, 1, 1])
-        with c1:
-            render_status_badge(st.session_state.current_status)
-        with c2:
-            st.metric("Price", f"{st.session_state.last_price:.4f}" if st.session_state.last_price else "—")
-        with c3:
-            st.metric("Trades", s["trades"])
-        with c4:
-            st.metric("Long P&L", f"${s['long_pnl']:+.2f}",
-                      delta=f"{'↑' if s['long_pnl'] >= 0 else '↓'} {s['long_trades']}t")
-        with c5:
-            st.metric("Short P&L", f"${s['short_pnl']:+.2f}",
-                      delta=f"{'↑' if s['short_pnl'] >= 0 else '↓'} {s['short_trades']}t")
-        with c6:
-            st.metric("Net P&L", f"${pnl:+.2f}", delta=f"WR {s['win_rate']:.1f}%")
-        with c7:
-            _start_ts = int(st.session_state.get("session_start_time").timestamp()) if st.session_state.get("session_start_time") else 0
-            st.markdown(f"""
-            <div style="background:linear-gradient(135deg,#0e1528,#111a30);border:1px solid #1e4080;border-radius:8px;padding:12px 16px;box-shadow:0 0 10px #0050aa22;text-align:center">
-                <div style="color:#7eb8e8;font-size:0.75rem;font-weight:600;letter-spacing:0.08em;margin-bottom:4px">⏱ DURATION</div>
-                <div id="live-duration-value" data-start-ts="{_start_ts}" style="color:#00e5ff;font-family:'Share Tech Mono',monospace;font-size:1.1rem;text-shadow:0 0 8px #00e5ff88">{_format_session_duration()}</div>
-            </div>""", unsafe_allow_html=True)
-        with c8:
-            _start_ts = int(st.session_state.get("session_start_time").timestamp()) if st.session_state.get(
-                "session_start_time") else 0
-            st.markdown(f"""
-            <div style="background:linear-gradient(135deg,#0e1528,#111a30);border:1px solid #1e4080;border-radius:8px;padding:12px 16px;box-shadow:0 0 10px #0050aa22;text-align:center">
-                <div style="color:#7eb8e8;font-size:0.75rem;font-weight:600;letter-spacing:0.08em;margin-bottom:4px">⏱ DURATION</div>
-                <div id="live-duration-value" data-start-ts="{_start_ts}" style="color:#00e5ff;font-family:'Share Tech Mono',monospace;font-size:1.1rem;text-shadow:0 0 8px #00e5ff88">{_format_session_duration()}</div>
-            </div>""", unsafe_allow_html=True)
-    else:
-        c1, c2, c3, c4, c5, c6, c7 = st.columns([1, 1, 1, 1, 1, 1, 1])
-        with c1:
-            render_status_badge(st.session_state.current_status)
-        with c2:
-            st.metric("Price", f"{st.session_state.last_price:.4f}" if st.session_state.last_price else "—")
-        with c3:
-            st.metric("Trades", st.session_state.stats["trades"])
-        with c4:
-            st.metric("Win Rate", f"{st.session_state.stats['win_rate']:.1f}%")
-        with c5:
-            st.metric("P&L (USDT)", f"${pnl:.2f}", delta=f"{'+' if pnl >= 0 else ''}{pnl:.2f}")
-        with c6:
-            st.metric("Balance", f"${st.session_state.virtual_balance['USDT']:.2f}")
-        with c7:
-            _start_ts = int(st.session_state.get("session_start_time").timestamp()) if st.session_state.get("session_start_time") else 0
-            st.markdown(f"""
-            <div style="background:linear-gradient(135deg,#0e1528,#111a30);border:1px solid #1e4080;border-radius:8px;padding:12px 16px;box-shadow:0 0 10px #0050aa22;text-align:center">
-                <div style="color:#7eb8e8;font-size:0.75rem;font-weight:600;letter-spacing:0.08em;margin-bottom:4px">⏱ DURATION</div>
-                <div id="live-duration-value" data-start-ts="{_start_ts}" style="color:#00e5ff;font-family:'Share Tech Mono',monospace;font-size:1.1rem;text-shadow:0 0 8px #00e5ff88">{_format_session_duration()}</div>
-            </div>""", unsafe_allow_html=True)
-
-    # Live cycle status bar (only when running)
-    if st.session_state.trading_running:
-        _tw_open, _tw_reason = is_within_trading_window(strategy)
-        _tw_col = "#00ff99" if _tw_open else "#ff2255"
-        _tw_txt = "OPEN" if _tw_open else "CLOSED"
         if st.session_state.get("sync_to_clock", True):
-            period_sec = TF_MINUTES.get(interval, 15) * 60
-            next_in = int(seconds_until_next_candle_close(
-                interval, buffer_sec=st.session_state.get("clock_sync_buffer", 3)
-            ))
-            prog = min(1.0, max(0.0, 1 - (next_in / max(1, period_sec))))
-            next_label = "Next candle close:"
-        else:
-            elapsed = 0
-            if st.session_state.last_cycle_time:
-                try:
-                    last_t = datetime.strptime(st.session_state.last_cycle_time, "%H:%M:%S").replace(
-                        year=datetime.now().year, month=datetime.now().month, day=datetime.now().day)
-                    elapsed = int((datetime.now() - last_t).total_seconds())
-                except Exception:
-                    pass
-            next_in = max(0, st.session_state.refresh_interval - elapsed)
-            prog = min(1.0, elapsed / max(1, st.session_state.refresh_interval))
-            next_label = "Next refresh:"
-        sig_col = {"BUY": "#00ff88", "SELL": "#ff4466", "HOLD": "#ffaa00", "—": "#5a6a88"}.get(
-            st.session_state.last_signal, "#5a6a88")
-        st.markdown(f"""
-<div style="background:#080b14;border:1px solid #1a2040;border-radius:6px;padding:8px 14px;
-     display:flex;align-items:center;gap:16px;margin-bottom:8px;
-     font-family:'Share Tech Mono',monospace;font-size:0.78rem">
-  <span class="pulse-dot"></span>
-  <span style="color:#6a7fa8">RUNNING</span>
-  <span style="color:#3a4a6a">|</span>
-  <span style="color:#8a9abc">Signal:</span>
-  <span style="color:{sig_col};font-weight:bold">{st.session_state.last_signal}</span>
-  <span style="color:#3a4a6a">|</span>
-  <span style="color:#8a9abc">Bars:</span>
-  <span style="color:#00d4ff">{st.session_state.bars_processed}</span>
-  <span style="color:#3a4a6a">|</span>
-  <span style="color:#8a9abc">{next_label}</span>
-  <span style="color:#ffaa00">{next_in}s</span>
-  <span style="color:#3a4a6a">|</span>
-  <span style="color:#8a9abc">Last bar:</span>
-  <span style="color:#3a6a3a">{st.session_state.last_bar_ts or '—'}</span>
-  <span style="color:#3a4a6a">|</span>
-  <span style="color:#8a9abc">Window:</span>
-  <span style="color:{_tw_col};font-weight:bold">{_tw_txt}</span>
-</div>
-<div style="background:#0e1220;border-radius:3px;height:3px;margin-bottom:10px;overflow:hidden">
-  <div style="width:{prog * 100:.0f}%;height:100%;background:linear-gradient(90deg,#00d4ff,#00ff88);border-radius:3px"></div>
-</div>""", unsafe_allow_html=True)
+            st.toggle(
+                "Use WebSocket trigger",
+                key="use_ws_trigger",
+                value=st.session_state.get("use_ws_trigger", True),
+                help="When ON, uses OKX WebSocket for precise candle close timing. "
+                     "Falls back to clock sync if unavailable."
+            )
 
-    # ── Trading window status (always visible) ───────────────────────────
-    _tw_allowed, _tw_reason = is_within_trading_window(strategy)
-    _tw_cfg = st.session_state.trading_windows.get(strategy, {})
-    _tw_enabled = _tw_cfg.get("enabled", False)
-    if _tw_enabled:
-        _tw_color = "#00ff99" if _tw_allowed else "#ff2255"
-        _tw_text = (f"⏱ {strategy} Window: OPEN ({_tw_cfg.get('start', '?')}–{_tw_cfg.get('end', '?')} UTC)"
-                    if _tw_allowed else f"⏱ {strategy} Window: CLOSED — {_tw_reason}")
+            st.number_input(
+                "Clock sync buffer (seconds)",
+                min_value=1, max_value=10,
+                value=st.session_state.get("clock_sync_buffer", 3),
+                key="clock_sync_buffer",
+                help="Seconds to wait after candle close before fetching data"
+            )
+
+        # Show current trigger source
+        if st.session_state.get("last_trigger_source"):
+            trigger_emoji = "📡" if st.session_state.last_trigger_source == "websocket" else "⏰"
+            trigger_label = "WebSocket" if st.session_state.last_trigger_source == "websocket" else "Clock"
+            st.caption(f"{trigger_emoji} Last trigger: {trigger_label}")
+
+    st.markdown('<div class="section-header">Connect / Control</div>', unsafe_allow_html=True)
+
+    if mode == "Live":
+        if st.button("🔌 Connect API", width="stretch"):
+            check_connection("live")
     else:
-        _tw_color = "#3a5a7a"
-        _tw_text = f"⏱ {strategy}: No time restriction (24/7) · Click ⏱ in sidebar to set"
-    st.markdown(
-        f'<div style="background:#06090f;border:1px solid {_tw_color}44;'
-        f'border-radius:6px;padding:6px 12px;margin-bottom:8px;'
-        f'font-family:monospace;font-size:0.75rem;color:{_tw_color}">'
-        f'{_tw_text}</div>',
-        unsafe_allow_html=True)
+        st.info("ℹ️ Demo mode — no API keys required.", icon="ℹ️")
 
-    st.divider()
-    chart_col, ctrl_col = st.columns([3, 1])
+    # Strategy-specific status
+    if _is_real_engine_strategy and _engine_on:
+        if st.session_state.strategy_status.get(strategy, ""):
+            st.caption(f"📊 {strategy}: {st.session_state.strategy_status[strategy]}")
 
-    with chart_col:
-        if st.session_state.market_data is not None:
-            render_candlestick_chart(st.session_state.market_data, symbol)
-        else:
-            st.markdown("""<div style="background:#080b14;border:1px dashed #1a2040;border-radius:8px;
-height:480px;display:flex;align-items:center;justify-content:center;
-color:#2a3a5a;font-family:'Share Tech Mono',monospace;font-size:0.85rem">
-Click "Load Chart" or "Start Trading" to fetch market data</div>""", unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown("**Controls**")
 
-    with ctrl_col:
-        st.markdown('<div class="section-header">Controls</div>', unsafe_allow_html=True)
-        btn_start = st.button("▶ Start Trading", width='stretch', disabled=st.session_state.trading_running)
-        btn_stop = st.button("⏹ Stop Trading", width='stretch', disabled=not st.session_state.trading_running)
-        btn_emergency = st.button("🚨 EMERGENCY STOP", width='stretch', type="primary")
-        btn_chart = st.button("📊 Load Chart", width='stretch')
-        btn_partial = st.button("½ Close 50%", width='stretch')
+    topc1, topc2 = st.columns(2)
+    with topc1:
+        if st.button("▶️ START" if not st.session_state.trading_running else "⏹ STOP", width="stretch"):
+            if not st.session_state.trading_running:
+                st.session_state.trading_running = True
+                st.session_state.session_start_time = datetime.now(timezone.utc)
+                st.session_state.session_start_balance = st.session_state.virtual_balance["USDT"]
+                st.session_state.bars_processed = 0
+                st.session_state.stats = {
+                    "trades": 0, "wins": 0, "pnl": 0.0, "win_rate": 0.0,
+                    "long_trades": 0, "long_wins": 0, "long_pnl": 0.0,
+                    "short_trades": 0, "short_wins": 0, "short_pnl": 0.0,
+                }
+                st.session_state.trade_history = []
+                add_log(f"🚀 Trading started: {symbol} {interval} {strategy} (mode: {mode})", "buy")
 
-        st.divider()
-        st.markdown('<div class="section-header">Position</div>', unsafe_allow_html=True)
-        direction_now = st.session_state.get("direction", "Long")
-        curr_price = st.session_state.last_price
-
-
-        def _pos_block(pos, label_color):
-            if not pos or not curr_price:
-                return
-            entry = pos.get("price", 0)
-            side = pos.get("side", "long")
-            pnl_p = ((curr_price - entry) / entry * 100) if side == "long" \
-                else ((entry - curr_price) / entry * 100)
-            col = "#00ff99" if pnl_p >= 0 else "#ff2255"
-            st.markdown(f"""<div style="font-family:'Share Tech Mono',monospace;font-size:0.78rem;
-line-height:1.9;background:#080c18;border:1px solid {label_color}33;
-border-radius:6px;padding:8px 10px;margin-bottom:6px">
-<div style="color:{label_color};font-weight:700;letter-spacing:0.1em">{side.upper()}</div>
-<div>Entry: <span style="color:#ffcc00">${entry:.4f}</span></div>
-<div>Now:   <span style="color:#00e5ff">${curr_price:.4f}</span></div>
-<div>P&L:   <span style="color:{col}">{pnl_p:+.2f}%</span></div>
-<div>SL:    <span style="color:#ff2255">${pos.get('stop_loss', 0):.4f}</span></div>
-<div>Trail: <span style="color:#cc44ff">${pos.get('trail_price', 0):.4f}</span></div>
-</div>""", unsafe_allow_html=True)
-
-
-        if direction_now == "Both":
-            pos_l = st.session_state.position_long
-            pos_s = st.session_state.position_short
-            if pos_l:
-                _pos_block(pos_l, "#00ff99")
+                # Run initial cycle
+                run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, order_size_pct, mode)
+                st.rerun()
             else:
-                st.markdown(
-                    '<div style="color:#3a5a3a;font-size:0.75rem;font-family:monospace">LONG — no position</div>',
-                    unsafe_allow_html=True)
-            if pos_s:
-                _pos_block(pos_s, "#ff2255")
-            else:
-                st.markdown(
-                    '<div style="color:#5a2a3a;font-size:0.75rem;font-family:monospace">SHORT — no position</div>',
-                    unsafe_allow_html=True)
-            # Cumulative P&L summary
-            s = st.session_state.stats
-            st.markdown(f"""<div style="font-family:'Share Tech Mono',monospace;font-size:0.75rem;
-background:#0a0e1a;border:1px solid #1a3060;border-radius:6px;padding:8px 10px;margin-top:4px">
-<div style="color:#00e5ff;font-weight:700;margin-bottom:4px">CUMULATIVE</div>
-<div>Long  trades: <span style="color:#00ff99">{s['long_trades']}</span>
-     wins: <span style="color:#00ff99">{s['long_wins']}</span>
-     PnL: <span style="color:{'#00ff99' if s['long_pnl'] >= 0 else '#ff2255'}">${s['long_pnl']:+.2f}</span></div>
-<div>Short trades: <span style="color:#ff2255">{s['short_trades']}</span>
-     wins: <span style="color:#ff2255">{s['short_wins']}</span>
-     PnL: <span style="color:{'#00ff99' if s['short_pnl'] >= 0 else '#ff2255'}">${s['short_pnl']:+.2f}</span></div>
-<div style="border-top:1px solid #1a3060;margin-top:4px;padding-top:4px">
-Total PnL: <span style="color:{'#00ff99' if s['pnl'] >= 0 else '#ff2255'};font-weight:700">${s['pnl']:+.2f}</span>
-  Win rate: <span style="color:#00e5ff">{s['win_rate']:.1f}%</span></div>
-</div>""", unsafe_allow_html=True)
-        else:
-            pos = st.session_state.position
-            if pos:
-                _pos_block(pos, "#00ff99" if pos.get("side") == "long" else "#ff2255")
-            else:
-                st.caption("No open position")
+                st.session_state.trading_running = False
+                st.session_state.session_summary = build_session_summary("Manual Stop")
+                add_log("⏹ Trading stopped.", "warn")
+                st.rerun()
 
-        if ml_enabled and st.session_state.ml_prediction:
-            st.divider()
-            st.markdown('<div class="section-header">ML Signal</div>', unsafe_allow_html=True)
-            _ml_pred = st.session_state.ml_prediction
-            _ml_conf = st.session_state.ml_confidence
-            _ml_dir = st.session_state.get("direction", "Long")
-            _ml_color = "#00ff88" if _ml_pred == "BULLISH" else "#ff4466" if _ml_pred == "BEARISH" else "#ffaa00"
-
-            # Direction-alignment badge
-            _ml_aligned = (
-                    (_ml_dir == "Long" and _ml_pred == "BULLISH") or
-                    (_ml_dir == "Short" and _ml_pred == "BEARISH") or
-                    (_ml_dir == "Both")  # Both mode: each ML signal has its relevant leg
-            )
-            _ml_conflict = (
-                    (_ml_dir == "Long" and _ml_pred == "BEARISH") or
-                    (_ml_dir == "Short" and _ml_pred == "BULLISH")
-            )
-            if _ml_dir == "Both":
-                _ml_align_label = (
-                    "✅ Long leg" if _ml_pred == "BULLISH"
-                    else "✅ Short leg" if _ml_pred == "BEARISH"
-                    else "⬜ Neutral"
-                )
-                _ml_align_color = "#00ff88"
-            elif _ml_aligned:
-                _ml_align_label = f"✅ ALIGNED with {_ml_dir}"
-                _ml_align_color = "#00ff88"
-            elif _ml_conflict:
-                _ml_align_label = f"⚠️ CONFLICTS with {_ml_dir}"
-                _ml_align_color = "#ff4466"
-            else:
-                _ml_align_label = "⬜ NEUTRAL"
-                _ml_align_color = "#ffaa00"
-
-            st.markdown(
-                f'<div style="font-family:monospace;font-size:0.85rem;color:{_ml_color}">'
-                f'{_ml_pred} ({_ml_conf:.0f}%)</div>'
-                f'<div style="font-family:monospace;font-size:0.72rem;color:{_ml_align_color};'
-                f'margin-top:3px">{_ml_align_label}</div>',
-                unsafe_allow_html=True
-            )
-
-    # Button actions
-    if btn_chart:
-        with st.spinner(f"Fetching {symbol} {interval} data..."):
-            df = fetch_market_data(symbol, interval, limit=300, silent=False)
-            if df is not None and len(df) >= 30:
-                st.session_state.market_data = df
-                st.session_state.last_price = float(df["Close"].iloc[-1])
-                add_log(f"📊 Chart loaded — {symbol} | last price: {st.session_state.last_price:.4f}", "info")
-            else:
-                add_log("⚠️ Could not fetch data. Check connection.", "warn")
-        st.rerun()
-
-    if btn_start:
-        if not st.session_state.connected and mode.lower() != "demo":
-            add_log("⚠️ Not connected. Click 'Check Connection' first.", "warn")
-        else:
-            st.session_state.trading_running = True
-            st.session_state.bars_processed = 0
-            st.session_state.cycle_count = 0
-            st.session_state.last_bar_ts = None
-            st.session_state.last_signal = "—"
-            st.session_state.chart_markers = []
-            st.session_state.position = None
-            st.session_state.position_long = None
-            st.session_state.position_short = None
-            st.session_state.stats = {
-                "trades": 0, "wins": 0, "pnl": 0.0, "win_rate": 0.0,
-                "long_trades": 0, "long_wins": 0, "long_pnl": 0.0,
-                "short_trades": 0, "short_wins": 0, "short_pnl": 0.0,
-            }
-            st.session_state.virtual_balance = {"USDT": 5000.0, "COIN": 0.0}
-            st.session_state.session_start_time = datetime.now(timezone.utc)
-            st.session_state.session_start_balance = st.session_state.virtual_balance["USDT"]
-            st.session_state.session_summary = None
-            add_log(f"▶ Trading STARTED — {mode.upper()} | {symbol} | {interval} | {strategy} | Dir:{direction}", "buy")
-            if st.session_state.get("sync_to_clock", True):
-                add_log(f"   SL:{stop_loss}% | Trailing:{trailing}% | Size:{order_size}% | "
-                        f"Sync:Clock-aligned (+{refresh_interval}s buffer)", "sys")
-            else:
-                add_log(f"   SL:{stop_loss}% | Trailing:{trailing}% | Size:{order_size}% | "
-                        f"Refresh:{refresh_interval}s (fixed)", "sys")
-            if mode == "Demo":
-                add_log(f"💡 Demo mode: virtual ${st.session_state.virtual_balance['USDT']:,.0f} balance | real OKX market data","info")
-        st.rerun()
-
-    if btn_stop:
-        st.session_state.trading_running = False
-        st.session_state.session_summary = build_session_summary("Manual Stop")
-        add_log(f"⏹ Trading STOPPED — {st.session_state.bars_processed} bars processed.", "warn")
-        st.rerun()
-
-    if btn_emergency:
-        st.session_state.trading_running = False
-        st.session_state.position = None
-        st.session_state.position_long = None
-        st.session_state.position_short = None
-        st.session_state.current_status = "PARKING"
-        st.session_state.session_summary = build_session_summary("Emergency Stop")
-        add_log("🚨 EMERGENCY STOP — all positions closed!", "err")
-        st.rerun()
-
-    if btn_partial and st.session_state.position:
-        pos = st.session_state.position
-        entry = pos.get("price", 0)
-        curr = st.session_state.last_price or entry
-        side = pos.get("side", "long")
-        size = pos.get("size_pct", 30)
-        pnl_pct = ((curr - entry) / entry * 100) if side == "long" else ((entry - curr) / entry * 100)
-        half_pnl = st.session_state.virtual_balance["USDT"] * (size / 100) * 0.5 * (pnl_pct / 100)
-        st.session_state.virtual_balance["USDT"] += half_pnl
-        st.session_state.stats["pnl"] += half_pnl
-        # Reduce position size by half
-        pos["size_pct"] = size / 2
-        st.session_state.position = pos
-        sign = "+" if half_pnl >= 0 else ""
-        add_log(f"½ Partial close 50% @ {curr:.4f} | PnL half: {sign}{half_pnl:.2f} USDT | "
-                f"Remaining size: {size / 2:.0f}%", "sell")
-        st.rerun()
-
-    # ── Session summary panel ─────────────────────────────────────────
-    if st.session_state.get("session_summary"):
-        with st.expander("📊 Session Summary — Click to Expand", expanded=False):
-            render_session_summary()
-
-    st.divider()
-    st.markdown('<div class="section-header">Trading Log</div>', unsafe_allow_html=True)
-    lc1, lc2 = st.columns([5, 1])
-    with lc2:
-        if st.button("🗑 Clear"):
-            st.session_state.logs = []
+    with topc2:
+        if st.button("🔄 Force cycle", width="stretch"):
+            add_log("🔄 Manual cycle triggered", "sys")
+            run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, order_size_pct, mode)
             st.rerun()
+
+    st.caption(f"Balance: ${st.session_state.virtual_balance['USDT']:.2f} USDT")
+    st.caption(f"Position: {st.session_state.current_status}")
+    if st.session_state.position:
+        pos = st.session_state.position
+        st.caption(f"Entry: {pos['price']:.4f} SL: {pos['stop_loss']:.4f}")
+
+    if st.button("💾 Save Settings", width="stretch"):
+        save_strategy_settings(st.session_state.strategy_settings)
+        add_log("✅ Settings saved", "info")
+
+    st.markdown('<div class="section-header">⏱ Trading Windows</div>', unsafe_allow_html=True)
+    if st.button("⏱ Open Window Panel" if not st.session_state.tw_panel_open else "⏱ Close Window Panel",
+                 width="stretch"):
+        st.session_state.tw_panel_open = not st.session_state.tw_panel_open
+        st.rerun()
+
+    if st.session_state.tw_panel_open:
+        render_trading_window_panel(strategy)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MAIN TABS
+# ═══════════════════════════════════════════════════════════════════════════
+
+tabs = st.tabs(["📈 Live Trading", "📊 Backtest", "🤖 ML Predictions", "⚙️ Parameters", "❓ Help"])
+
+# ─── TAB 0: LIVE TRADING ────────────────────────────────────────────────────
+with tabs[0]:
+    banner_col1, banner_col2, banner_col3, banner_col4 = st.columns([2.2, 1.6, 1.2, 1])
+    with banner_col1:
+        st.markdown(f'<div class="banner-title">📈 {symbol} · {interval}</div>', unsafe_allow_html=True)
+    with banner_col2:
+        if st.session_state.last_price:
+            price_color = "#00ff99" if st.session_state.last_price > 0 else "#ff2255"
+            st.markdown(f'<div style="font-family:Share Tech Mono,monospace;font-size:1.5rem;'
+                        f'color:{price_color};font-weight:700">${st.session_state.last_price:.4f}</div>',
+                        unsafe_allow_html=True)
+    with banner_col3:
+        render_status_badge(st.session_state.current_status)
+        render_window_indicator(strategy)
+    with banner_col4:
+        if st.session_state.trading_running:
+            st.markdown('<span class="pulse-dot"></span> LIVE', unsafe_allow_html=True)
+        else:
+            st.markdown('⏸ IDLE', unsafe_allow_html=True)
+
+    # Live trading stats
+    stmt1, stmt2, stmt3, stmt4, stmt5, stmt6 = st.columns(6)
+    stats = st.session_state.stats
+    stmt1.metric("Trades", stats["trades"])
+    stmt2.metric("Wins", stats["wins"])
+    stmt3.metric("Win Rate", f"{stats['win_rate']:.1f}%")
+    stmt4.metric("P&L", f"${stats['pnl']:.2f}", delta=stats['pnl'])
+    stmt5.metric("Balance", f"${st.session_state.virtual_balance['USDT']:.2f}")
+    stmt6.metric("Bars", st.session_state.bars_processed)
+
+    # Chart
+    if st.session_state.market_data is not None and len(st.session_state.market_data) > 10:
+        render_candlestick_chart(st.session_state.market_data, symbol)
+    else:
+        st.info("📊 Load market data by clicking START or Force cycle.")
+
+    # Logs
+    st.markdown('<div class="section-header">📋 Event Log</div>', unsafe_allow_html=True)
     render_log()
 
-    if st.session_state.trade_history:
-        with st.expander("📋 Trade History"):
-            st.dataframe(pd.DataFrame(st.session_state.trade_history), width='stretch', hide_index=True)
-
-    # ══════════════════════════════════════════════════════════════════════
-    # AUTO-REFRESH LOOP — executes one cycle then waits for the next trigger
-    # This is the engine that actually processes candles while running.
-    # The wait is a hybrid: a WebSocket confirms the close as fast as
-    # possible, with a clock-aligned deadline as a guaranteed fallback so no
-    # candle close is ever missed even if the socket is slow/disconnected.
-    # ══════════════════════════════════════════════════════════════════════
+    # ── CLOCK-ALIGNED CONTINUOUS AUTO-UPDATE ────────────────────────────
+    # While trading is running, we wait for the next candle close using the
+    # wait_for_next_trigger() function, then run the trading cycle. This
+    # ensures we process exactly at candle boundaries, not on a fixed timer.
     if st.session_state.trading_running:
-        run_trading_cycle(
-            symbol=symbol, interval=interval, strategy=strategy,
-            stop_loss_pct=stop_loss, trailing_pct=trailing,
-            order_size_pct=order_size, mode=mode,
-        )
+        # ── Check if we should use clock sync or fixed interval ────────
+        use_clock_sync = st.session_state.get("sync_to_clock", True)
 
-        # ── Tick Beep (plays via browser Web Audio API) ──
-        if st.session_state.pop("_beep_on_rerun", False):
-            import streamlit.components.v1 as components
+        if use_clock_sync:
+            # ── CLOCK-ALIGNED MODE ──────────────────────────────────────
+            # Wait for the next candle close before running the cycle
+            trigger_source = wait_for_next_trigger(symbol, interval)
 
-            components.html("""
-            <script>
-            (function() {
-                try {
-                    var ctx = new (window.AudioContext || window.webkitAudioContext)();
-                    var osc = ctx.createOscillator();
-                    var gain = ctx.createGain();
-                    osc.connect(gain);
-                    gain.connect(ctx.destination);
-                    osc.frequency.value = 1000; // pitch: higher = sharper tick
-                    osc.type = 'sine';         // 'sine' = soft, 'square' = digital
-                    gain.gain.value = 0.2;      // volume: 0.0 (mute) to 1.0 (max)
-                    osc.start(ctx.currentTime);
-                    osc.stop(ctx.currentTime + 0.08); // duration in seconds
-                } catch(e) {}
-            })();
-            </script>
-            """, height=0)
+            # Log trigger source if it changed
+            if trigger_source != st.session_state.get("last_trigger_source"):
+                st.session_state.last_trigger_source = trigger_source
+                trigger_emoji = "📡" if trigger_source == "websocket" else "⏰"
+                trigger_label = "WebSocket" if trigger_source == "websocket" else "Clock"
+                add_log(f"{trigger_emoji} Trigger: {trigger_label} ({interval} candle closed)", "sys")
 
-        trigger_source = wait_for_next_trigger(symbol, interval)
-        st.session_state.last_trigger_source = trigger_source
-        st.rerun()
+            # Run the trading cycle with the new candle data
+            run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, order_size_pct, mode)
 
-    # ── Live Duration Ticker (per-second update via JS, no Streamlit rerun) ──
-    if st.session_state.get("session_start_time"):
-        import streamlit.components.v1 as components
-
-        components.html("""
-        <script>
-        (function() {
-            var doc = window.parent.document;
-            if (doc._durInterval) clearInterval(doc._durInterval);
-            function tick() {
-                var el = doc.getElementById('live-duration-value');
-                if (!el) return;
-                var ts = parseInt(el.getAttribute('data-start-ts'));
-                if (!ts) { el.textContent = '—'; return; }
-                var d = Math.floor(Date.now() / 1000) - ts;
-                if (d < 0) d = 0;
-                var h = Math.floor(d / 3600);
-                var r = d % 3600;
-                var m = Math.floor(r / 60);
-                var s = r % 60;
-                if (h >= 24) {
-                    var dd = Math.floor(h / 24);
-                    el.textContent = dd + 'd ' + String(h%24).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
-                } else {
-                    el.textContent = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
-                }
-            }
-            tick();
-            doc._durInterval = setInterval(tick, 1000);
-        })();
-        </script>
-        """, height=0)
-# ────────────────────────────────────────────
-# TAB 2 — BACKTEST
-# ────────────────────────────────────────────
-with tab_backtest:
-    st.markdown("### 🔬 Backtest Engine")
-    bc1, bc2 = st.columns(2)
-    with bc1:
-        bt_symbol = st.selectbox("Symbol##bt", ["SOL-USDT", "BTC-USDT", "ETH-USDT"], key="bt_sym")
-        bt_strategy = st.selectbox("Strategy##bt", ["Momentum", "Kalman", "Scalping"], key="bt_strat")
-        bt_capital = st.number_input("Initial Capital ($)", value=50000.0, step=1000.0, key="bt_cap")
-        bt_monte = st.toggle("Enable Monte Carlo", key="bt_monte", value=False)
-        if bt_monte:
-            st.slider("Simulations", 100, 5000, 1000, key="bt_sims")
-    with bc2:
-        bt_interval = st.selectbox("Interval##bt", ["1m", "5m", "15m", "30m", "1H", "4H"], index=2, key="bt_int")
-        bt_start = st.date_input("Start Date", value=pd.Timestamp("2023-01-01"), key="bt_start")
-        bt_end = st.date_input("End Date", value=pd.Timestamp.now().date(), key="bt_end")
-        bt_type = st.radio("Type", ["Standard", "Optimization"], horizontal=True, key="bt_type")
-        bt_data_source = st.radio(
-            "Data Source",
-            ["Fetch API", "Generated"],
-            index=0,  # always default to real market data
-            horizontal=True,
-            key="bt_ds",
-            help="'Fetch API' uses real OKX market data (no API key needed). 'Generated' uses synthetic data.",
-        )
-
-    col_run, col_exp = st.columns([2, 1])
-    with col_run:
-        btn_run_bt = st.button("▶  Run Backtest", width='stretch',
-                               disabled=st.session_state.backtest_running, type="primary")
-    with col_exp:
-        btn_export = st.button("📥 Export Excel", width='stretch',
-                               disabled=st.session_state.backtest_results is None)
-
-    if btn_run_bt:
-        add_log(f"🔬 Backtest started — {bt_symbol} | {bt_interval} | {bt_strategy}", "info")
-        st.session_state.backtest_running = True
-        with st.spinner("Running backtest..."):
-            try:
-                # ── DATA SOURCE ──────────────────────────────────────────────────────
-                _tf_minutes = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1H": 60, "4H": 240, "1D": 1440}
-                _mins = _tf_minutes.get(bt_interval, 15)
-                _days_req = max(1, (pd.Timestamp(bt_end) - pd.Timestamp(bt_start)).days + 1)
-                _bars_req = int(_days_req * 24 * 60 / _mins) + 50
-                _max_fetch = 1440  # OKX public API practical limit (300 per request × ~5 pages)
-
-                if bt_data_source == "Generated":
-                    # User explicitly asked for synthetic data — generate anchored
-                    # directly to the selected end date. (Previously this generated
-                    # data anchored to "now", tried to trim to the selected range,
-                    # got zero overlap for any non-today end date, then silently
-                    # regenerated the same "now"-anchored data again — meaning the
-                    # date pickers had no effect at all when using this source.)
-                    _gen_limit = min(_bars_req, 5000)
-                    _end_ts = pd.Timestamp(bt_end) + pd.Timedelta(days=1)
-                    df_bt = generate_demo_data(bt_symbol, bt_interval, limit=_gen_limit, anchor_end=_end_ts)
-                    add_log(f"📊 Generated data: {len(df_bt)} bars, anchored to {bt_start} → {bt_end}", "warn")
-                else:
-                    _start_ts = pd.Timestamp(bt_start)
-                    _end_ts = pd.Timestamp(bt_end) + pd.Timedelta(days=1)
-                    df_bt = None
-
-                    # ── Primary: ccxt / Binance — same method and same
-                    # exchange the desktop app uses (get_historical_data),
-                    # with real pagination that walks forward from start to
-                    # end. This is why desktop's date pickers actually work;
-                    # OKX's public endpoints only ever serve a limited
-                    # recent window no matter how you paginate them. ───────
-                    try:
-                        df_bt = fetch_historical_data_ccxt(
-                            bt_symbol, exchange_name="binance",
-                            start=bt_start, end=str(_end_ts),
-                            interval=bt_interval, limit=min(_bars_req, 20000),
-                        )
-                        if df_bt is not None and len(df_bt) >= 30:
-                            add_log(f"📡 Binance (ccxt) real data: {len(df_bt)} bars ({bt_start} → {bt_end})", "info")
-                        else:
-                            df_bt = None
-                    except ImportError:
-                        add_log("⚠️ ccxt not installed — falling back to OKX public feed.", "warn")
-                    except Exception as _ccxt_err:
-                        add_log(f"⚠️ Binance (ccxt) fetch failed ({_ccxt_err}) — falling back to OKX.", "warn")
-
-                    # ── Fallback 1: OKX history-candles — reaches further
-                    # back than /market/candles, but still OKX-only depth. ─
-                    if df_bt is None or len(df_bt) < 30:
-                        df_bt_okx = fetch_okx_history_range(
-                            bt_symbol, bt_interval, _start_ts, _end_ts,
-                            max_bars=min(_bars_req, 5000),
-                        )
-                        if df_bt_okx is not None and len(df_bt_okx) >= 2:
-                            df_bt_trimmed = df_bt_okx[(_start_ts <= df_bt_okx.index) & (df_bt_okx.index < _end_ts)]
-                            if len(df_bt_trimmed) >= 30:
-                                df_bt = df_bt_trimmed
-                                add_log(f"📡 OKX historical data: {len(df_bt)} bars ({bt_start} → {bt_end})", "info")
-
-                    # ── Fallback 2: OKX recent-data feed (/market/candles) ──
-                    if df_bt is None or len(df_bt) < 30:
-                        _max_fetch = 1440
-                        _fetch_limit = min(_bars_req, _max_fetch)
-                        df_bt_recent = fetch_public_ohlcv(bt_symbol, bt_interval, limit=_fetch_limit)
-
-                        if df_bt_recent is not None and len(df_bt_recent) >= 2:
-                            df_bt_trimmed = df_bt_recent[(_start_ts <= df_bt_recent.index) & (df_bt_recent.index < _end_ts)]
-                            if len(df_bt_trimmed) >= 30:
-                                df_bt = df_bt_trimmed
-                                add_log(f"📡 OKX real data: {len(df_bt)} bars ({bt_start} → {bt_end})", "info")
-                            else:
-                                # Requested range predates everything available — use what we have
-                                actual_start = df_bt_recent.index[0].strftime("%Y-%m-%d")
-                                actual_end = df_bt_recent.index[-1].strftime("%Y-%m-%d")
-                                st.warning(
-                                    f"⚠️ No source has data for **{bt_start} → {bt_end}**. "
-                                    f"OKX's recent feed only covers {actual_start} → {actual_end}. "
-                                    f"Running backtest on available data ({len(df_bt_recent)} bars) instead."
-                                )
-                                add_log(
-                                    f"⚠️ Date range {bt_start}→{bt_end} unavailable anywhere. "
-                                    f"Using OKX recent data {actual_start}→{actual_end} ({len(df_bt_recent)} bars).",
-                                    "warn"
-                                )
-                                df_bt = df_bt_recent
-
-                    # ── Fallback 3: generated data (last resort) ────────────
-                    if df_bt is None or len(df_bt) < 30:
-                        add_log(
-                            "⚠️ All live data sources failed or had no coverage for "
-                            f"{bt_start}→{bt_end} — using generated data anchored to that range.",
-                            "warn"
-                        )
-                        st.warning(
-                            f"⚠️ All live data sources failed for **{bt_start} → {bt_end}**. Running backtest "
-                            "on **generated data** anchored to that range — results are illustrative only, "
-                            "not real market history."
-                        )
-                        df_bt = generate_demo_data(bt_symbol, bt_interval, limit=min(_bars_req, 5000),
-                                                   anchor_end=_end_ts)
-                from backtesting import Backtest, Strategy
-                from backtesting.lib import crossover
-
-                # Try external strategy files first; fall back to inline implementations.
-                # Gated on the sidebar's "Use real desktop strategy classes" toggle so the
-                # backtest actually respects the same switch the Live/Demo engine reads —
-                # previously this import ran unconditionally regardless of that setting.
-                Strat = None
-                _use_real_bt = st.session_state.get("use_real_engine", True)
-
-                if bt_strategy == "Momentum":
-                    if _use_real_bt:
-                        try:
-                            from strategies.MomentumStrategy_MACD_HybridScore_Latest import \
-                                BacktestMomentumStrategy as Strat
-
-                            # Mirror the desktop app's get_current_momentum_params() →
-                            # _updated_params / setattr pattern, so the backtest honors
-                            # the sidebar's confidence threshold instead of the class's
-                            # hardcoded defaults.
-                            _bt_overrides = get_current_momentum_params_for_backtest()
-                            Strat._updated_params = _bt_overrides.copy()
-                            Strat._use_updated_params = True
-                            for _k, _v in _bt_overrides.items():
-                                try:
-                                    setattr(Strat, _k, _v)
-                                except Exception:
-                                    pass
-
-                            add_log(
-                                f"⚙️ Backtest using REAL MomentumStrategy engine — "
-                                f"confidence threshold {int(_bt_overrides['quality_tier2_min'])}%",
-                                "info"
-                            )
-                        except ImportError as _imp_err:
-                            add_log(
-                                f"⚠️ Could not import real Momentum strategy ({_imp_err}) — "
-                                f"using simplified fallback strategy instead.",
-                                "warn"
-                            )
-                    else:
-                        add_log(
-                            "ℹ️ Real engine toggle is OFF — backtest running the simplified "
-                            "fallback strategy, not the real MomentumStrategy class.",
-                            "info"
-                        )
-                elif bt_strategy == "Kalman":
-                    if _use_real_bt:
-                        try:
-                            from strategies.KalmanTrendStrategy_New import \
-                                BacktestKalmanTrendStrategy as Strat
-                            add_log("⚙️ Backtest using REAL KalmanTrendStrategy engine", "info")
-                        except ImportError as _imp_err:
-                            add_log(
-                                f"⚠️ Could not import real Kalman strategy ({_imp_err}) — "
-                                f"using simplified fallback strategy instead.",
-                                "warn"
-                            )
-                    else:
-                        add_log(
-                            "ℹ️ Real engine toggle is OFF — backtest running the simplified "
-                            "fallback strategy, not the real KalmanTrendStrategy class.",
-                            "info"
-                        )
-
-                if Strat is None:
-                    # ── Inline fallback strategy (works without external files) ──
-                    from backtesting.lib import FractionalBacktest
-
-
-                    class Strat(FractionalBacktest):
-                        ema_fast = 8;
-                        ema_slow = 24;
-                        ema_trend = 60
-                        rsi_min = 30;
-                        rsi_max = 70
-
-                        def init(self):
-                            c = self.data.Close
-                            self.ema5 = self.I(
-                                lambda x: pd.Series(x).ewm(span=self.ema_fast, adjust=False).mean().values, c)
-                            self.ema26 = self.I(
-                                lambda x: pd.Series(x).ewm(span=self.ema_slow, adjust=False).mean().values, c)
-                            self.ema60 = self.I(
-                                lambda x: pd.Series(x).ewm(span=self.ema_trend, adjust=False).mean().values, c)
-                            delta = pd.Series(c).diff()
-                            gain = delta.clip(lower=0).ewm(span=14, adjust=False).mean()
-                            loss = (-delta.clip(upper=0)).ewm(span=14, adjust=False).mean().replace(0, 1e-9)
-                            rsi_s = (100 - (100 / (1 + gain / loss))).fillna(50)
-                            self.rsi = self.I(lambda: rsi_s.values)
-
-                        def next(self):
-                            bull = self.ema5[-1] > self.ema26[-1] > self.ema60[-1]
-                            bear = self.ema5[-1] < self.ema26[-1] < self.ema60[-1]
-                            rsi = float(self.rsi[-1]) if not np.isnan(float(self.rsi[-1])) else 50.0
-                            if bull and self.rsi_min < rsi < self.rsi_max and not self.position:
-                                self.buy(size=0.1)
-                            elif bear and self.position.is_long:
-                                self.position.close()
-
-                stats = Backtest(df_bt, Strat, cash=float(bt_capital), commission=0.001).run()
-                results = {
-                    "Final Equity": f"${stats['Equity Final [$]']:,.2f}",
-                    "Return %": f"{stats['Return [%]']:.2f}%",
-                    "Sharpe Ratio": f"{stats['Sharpe Ratio']:.3f}",
-                    "Max Drawdown": f"{stats['Max. Drawdown [%]']:.2f}%",
-                    "Win Rate": f"{stats['Win Rate [%]']:.1f}%",
-                    "Total Trades": str(stats['# Trades']),
-                    "Profit Factor": f"{stats.get('Profit Factor', 0):.2f}",
-                    "Best Trade": f"{stats['Best Trade [%]']:.2f}%",
-                    "Worst Trade": f"{stats['Worst Trade [%]']:.2f}%",
-                    "Avg Trade": f"{stats['Avg. Trade [%]']:.2f}%",
-                }
-                st.session_state.backtest_results = {
-                    "metrics": results,
-                    "trades": stats["_trades"] if "_trades" in stats.index else None,
-                    "df": df_bt,
-                    "data_range": (str(df_bt.index[0]), str(df_bt.index[-1]), len(df_bt)),
-                    "requested_range": (str(bt_start), str(bt_end)),
-                }
-                add_log(f"✅ Backtest done! Return:{results['Return %']} Trades:{results['Total Trades']}", "buy")
-            except Exception as e:
-                import traceback
-                _tb = traceback.format_exc()
-                add_log(f"❌ Backtest FAILED: {e}", "err")
-                add_log(f"❌ Traceback: {_tb}", "err")
-                st.error(
-                    f"❌ Backtest failed to run: **{e}**\n\n"
-                    "This is a real error, not a data problem — the strategy class likely raised an "
-                    "exception partway through (e.g. missing indicator data, incompatible column, or a "
-                    "type mismatch). No results are shown because there are none; fix the underlying "
-                    "error and re-run. See the log panel for the full traceback."
-                )
-                st.session_state.backtest_results = None
-        st.session_state.backtest_running = False
-        st.rerun()
-
-    if st.session_state.backtest_results:
-        res = st.session_state.backtest_results
-        metrics = res["metrics"]
-        if res.get("data_range"):
-            _actual_start, _actual_end, _n_bars = res["data_range"]
-            _req_start, _req_end = res.get("requested_range", ("?", "?"))
-            st.info(
-                f"📅 Requested: **{_req_start} → {_req_end}** &nbsp;|&nbsp; "
-                f"Actually used: **{_actual_start} → {_actual_end}** ({_n_bars} bars)"
-            )
-        st.markdown("#### 📊 Results")
-        keys = [("Final Equity", "Final Equity"), ("Return %", "Return %"), ("Sharpe Ratio", "Sharpe Ratio"),
-                ("Win Rate", "Win Rate"), ("Max Drawdown", "Max Drawdown"), ("Total Trades", "Total Trades")]
-        mc = st.columns(6)
-        for i, (label, key) in enumerate(keys):
-            with mc[i]: st.metric(label, metrics.get(key, "—"))
-        with st.expander("📋 All Metrics"):
-            st.dataframe(pd.DataFrame(list(metrics.items()), columns=["Metric", "Value"]), width='stretch',
-                         hide_index=True)
-        if res.get("df") is not None:
-            render_candlestick_chart(res["df"].tail(300), bt_symbol)
-        if res.get("trades") is not None:
-            with st.expander("📋 Trade List"):
-                st.dataframe(res["trades"], width='stretch')
-
-    if btn_export and st.session_state.backtest_results:
-        try:
-            import io
-
-            buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-                pd.DataFrame(list(st.session_state.backtest_results["metrics"].items()),
-                             columns=["Metric", "Value"]).to_excel(writer, sheet_name="Summary", index=False)
-                if st.session_state.backtest_results.get("trades") is not None:
-                    st.session_state.backtest_results["trades"].to_excel(writer, sheet_name="Trades")
-            buf.seek(0)
-            st.download_button("📥 Download Excel", data=buf,
-                               file_name=f"backtest_{bt_symbol}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        except Exception as e:
-            add_log(f"Export error: {e}", "err")
-
-# ────────────────────────────────────────────
-# TAB 3 — ML PREDICTIONS
-# ────────────────────────────────────────────
-with tab_ml:
-    st.markdown("### 🤖 Machine Learning Predictions")
-    mlc1, mlc2 = st.columns([1, 2])
-    with mlc1:
-        ml_model_sel = st.selectbox("Model##ml", ["Random Forest", "XGBoost", "LSTM"], index=1, key="ml_tab_model")
-        ml_conf_tab = st.slider("Confidence Threshold %##ml", 55, 95, 75, key="ml_tab_conf")
-        ml_n_future = st.slider("Forecast Candles", 1, 20, 5, key="ml_forecast_n")
-        btn_train = st.button("🎓 Train Model", width='stretch')
-        btn_predict = st.button("🔮 Predict", width='stretch')
-
-    with mlc2:
-        if btn_train:
-            with st.spinner(f"Training {ml_model_sel}..."):
-                try:
-                    if st.session_state.market_data is None:
-                        add_log("⚠️ Load market data first (Live tab → Load Chart)", "warn")
-                        st.warning("⚠️ Load market data first — go to Live tab → Load Chart")
-                    else:
-                        df_ml = st.session_state.market_data.copy()
-                        type_map = {"Random Forest": "rf", "XGBoost": "xgb", "LSTM": "lstm"}
-                        mtype = type_map.get(ml_model_sel, "rf")
-
-                        # ── Try external model file first ────────────────────
-                        model = None
-                        try:
-                            if ml_model_sel == "Random Forest":
-                                from models.random_forest import RandomForestModel
-
-                                _ext = RandomForestModel();
-                                _ext.train(df_ml)
-                                model = _ext
-                            elif ml_model_sel == "XGBoost":
-                                from models.xgboost_model import XGBoostModel
-
-                                _ext = XGBoostModel();
-                                _ext.train(df_ml)
-                                model = _ext
-                            else:
-                                from models.lstm_model_NEW import LSTMModel
-
-                                _ext = LSTMModel();
-                                _ext.train(df_ml)
-                                model = _ext
-
-                            # Validate: predict() must return something we can unpack to (pred, conf)
-                            _p, _c = _safe_predict(model, df_ml.copy())
-                            if not isinstance(_p, (int, np.integer)):
-                                raise TypeError(f"External model pred type {type(_p)} — rejecting")
-                            add_log(f"✅ External {ml_model_sel} loaded & validated (pred={_p}, conf={_c:.2f})", "info")
-
-                        except Exception as _ext_err:
-                            # External model missing, broken, or incompatible API → fall back
-                            add_log(f"⚠️ External model failed ({_ext_err}) — using built-in.", "warn")
-                            model = BuiltinMLModel(mtype)
-                            model.train(df_ml)
-                        st.session_state.trained_ml_model = model
-                        acc = getattr(model, "accuracy", None)
-                        acc_str = f" | Train accuracy: {acc * 100:.1f}%" if acc else ""
-                        add_log(f"✅ {ml_model_sel} trained!{acc_str}", "buy")
-                        st.success(f"✅ {ml_model_sel} trained!{acc_str}")
-                except Exception as e:
-                    add_log(f"❌ Training error: {e}", "err")
-                    st.error(f"❌ Training error: {e}")
-
-        if btn_predict:
-            try:
-                model = st.session_state.trained_ml_model
-                if model is None:
-                    add_log("⚠️ Train a model first.", "warn")
-                    st.warning("⚠️ Train a model first.")
-                elif st.session_state.market_data is None:
-                    add_log("⚠️ Load market data first.", "warn")
-                    st.warning("⚠️ Load market data first.")
-                else:
-                    pred, conf = _safe_predict(model, st.session_state.market_data.copy())
-                    label = "BULLISH" if pred == 1 else "BEARISH" if pred == -1 else "NEUTRAL"
-                    st.session_state.ml_prediction = label
-                    st.session_state.ml_confidence = conf * 100
-                    add_log(f"🤖 ML Signal: {label} ({conf * 100:.1f}%)", "info")
-                    # Forecast display
-                    if hasattr(model, "forecast") and ml_n_future > 0:
-                        try:
-                            fc = model.forecast(st.session_state.market_data.copy(), n=ml_n_future)
-                            if fc:
-                                dirs = ["▲" if f["direction"] == 1 else "▼" for f in fc]
-                                prices = [f["close"] for f in fc]
-                                add_log(f"   Forecast {ml_n_future} bars: {' '.join(dirs)} | "
-                                        f"Target: {prices[-1]:.4f}", "info")
-                        except Exception:
-                            pass
-            except Exception as e:
-                add_log(f"❌ Prediction error: {e}", "err")
-                st.error(f"❌ Prediction error: {e}")
-
-        pred = st.session_state.ml_prediction
-        conf = st.session_state.ml_confidence
-        if pred:
-            color = {"BULLISH": "#00ff88", "BEARISH": "#ff4466", "NEUTRAL": "#ffaa00"}.get(pred, "#8a9abc")
-
-            # ── Direction-alignment analysis ─────────────────────────────
-            dir_now = st.session_state.get("direction", "Long")
-            conf_thr = ml_conf_tab
-            auto_on = st.session_state.get("auto_exec", False)
-            ml_enabled_now = st.session_state.get("ml_toggle", False)
-
-            # Compute alignment for each relevant signal
-            _buy_gated, _buy_why = _ml_direction_gate("BUY", dir_now, pred, conf, conf_thr, auto_on)
-            _sell_gated, _sell_why = _ml_direction_gate("SELL", dir_now, pred, conf, conf_thr, auto_on)
-            _hold_gated, _hold_why = _ml_direction_gate("HOLD", dir_now, pred, conf, conf_thr, auto_on)
-
-            aligned = (
-                    (dir_now == "Long" and pred == "BULLISH") or
-                    (dir_now == "Short" and pred == "BEARISH") or
-                    (dir_now == "Both")
-            )
-            conflict = (
-                    (dir_now == "Long" and pred == "BEARISH") or
-                    (dir_now == "Short" and pred == "BULLISH")
-            )
-            if dir_now == "Both":
-                align_txt = f"✅ Confirms {'Long' if pred == 'BULLISH' else 'Short'} leg" if pred != "NEUTRAL" else "⬜ Neutral"
-                align_color = "#00ff88"
-            elif aligned:
-                align_txt = f"✅ ALIGNED — adds value to {dir_now} mode"
-                align_color = "#00ff88"
-            elif conflict:
-                align_txt = f"⚠️ CONFLICTS — opposing {dir_now} mode"
-                align_color = "#ff4466"
-            else:
-                align_txt = "⬜ NEUTRAL — no directional gate applied"
-                align_color = "#ffaa00"
-
-            # ── Main prediction badge ────────────────────────────────────
-            st.markdown(f"""<div style="background:#080b14;border:1px solid {color}33;border-radius:8px;
-padding:20px;text-align:center;margin:10px 0">
-<div style="font-family:'Share Tech Mono',monospace;font-size:2rem;color:{color};letter-spacing:0.15em">{pred}</div>
-<div style="color:#6a7fa8;font-size:0.85rem;margin-top:8px">Confidence: <span style="color:{color}">{conf:.1f}%</span></div>
-<div style="margin-top:12px;background:#0e1220;border-radius:4px;height:8px;overflow:hidden">
-<div style="width:{min(conf, 100):.0f}%;height:100%;background:{color};border-radius:4px"></div></div>
-<div style="margin-top:10px;font-family:'Share Tech Mono',monospace;font-size:0.8rem;color:{align_color}">{align_txt}</div>
-</div>""", unsafe_allow_html=True)
-
-            # ── Direction gate outcome table ──────────────────────────────
-            st.markdown(
-                f'<div style="background:#06090f;border:1px solid #1a2a4a;border-radius:6px;'
-                f'padding:12px 16px;margin:8px 0;font-family:Share Tech Mono,monospace;font-size:0.78rem">'
-                f'<div style="color:#00e5ff;font-weight:700;margin-bottom:8px;letter-spacing:0.1em">'
-                f'GATE PREVIEW — Direction: {dir_now} | Auto-Exec: {"ON" if auto_on else "OFF"} | '
-                f'Threshold: {conf_thr}%</div>'
-                f'<div style="color:#3a5a7a;margin-bottom:4px">If strategy signals BUY:</div>'
-                f'<div style="color:{"#00ff88" if _buy_gated == "BUY" else "#ff4466" if _buy_gated == "HOLD" else "#ffaa00"}'
-                f';margin-bottom:8px;padding-left:12px">→ {_buy_gated} &nbsp;<span style="color:#4a6a8a">{_buy_why}</span></div>'
-                f'<div style="color:#3a5a7a;margin-bottom:4px">If strategy signals SELL:</div>'
-                f'<div style="color:{"#00ff88" if _sell_gated == "SELL" else "#ff4466" if _sell_gated == "HOLD" else "#ffaa00"}'
-                f';margin-bottom:8px;padding-left:12px">→ {_sell_gated} &nbsp;<span style="color:#4a6a8a">{_sell_why}</span></div>'
-                f'<div style="color:#3a5a7a;margin-bottom:4px">If strategy signals HOLD:</div>'
-                f'<div style="color:{"#00ff88" if _hold_gated != "HOLD" else "#4a6a8a"}'
-                f';padding-left:12px">→ {_hold_gated} &nbsp;<span style="color:#4a6a8a">{_hold_why}</span></div>'
-                f'</div>',
-                unsafe_allow_html=True
-            )
-
-            if conf >= ml_conf_tab:
-                st.success(f"✅ Exceeds {ml_conf_tab}% threshold — gate is active")
-            else:
-                st.warning(f"⚠️ Below {ml_conf_tab}% threshold — gate inactive, signals pass through")
-        else:
-            st.info("Train a model and click Predict to see ML signals here.")
-
-    st.divider()
-    st.markdown("#### Model Reference")
-    st.dataframe(pd.DataFrame([
-        {"Model": "Random Forest", "Speed": "⚡ Fast", "Accuracy": "75-80%", "Best For": "Real-time"},
-        {"Model": "XGBoost", "Speed": "⚡⚡ Medium", "Accuracy": "80-90%", "Best For": "Accuracy"},
-        {"Model": "LSTM", "Speed": "⚡⚡⚡ Slow", "Accuracy": "85%+", "Best For": "Patterns"},
-    ]), width='stretch', hide_index=True)
-
-# ────────────────────────────────────────────
-# TAB 4 — PARAMETERS
-# ────────────────────────────────────────────
-with tab_params:
-    st.markdown("### ⚙ Strategy Parameters")
-    p_strat = st.radio("Configure", ["Momentum", "Kalman", "Scalping"], horizontal=True, key="param_strat_radio")
-    use_custom = st.toggle("Use Custom Parameters", key="use_custom_params", value=False)
-
-    MOMENTUM_PARAMS_DEF = {
-        "EMA Parameters": [
-            ("EMA Fast Period", "mom_ema_fast", 5.0, 1.0, 50.0, 1.0, "Fast EMA — short-term trend"),
-            ("EMA Mid Period", "mom_ema_mid", 26.0, 5.0, 100.0, 1.0, "Mid EMA — medium-term trend"),
-            ("EMA Slow Period", "mom_ema_slow", 60.0, 10.0, 200.0, 1.0, "Slow EMA — long-term trend"),
-        ],
-        "Entry Filters": [
-            ("ADX Min", "mom_adx_min", 18.0, 5.0, 50.0, 1.0, "Min trend strength"),
-            ("ADX Min Trend", "mom_adx_min_trend", 22.0, 5.0, 50.0, 1.0, "ADX for strong trend"),
-            ("RSI Entry Min", "mom_rsi_min", 40.0, 10.0, 60.0, 1.0, "Min RSI for entry"),
-            ("RSI Entry Max", "mom_rsi_max", 70.0, 50.0, 90.0, 1.0, "Max RSI for entry"),
-            ("Volume Min Ratio", "mom_vol_ratio", 1.3, 0.5, 5.0, 0.1, "Min volume vs average"),
-            ("Kalman Min Strength", "mom_kalman_str", 0.05, 0.0, 1.0, 0.01, "Min Kalman strength"),
-            ("CCI Threshold", "mom_cci_thr", -50.0, -200.0, 0.0, 5.0, "CCI entry threshold"),
-        ],
-        "Risk Management": [
-            ("Risk Per Trade", "mom_risk_per_trade", 0.015, 0.001, 0.05, 0.001, "Risk % per trade"),
-            ("Risk Full Position", "mom_risk_full_pos", 0.015, 0.001, 0.05, 0.001, "Full position risk"),
-            ("Stop Loss ATR Mult", "mom_sl_atr_mult", 2.2, 0.5, 5.0, 0.1, "ATR x for stop loss"),
-            ("Trailing ATR Mult", "mom_trail_atr_mult", 3.0, 0.5, 8.0, 0.1, "ATR x for trailing stop"),
-            ("Trailing Stop Pct", "mom_trail_pct", 0.04, 0.005, 0.15, 0.005, "Pct trailing stop"),
-            ("Max Hold Bars", "mom_max_hold", 120.0, 10.0, 500.0, 10.0, "Max bars to hold"),
-        ],
-    }
-    KALMAN_PARAMS_DEF = {
-        "Kalman Filter": [
-            ("Process Noise 1", "kal_proc_noise1", 0.01, 0.001, 0.1, 0.001, "Kalman Q1"),
-            ("Process Noise 2", "kal_proc_noise2", 0.01, 0.001, 0.1, 0.001, "Kalman Q2"),
-            ("Measurement Noise", "kal_meas_noise", 500.0, 10.0, 2000.0, 10.0, "Kalman R"),
-            ("Kalman Strength Min", "kal_str_min", 70.0, 10.0, 100.0, 5.0, "Min trend strength"),
-        ],
-        "Entry Conditions": [
-            ("RSI Min", "kal_rsi_min", 40.0, 10.0, 60.0, 1.0, "Min RSI"),
-            ("RSI Max", "kal_rsi_max", 65.0, 50.0, 90.0, 1.0, "Max RSI"),
-            ("Pullback %", "kal_pullback", 0.5, 0.1, 3.0, 0.1, "Pullback depth %"),
-            ("Stop Loss %", "kal_stop_loss", 1.5, 0.1, 5.0, 0.1, "Fixed % stop loss"),
-            ("Trailing Stop %", "kal_trail_stop", 1.0, 0.1, 5.0, 0.1, "Trailing stop %"),
-            ("Cooldown Bars", "kal_cooldown", 10.0, 0.0, 50.0, 1.0, "Bars between trades"),
-            ("Risk Per Trade", "kal_risk_trade", 0.015, 0.001, 0.05, 0.001, "Risk per trade"),
-        ],
-    }
-    SCALPING_PARAMS_DEF = {
-        "Scalping Settings": [
-            ("EMA Fast", "scal_ema_fast", 5.0, 1.0, 20.0, 1.0, "Fast EMA"),
-            ("EMA Slow", "scal_ema_slow", 20.0, 5.0, 100.0, 1.0, "Slow EMA"),
-            ("RSI Period", "scal_rsi_period", 14.0, 2.0, 30.0, 1.0, "RSI period"),
-            ("Stop Loss %", "scal_stop_loss", 0.5, 0.1, 3.0, 0.1, "Stop loss %"),
-            ("Take Profit %", "scal_take_profit", 1.0, 0.1, 5.0, 0.1, "Take profit %"),
-        ],
-    }
-
-    param_map = {"Momentum": MOMENTUM_PARAMS_DEF, "Kalman": KALMAN_PARAMS_DEF, "Scalping": SCALPING_PARAMS_DEF}
-    selected_params = param_map[p_strat]
-
-    for group_title, rows in selected_params.items():
-        st.markdown(f'<div class="section-header">{group_title}</div>', unsafe_allow_html=True)
-        for label, key, default, mn, mx, step, desc in rows:
-            # FIX: safe key lookup — avoids None from .get()
-            saved = float(st.session_state[key] if key in st.session_state else default)
-            ca, cb = st.columns([2, 1])
-            with ca:
-                st.number_input(
-                    label,
-                    min_value=float(mn), max_value=float(mx),
-                    value=float(saved), step=float(step),
-                    key=key, disabled=not use_custom, help=desc,
-                )
-            with cb:
-                st.caption(f"Default: **{default}**")
-
-    st.divider()
-
-    # ── Ranging Market Settings ──────────────────────────────────────────
-    st.markdown("### 📊 Ranging Market Detection")
-    st.markdown("""
-    <div style="background:#0a1020;border:1px solid #ffcc0044;border-radius:6px;padding:12px;margin-bottom:16px">
-    <div style="color:#ffcc00;font-weight:700">⚠️ Ranging Market Filter</div>
-    <div style="font-size:0.75rem;color:#8a9abc">
-    Prevents trades during sideways/choppy markets. Uses ADX + Bollinger Bands + Slope detection.
-    </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    ranging_cfg = st.session_state.setdefault("ranging_settings", {})
-
-    c_r1, c_r2 = st.columns(2)
-    with c_r1:
-        ranging_cfg["enabled"] = st.toggle("Enable Ranging Filter", value=ranging_cfg.get("enabled", True),
-                                           key="ranging_enabled")
-    with c_r2:
-        ranging_cfg["skip_on_ranging"] = st.toggle("Skip Trades (vs warn only)",
-                                                   value=ranging_cfg.get("skip_on_ranging", True), key="ranging_skip")
-
-    st.markdown("#### Strategy Thresholds")
-
-    # Momentum thresholds
-    with st.expander("📈 Momentum / Enhanced", expanded=False):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            ranging_cfg["momentum_min_adx"] = st.number_input("Min ADX", min_value=10.0, max_value=40.0,
-                                                              value=ranging_cfg.get("momentum_min_adx", 20.0), step=1.0,
-                                                              key="mom_min_adx")
-        with col2:
-            ranging_cfg["momentum_max_bb_width"] = st.number_input("Max BB Width %", min_value=1.0, max_value=15.0,
-                                                                   value=ranging_cfg.get("momentum_max_bb_width", 5.0),
-                                                                   step=0.5,
-                                                                   key="mom_max_bb")
-        with col3:
-            ranging_cfg["momentum_min_slope"] = st.number_input("Min Slope %/bar", min_value=0.01, max_value=1.0,
-                                                                value=ranging_cfg.get("momentum_min_slope", 0.15),
-                                                                step=0.01,
-                                                                format="%.3f", key="mom_min_slope")
-
-    # Kalman thresholds
-    with st.expander("📉 Kalman", expanded=False):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            ranging_cfg["kalman_min_adx"] = st.number_input("Min ADX##kal", min_value=10.0, max_value=40.0,
-                                                            value=ranging_cfg.get("kalman_min_adx", 20.0), step=1.0,
-                                                            key="kal_min_adx")
-        with col2:
-            ranging_cfg["kalman_max_bb_width"] = st.number_input("Max BB Width %##kal", min_value=1.0, max_value=15.0,
-                                                                 value=ranging_cfg.get("kalman_max_bb_width", 6.0),
-                                                                 step=0.5,
-                                                                 key="kal_max_bb")
-        with col3:
-            ranging_cfg["kalman_min_slope"] = st.number_input("Min Slope %/bar##kal", min_value=0.01, max_value=1.0,
-                                                              value=ranging_cfg.get("kalman_min_slope", 0.12),
-                                                              step=0.01,
-                                                              format="%.3f", key="kal_min_slope")
-
-    # Scalping thresholds
-    with st.expander("⚡ Scalping", expanded=False):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            ranging_cfg["scalping_min_adx"] = st.number_input("Min ADX##scalp", min_value=10.0, max_value=40.0,
-                                                              value=ranging_cfg.get("scalping_min_adx", 18.0), step=1.0,
-                                                              key="scalp_min_adx")
-        with col2:
-            ranging_cfg["scalping_max_bb_width"] = st.number_input("Max BB Width %##scalp", min_value=1.0,
-                                                                   max_value=10.0,
-                                                                   value=ranging_cfg.get("scalping_max_bb_width", 4.0),
-                                                                   step=0.5,
-                                                                   key="scalp_max_bb")
-        with col3:
-            ranging_cfg["scalping_min_slope"] = st.number_input("Min Slope %/bar##scalp", min_value=0.01, max_value=0.5,
-                                                                value=ranging_cfg.get("scalping_min_slope", 0.10),
-                                                                step=0.01,
-                                                                format="%.3f", key="scalp_min_slope")
-
-    st.markdown("#### Cooldown Settings")
-    col1, col2 = st.columns(2)
-    with col1:
-        ranging_cfg["ranging_cooldown_bars"] = st.number_input("Cooldown Bars after ranging",
-                                                               min_value=1, max_value=20,
-                                                               value=ranging_cfg.get("ranging_cooldown_bars", 5),
-                                                               step=1,
-                                                               key="ranging_cooldown")
-
-    if st.button("💾 Save Ranging Settings", key="save_ranging"):
-        st.session_state.ranging_settings = ranging_cfg
-        add_log("✅ Ranging market settings saved", "info")
-        st.success("Settings saved!")
-
-    pc1, pc2 = st.columns(2)
-    with pc1:
-        if st.button("💾 Save Parameters", width='stretch', disabled=not use_custom):
-            settings = st.session_state.strategy_settings.copy()
-            for group_rows in selected_params.values():
-                for _, key, default, *_ in group_rows:
-                    # FIX: fall back to default, never store None
-                    settings.setdefault(p_strat.lower(), {})[key] = (
-                        st.session_state[key] if key in st.session_state else default
-                    )
-            save_strategy_settings(settings)
-            st.session_state.strategy_settings = settings
-    with pc2:
-        if st.button("🔄 Reset to Defaults", width='stretch'):
-            for group_rows in selected_params.values():
-                for _, key, default, *_ in group_rows:
-                    if key in st.session_state:
-                        del st.session_state[key]
-            add_log("🔄 Parameters reset to defaults.", "info")
+            # Rerun immediately to process the next candle
             st.rerun()
 
-# ────────────────────────────────────────────
-# TAB 5 — HELP
-# ────────────────────────────────────────────
-with tab_help:
-    st.markdown("### 📖 Quick Reference")
-    with st.expander("🚀 Getting Started", expanded=True):
-        st.markdown("""
-1. Add your **OKX API keys** to `config.json`
-2. Select **Mode** in sidebar: Demo → Live → Backtest
-3. Pick a **symbol** (SOL-USDT recommended)
-4. Click **Check Connection**
-5. Click **Start Trading**
+        else:
+            # ── FIXED INTERVAL MODE (Legacy behavior) ──────────────────
+            run_trading_cycle(symbol, interval, strategy, stop_loss_pct, trailing_pct, order_size_pct, mode)
+            time.sleep(max(1, st.session_state.get("refresh_interval", 10)))
+            st.rerun()
 
-> ⚡ **Demo mode** uses virtual $1,000 — no real money at risk. Real OKX market data is fetched automatically (no API key needed). Synthetic data is only used if the live feed is temporarily unavailable.
-        """)
-    with st.expander("📊 Three Strategies"):
-        st.markdown("""
-| Strategy | Best For | Win Rate | Annual Potential |
-|---|---|---|---|
-| **Momentum** | Trending markets | 52-60% | 90-130% |
-| **Kalman** | Pullbacks / mean-reversion | 52-58% | 80-120% |
-| **Enhanced** | Custom hybrid | Varies | Varies |
-| **Scalping** | High-frequency | Varies | Varies |
-        """)
-    with st.expander("⚠️ Risk Management Rules"):
-        st.markdown("""
-- Never risk **> 2%** per trade (start 0.5-1%)
-- Always use **hard stop losses**
-- Scale out at 1.5R → 2.5R → 4.0R
-- **Never move stops** against you
-- Demo trade for **at least 1 week** before going live
-        """)
-    with st.expander("🔧 Run Locally"):
-        st.markdown("""
-```bash
-pip install -r requirements_web.txt
-streamlit run streamlit_app.py
-```
-Deploy 24/7 on a VPS:
-```bash
-nohup streamlit run streamlit_app.py --server.port 8501 --server.headless true &
-```
-        """)
-    st.divider()
-    st.caption("Professional Trading Platform v9.0 — Web Edition | Design by Amr Aboueldahab")
-    st.caption("⚠️ Trading involves substantial risk of loss.")
+# ─── TAB 1: BACKTEST ──────────────────────────────────────────────────────
+with tabs[1]:
+    st.markdown('<div class="section-header">📊 Backtest Engine</div>', unsafe_allow_html=True)
+
+    bt_col1, bt_col2, bt_col3 = st.columns(3)
+    with bt_col1:
+        bt_symbol = st.selectbox("Symbol", ["SOL-USDT", "BTC-USDT", "ETH-USDT", "BNB-USDT", "XRP-USDT"],
+                                 key="bt_symbol", index=0)
+        bt_interval = st.selectbox("Interval", ["1m", "5m", "15m", "30m", "1H", "4H", "1D"],
+                                   key="bt_interval", index=2)
+    with bt_col2:
+        bt_strategy = st.selectbox("Strategy", ["Momentum", "Kalman", "Scalping"], key="bt_strategy")
+        bt_exchange = st.selectbox("Exchange", ["binance", "okx"], key="bt_exchange")
+    with bt_col3:
+        bt_start = st.date_input("Start", value=datetime.now() - timedelta(days=90), key="bt_start")
+        bt_end = st.date_input("End", value=datetime.now(), key="bt_end")
+        bt_capital = st.number_input("Capital ($)", min_value=1000, value=10000, step=1000, key="bt_capital")
+
+    bt_col4, bt_col5, bt_col6 = st.columns(3)
+    with bt_col4:
+        st.toggle("Enable Monte Carlo", key="bt_mc", value=False)
+        mc_sims = st.number_input("Simulations", min_value=100, max_value=5000, value=1000, step=100,
+                                  key="bt_mc_sims", disabled=not st.session_state.bt_mc)
+    with bt_col5:
+        st.toggle("Enable Parameter Optimization", key="bt_opt", value=False)
+        opt_metric = st.selectbox("Optimize For", ["Return %", "Sharpe Ratio", "Win Rate", "Profit Factor"],
+                                  key="bt_opt_metric", disabled=not st.session_state.bt_opt)
+    with bt_col6:
+        st.toggle("Use Real Strategy Classes", key="bt_use_real", value=True,
+                  help="Use desktop strategy files instead of simplified built-in signals")
+        if st.button("🚀 Run Backtest", width="stretch", key="bt_run"):
+            st.session_state.backtest_running = True
+            add_log("🚀 Starting backtest...", "info")
+
+            with st.spinner("Running backtest..."):
+                try:
+                    start_ts = pd.Timestamp(bt_start).tz_localize('UTC')
+                    end_ts = pd.Timestamp(bt_end).tz_localize('UTC') + timedelta(days=1)
+
+                    df = fetch_historical_data_ccxt(
+                        bt_symbol, bt_exchange,
+                        start=start_ts, end=end_ts,
+                        interval=bt_interval
+                    )
+
+                    if df is None or len(df) < 30:
+                        st.error("❌ Not enough data fetched. Try a different date range or symbol.")
+                        add_log("❌ Backtest failed: insufficient data", "err")
+                        st.session_state.backtest_running = False
+                        st.rerun()
+
+                    # Get strategy class
+                    use_real = st.session_state.bt_use_real
+                    StrategyClass, error = get_cached_strategy_class(bt_strategy, for_backtest=True) if use_real else (
+                        None, None)
+
+                    if use_real and StrategyClass is None:
+                        st.warning(f"⚠️ Could not load real strategy: {error}. Falling back to simplified.")
+                        add_log(f"⚠️ Backtest: real strategy not found, using simplified", "warn")
+                        StrategyClass, error = None, None
+
+                    if StrategyClass is None:
+                        # Use simplified built-in strategy
+                        if bt_strategy == "Momentum":
+                            from backtesting import Strategy
+
+
+                            class MomentumBacktest(Strategy):
+                                def init(self):
+                                    self.ema5 = self.I(lambda x: pd.Series(x).ewm(span=5, adjust=False).mean(),
+                                                       self.data.Close)
+                                    self.ema26 = self.I(lambda x: pd.Series(x).ewm(span=26, adjust=False).mean(),
+                                                        self.data.Close)
+                                    self.ema60 = self.I(lambda x: pd.Series(x).ewm(span=60, adjust=False).mean(),
+                                                        self.data.Close)
+                                    self.rsi = self.I(lambda x: 100 - (100 / (
+                                                1 + pd.Series(x).diff().clip(lower=0).ewm(span=14).mean() / (
+                                            -pd.Series(x).diff().clip(upper=0)).ewm(span=14).mean())), self.data.Close)
+                                    self.atr = self.I(lambda x: pd.Series(x).rolling(14).max().ewm(span=14).mean(),
+                                                      self.data.High - self.data.Low)
+
+                                def next(self):
+                                    if len(self.data) < 2:
+                                        return
+                                    if self.position:
+                                        stop = self.position.entry_price * (1 - 0.015)
+                                        if self.data.Close[-1] <= stop:
+                                            self.position.close()
+                                        return
+                                    if self.data.ema5[-1] > self.data.ema26[-1] > self.data.ema60[-1] and self.data.rsi[
+                                        -1] > 40 and self.data.rsi[-1] < 70:
+                                        self.buy(sl=self.data.Close[-1] * 0.985)
+                        elif bt_strategy == "Kalman":
+                            from backtesting import Strategy
+
+
+                            class KalmanBacktest(Strategy):
+                                def init(self):
+                                    self.rsi = self.I(lambda x: 100 - (100 / (
+                                                1 + pd.Series(x).diff().clip(lower=0).ewm(span=14).mean() / (
+                                            -pd.Series(x).diff().clip(upper=0)).ewm(span=14).mean())), self.data.Close)
+                                    self.atr = self.I(lambda x: pd.Series(x).rolling(14).max().ewm(span=14).mean(),
+                                                      self.data.High - self.data.Low)
+                                    close_vals = self.data.Close
+                                    x_vals = [float(close_vals[0])]
+                                    p = 1.0
+                                    for c in close_vals[1:]:
+                                        p += 0.01
+                                        k = p / (p + 500)
+                                        x_vals.append(x_vals[-1] + k * (float(c) - x_vals[-1]))
+                                        p = (1 - k) * p
+                                    self.kalman = self.I(lambda x: x_vals[:len(x)], self.data.Close)
+
+                                def next(self):
+                                    if len(self.data) < 2 or self.position:
+                                        return
+                                    diff = self.data.Close[-1] - self.kalman[-1]
+                                    strength = abs(diff) / (self.data.atr[-1] + 1e-9)
+                                    if diff > 0 and strength > 0.7 and self.data.rsi[-1] > 40 and self.data.rsi[
+                                        -1] < 65:
+                                        self.buy(sl=self.data.Close[-1] * 0.985)
+                        elif bt_strategy == "Scalping":
+                            from backtesting import Strategy
+
+
+                            class ScalpingBacktest(Strategy):
+                                def init(self):
+                                    self.ema5 = self.I(lambda x: pd.Series(x).ewm(span=5, adjust=False).mean(),
+                                                       self.data.Close)
+                                    self.ema26 = self.I(lambda x: pd.Series(x).ewm(span=26, adjust=False).mean(),
+                                                        self.data.Close)
+                                    self.rsi = self.I(lambda x: 100 - (100 / (
+                                                1 + pd.Series(x).diff().clip(lower=0).ewm(span=14).mean() / (
+                                            -pd.Series(x).diff().clip(upper=0)).ewm(span=14).mean())), self.data.Close)
+
+                                def next(self):
+                                    if len(self.data) < 2:
+                                        return
+                                    if self.position:
+                                        self.position.close()
+                                        return
+                                    cross_up = self.data.ema5[-1] > self.data.ema26[-1] and self.data.ema5[-2] <= \
+                                               self.data.ema26[-2]
+                                    cross_down = self.data.ema5[-1] < self.data.ema26[-1] and self.data.ema5[-2] >= \
+                                                 self.data.ema26[-2]
+                                    if cross_up and self.data.rsi[-1] > 35 and self.data.rsi[-1] < 70:
+                                        self.buy(sl=self.data.Close[-1] * 0.99, tp=self.data.Close[-1] * 1.01)
+                                    elif cross_down and self.data.rsi[-1] > 30 and self.data.rsi[-1] < 65:
+                                        self.sell(sl=self.data.Close[-1] * 1.01, tp=self.data.Close[-1] * 0.99)
+                        else:
+                            from backtesting import Strategy
+
+
+                            class SimpleBacktest(Strategy):
+                                def next(self):
+                                    if self.position:
+                                        self.position.close()
+                        StrategyClass = SimpleBacktest
+
+                    # Run backtest
+                    from backtesting import Backtest
+
+                    bt = Backtest(df, StrategyClass, cash=float(bt_capital), commission=0.001)
+                    stats_backtest = bt.run()
+                    trades = stats_backtest.get("_trades", None)
+
+                    result = {
+                        "metrics": dict(stats_backtest),
+                        "trades": trades,
+                        "requested_range": [bt_start.strftime("%Y-%m-%d"), bt_end.strftime("%Y-%m-%d")],
+                        "data_range": [df.index[0].strftime("%Y-%m-%d"), df.index[-1].strftime("%Y-%m-%d"), len(df)],
+                        "is_optimization": False,
+                        "optimization_results": None,
+                        "monte_carlo": None,
+                    }
+
+                    # Monte Carlo
+                    if st.session_state.bt_mc:
+                        with st.spinner(f"Running {mc_sims} Monte Carlo simulations..."):
+                            mc_results, mc_error = run_monte_carlo_backtest(
+                                df, StrategyClass, bt_capital, n_simulations=mc_sims, commission=0.001
+                            )
+                            if mc_results:
+                                result["monte_carlo"] = mc_results
+                                add_log(f"✅ Monte Carlo complete: {mc_sims} simulations", "buy")
+                            else:
+                                add_log(f"⚠️ Monte Carlo skipped: {mc_error}", "warn")
+
+                    # Optimization
+                    if st.session_state.bt_opt:
+                        param_grid = get_optimization_param_grid(bt_strategy)
+                        with st.spinner(f"Optimizing {len(param_grid)} parameters..."):
+                            opt_df, best_params, best_metrics = run_parameter_optimization(
+                                df, StrategyClass, bt_capital, param_grid,
+                                optimization_metric=opt_metric, commission=0.001
+                            )
+                            if opt_df is not None:
+                                result["is_optimization"] = True
+                                result["optimization_results"] = opt_df
+                                result["best_params"] = best_params
+                                result["best_metrics"] = best_metrics
+                                add_log(
+                                    f"✅ Optimization complete! Best {opt_metric}: {best_metrics.get(opt_metric, 'N/A')}",
+                                    "buy")
+                            else:
+                                add_log("⚠️ Optimization produced no results", "warn")
+
+                    st.session_state.backtest_results = result
+                    add_log(f"✅ Backtest complete: {stats_backtest['# Trades']} trades, "
+                            f"Return: {stats_backtest['Return [%]']:.2f}%", "buy")
+
+                    # Save Excel
+                    save_backtest_excel(result, bt_symbol, bt_interval, bt_strategy)
+
+                except Exception as e:
+                    st.error(f"❌ Backtest error: {e}")
+                    add_log(f"❌ Backtest error: {e}", "err")
+                    import traceback
+
+                    st.code(traceback.format_exc())
+
+            st.session_state.backtest_running = False
+            st.rerun()
+
+    # Display backtest results
+    if st.session_state.backtest_results:
+        result = st.session_state.backtest_results
+        st.markdown('<div class="section-header">📈 Backtest Results</div>', unsafe_allow_html=True)
+
+        metric_names = {
+            'Return [%]': 'Return %',
+            'Buy & Hold Return [%]': 'Buy & Hold %',
+            'Max. Drawdown [%]': 'Max Drawdown %',
+            'Avg. Drawdown [%]': 'Avg Drawdown %',
+            'Sharpe Ratio': 'Sharpe Ratio',
+            'Win Rate [%]': 'Win Rate %',
+            '# Trades': 'Total Trades',
+            'Equity Final [$]': 'Final Equity',
+            'Profit Factor': 'Profit Factor',
+            'Exposure Time [%]': 'Exposure %',
+        }
+
+        m1, m2, m3, m4, m5 = st.columns(5)
+        metrics = result["metrics"]
+        with m1:
+            st.metric("Return %", f"{metrics.get('Return [%]', 0):.2f}%")
+        with m2:
+            st.metric("Sharpe", f"{metrics.get('Sharpe Ratio', 0):.2f}")
+        with m3:
+            st.metric("Win Rate %", f"{metrics.get('Win Rate [%]', 0):.2f}%")
+        with m4:
+            st.metric("Max DD %", f"{metrics.get('Max. Drawdown [%]', 0):.2f}%")
+        with m5:
+            st.metric("Total Trades", f"{metrics.get('# Trades', 0):.0f}")
+
+        if result.get("monte_carlo"):
+            st.markdown("### 🎲 Monte Carlo Results")
+            mc = result["monte_carlo"]
+            mc_c1, mc_c2, mc_c3, mc_c4 = st.columns(4)
+            with mc_c1:
+                st.metric("Mean Final Equity", f"${mc['mean_final_equity']:,.2f}")
+            with mc_c2:
+                st.metric("Median Final Equity", f"${mc['median_final_equity']:,.2f}")
+            with mc_c3:
+                st.metric("Profit Probability", f"{mc['probability_profit']:.1f}%")
+            with mc_c4:
+                st.metric("Mean Max DD %", f"{mc['mean_max_drawdown']:.2f}%")
+
+        if result.get("is_optimization") and result.get("optimization_results") is not None:
+            st.markdown("### 🔧 Parameter Optimization")
+            st.dataframe(result["optimization_results"].head(10))
+
+        if result.get("trades") is not None:
+            with st.expander(f"📋 Trade Log ({len(result['trades'])} trades)", expanded=False):
+                st.dataframe(result["trades"], width='stretch')
+
+        st.success("✅ Backtest complete!")
+
+# ─── TAB 2: ML PREDICTIONS ──────────────────────────────────────────────
+with tabs[2]:
+    st.markdown('<div class="section-header">🤖 ML Predictions</div>', unsafe_allow_html=True)
+
+    ml_info1, ml_info2, ml_info3 = st.columns(3)
+    with ml_info1:
+        ml_model_type = st.selectbox("Model", ["Random Forest", "XGBoost", "Gradient Boosting"],
+                                     key="ml_model_type")
+    with ml_info2:
+        ml_train_bars = st.number_input("Training Bars", min_value=100, max_value=2000, value=500,
+                                        key="ml_train_bars", step=50)
+    with ml_info3:
+        ml_conf_thr = st.slider("Confidence Threshold %", 50, 95, 75, key="ml_conf_slider")
+
+    ml_toggle_col, ml_auto_col = st.columns(2)
+    with ml_toggle_col:
+        st.toggle("Enable ML Gate", key="ml_toggle", value=False,
+                  help="When enabled, ML predictions will filter strategy signals")
+    with ml_auto_col:
+        st.toggle("Auto-Execute ML signals", key="auto_exec", value=False,
+                  help="When enabled, ML can convert HOLD → BUY/SELL")
+
+    if st.button("🧠 Train ML Model", key="train_ml"):
+        with st.spinner("Training ML model..."):
+            df = fetch_market_data(symbol, interval, limit=ml_train_bars, silent=True)
+            if df is None or len(df) < 80:
+                st.error("Not enough data. Need at least 80 candles.")
+            else:
+                try:
+                    model = BuiltinMLModel(model_type="rf" if ml_model_type == "Random Forest" else "xgb")
+                    model.train(df)
+                    st.session_state.trained_ml_model = model
+                    st.session_state.ml_prediction = None
+                    add_log(f"✅ ML model trained! Accuracy: {model.accuracy:.1%}", "buy")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Training failed: {e}")
+
+    if st.session_state.trained_ml_model:
+        model = st.session_state.trained_ml_model
+        st.success(f"✅ Model trained — Accuracy: {model.accuracy:.1%}")
+
+        col_pred1, col_pred2 = st.columns(2)
+        with col_pred1:
+            if st.button("🔮 Predict Next Bar", key="ml_predict"):
+                df = fetch_market_data(symbol, interval, limit=300, silent=True)
+                if df is not None and len(df) > 60:
+                    try:
+                        pred, conf = model.predict(df)
+                        direction = "BULLISH 🟢" if pred == 1 else "BEARISH 🔴" if pred == -1 else "NEUTRAL ⚪"
+                        st.session_state.ml_prediction = "BULLISH" if pred == 1 else "BEARISH" if pred == -1 else "NEUTRAL"
+                        st.session_state.ml_confidence = conf
+                        add_log(f"🤖 ML Prediction: {direction} (conf: {conf:.1%})", "info")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Prediction failed: {e}")
+
+        with col_pred2:
+            if st.button("📈 Forecast 5 Bars", key="ml_forecast"):
+                df = fetch_market_data(symbol, interval, limit=300, silent=True)
+                if df is not None and len(df) > 60:
+                    try:
+                        fc = model.forecast(df, n=5)
+                        if fc:
+                            st.dataframe(pd.DataFrame(fc))
+                            add_log(f"✅ Forecast generated {len(fc)} bars", "info")
+                    except Exception as e:
+                        st.error(f"Forecast failed: {e}")
+
+        if st.session_state.ml_prediction:
+            pred = st.session_state.ml_prediction
+            conf = st.session_state.ml_confidence
+            color = "#00ff99" if pred == "BULLISH" else "#ff2255" if pred == "BEARISH" else "#ffcc00"
+            st.markdown(f"<div style='font-family:Share Tech Mono,monospace;font-size:1.5rem;color:{color}'>"
+                        f"📊 {pred} — {conf:.1%} confidence</div>", unsafe_allow_html=True)
+
+        st.caption("ML predictions can be used as a filter for strategy signals when 'Enable ML Gate' is on.")
+
+# ─── TAB 3: PARAMETERS ────────────────────────────────────────────────────
+with tabs[3]:
+    st.markdown('<div class="section-header">⚙️ Strategy Parameters</div>', unsafe_allow_html=True)
+
+    param_tabs = st.tabs(["Momentum", "Kalman", "Scalping", "Ranging Filter"])
+
+    # Momentum
+    with param_tabs[0]:
+        st.markdown("### Momentum Strategy Parameters")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.number_input("EMA Fast", value=5.0, min_value=2.0, max_value=20.0, step=1.0, key="mom_ema_fast")
+            st.number_input("EMA Mid", value=26.0, min_value=5.0, max_value=50.0, step=1.0, key="mom_ema_mid")
+        with c2:
+            st.number_input("EMA Slow", value=60.0, min_value=10.0, max_value=200.0, step=5.0, key="mom_ema_slow")
+            st.number_input("RSI Min", value=40.0, min_value=20.0, max_value=60.0, step=1.0, key="mom_rsi_min")
+        with c3:
+            st.number_input("RSI Max", value=70.0, min_value=40.0, max_value=90.0, step=1.0, key="mom_rsi_max")
+            st.number_input("ADX Min", value=18.0, min_value=10.0, max_value=50.0, step=1.0, key="mom_adx_min")
+            st.number_input("Volume Ratio", value=1.3, min_value=0.5, max_value=3.0, step=0.1, key="mom_vol_ratio")
+
+    # Kalman
+    with param_tabs[1]:
+        st.markdown("### Kalman Strategy Parameters")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.number_input("Process Noise (q)", value=0.01, min_value=0.001, max_value=0.1, step=0.001,
+                            key="kal_proc_noise1", format="%.3f")
+            st.number_input("Measurement Noise (r)", value=500.0, min_value=50.0, max_value=2000.0, step=50.0,
+                            key="kal_meas_noise")
+        with c2:
+            st.number_input("RSI Min", value=40.0, min_value=20.0, max_value=60.0, step=1.0, key="kal_rsi_min")
+            st.number_input("RSI Max", value=65.0, min_value=40.0, max_value=90.0, step=1.0, key="kal_rsi_max")
+        with c3:
+            st.number_input("Strength Min %", value=70.0, min_value=20.0, max_value=150.0, step=5.0, key="kal_str_min")
+
+    # Scalping
+    with param_tabs[2]:
+        st.markdown("### Scalping Strategy Parameters")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.number_input("EMA Fast", value=5.0, min_value=1.0, max_value=20.0, step=1.0, key="scal_ema_fast")
+            st.number_input("EMA Slow", value=20.0, min_value=5.0, max_value=50.0, step=1.0, key="scal_ema_slow")
+        with c2:
+            st.number_input("RSI Min", value=35.0, min_value=20.0, max_value=60.0, step=1.0, key="scal_rsi_min")
+            st.number_input("RSI Max", value=70.0, min_value=40.0, max_value=90.0, step=1.0, key="scal_rsi_max")
+        with c3:
+            st.number_input("ADX Min", value=18.0, min_value=10.0, max_value=50.0, step=1.0, key="scal_adx_min")
+            st.number_input("Volume Ratio", value=1.2, min_value=0.5, max_value=3.0, step=0.1, key="scal_vol_ratio")
+
+    # Ranging Filter
+    with param_tabs[3]:
+        st.markdown("### Ranging Market Filter")
+        st.toggle("Enable Ranging Filter", key="ranging_enabled",
+                  value=st.session_state.ranging_settings.get("enabled", True))
+
+        st.markdown("#### Momentum")
+        rc1, rc2, rc3 = st.columns(3)
+        with rc1:
+            st.number_input("Min ADX", value=20.0, min_value=10.0, max_value=40.0, step=1.0, key="ranging_momentum_adx")
+        with rc2:
+            st.number_input("Max BB Width %", value=5.0, min_value=1.0, max_value=15.0, step=0.5,
+                            key="ranging_momentum_bb")
+        with rc3:
+            st.number_input("Min Slope %/bar", value=0.15, min_value=0.01, max_value=1.0, step=0.01,
+                            key="ranging_momentum_slope")
+
+        st.markdown("#### Kalman")
+        rc1, rc2, rc3 = st.columns(3)
+        with rc1:
+            st.number_input("Min ADX", value=20.0, min_value=10.0, max_value=40.0, step=1.0, key="ranging_kalman_adx")
+        with rc2:
+            st.number_input("Max BB Width %", value=6.0, min_value=1.0, max_value=15.0, step=0.5,
+                            key="ranging_kalman_bb")
+        with rc3:
+            st.number_input("Min Slope %/bar", value=0.12, min_value=0.01, max_value=1.0, step=0.01,
+                            key="ranging_kalman_slope")
+
+        st.markdown("#### Scalping")
+        rc1, rc2, rc3 = st.columns(3)
+        with rc1:
+            st.number_input("Min ADX", value=18.0, min_value=10.0, max_value=40.0, step=1.0, key="ranging_scalping_adx")
+        with rc2:
+            st.number_input("Max BB Width %", value=4.0, min_value=1.0, max_value=15.0, step=0.5,
+                            key="ranging_scalping_bb")
+        with rc3:
+            st.number_input("Min Slope %/bar", value=0.10, min_value=0.01, max_value=1.0, step=0.01,
+                            key="ranging_scalping_slope")
+
+        st.markdown("#### General")
+        gc1, gc2 = st.columns(2)
+        with gc1:
+            st.toggle("Skip trades on ranging", key="ranging_skip",
+                      value=st.session_state.ranging_settings.get("skip_on_ranging", True))
+        with gc2:
+            st.number_input("Cooldown bars", value=5, min_value=1, max_value=20, step=1, key="ranging_cooldown")
+
+        if st.button("💾 Save Ranging Settings", key="save_ranging"):
+            st.session_state.ranging_settings = {
+                "enabled": st.session_state.ranging_enabled,
+                "momentum_min_adx": st.session_state.ranging_momentum_adx,
+                "momentum_max_bb_width": st.session_state.ranging_momentum_bb,
+                "momentum_min_slope": st.session_state.ranging_momentum_slope,
+                "kalman_min_adx": st.session_state.ranging_kalman_adx,
+                "kalman_max_bb_width": st.session_state.ranging_kalman_bb,
+                "kalman_min_slope": st.session_state.ranging_kalman_slope,
+                "scalping_min_adx": st.session_state.ranging_scalping_adx,
+                "scalping_max_bb_width": st.session_state.ranging_scalping_bb,
+                "scalping_min_slope": st.session_state.ranging_scalping_slope,
+                "skip_on_ranging": st.session_state.ranging_skip,
+                "ranging_cooldown_bars": st.session_state.ranging_cooldown,
+            }
+            add_log("✅ Ranging settings saved", "info")
+            st.rerun()
+
+# ─── TAB 4: HELP ──────────────────────────────────────────────────────────
+with tabs[4]:
+    st.markdown('<div class="section-header">❓ Help & Instructions</div>', unsafe_allow_html=True)
+
+    st.markdown("""
+    ### 🚀 Quick Start
+    1. **Select Trading Mode** — Demo (no API keys) or Live (requires OKX API)
+    2. **Choose Market** — Symbol and Timeframe
+    3. **Select Strategy** — Momentum, Kalman, or Scalping
+    4. **Adjust Parameters** — Stop loss, trailing, order size
+    5. **Click START** — Trading begins
+
+    ### ⏱ Clock Sync (NEW)
+    - **Sync to clock**: Trading executes exactly at candle closes for perfect alignment
+    - **WebSocket trigger**: Uses OKX WebSocket for precise candle close timing
+    - **Fallback**: Uses clock alignment if WebSocket is unavailable
+    - **Fixed interval**: Legacy polling mode (use for debugging)
+
+    ### 📊 Strategies
+    - **Momentum** — EMA crossovers + RSI + MACD + volume confirmation
+    - **Kalman** — Kalman filter trend detection + RSI confirmation
+    - **Scalping** — Fast EMA crossovers + RSI for quick entries/exits
+
+    ### 🤖 ML Integration
+    - Train ML models on historical data
+    - Use predictions as a gate for strategy signals
+    - Auto-execute mode can convert HOLD → BUY/SELL
+
+    ### ⏱ Trading Windows
+    - Restrict trading to specific hours/days
+    - Save presets for different sessions (London, New York, Asia)
+    - UTC timezone
+
+    ### 📈 Backtest
+    - Test strategies on historical data
+    - Monte Carlo simulation for robustness
+    - Parameter optimization to find best settings
+
+    ### 🔧 Ranging Filter
+    - Detects ranging markets using ADX, Bollinger Bands, slope
+    - Skips trades during consolidation
+    - Configurable per strategy
+
+    ### 💾 Data Persistence
+    - Trading windows saved to `trading_windows.json`
+    - Strategy settings saved to `strategy_settings.json`
+    - Backtest results saved to `backtest_results/` folder
+    """)
+
+    st.markdown("---")
+    st.caption("📈 ABOULDAHAB MCS  Professional Trading Platform v10.0 ")
+
+# ─── SESSION SUMMARY ──────────────────────────────────────────────────────
+if st.session_state.get("session_summary"):
+    render_session_summary()
