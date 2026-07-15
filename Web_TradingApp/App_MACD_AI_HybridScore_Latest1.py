@@ -15623,7 +15623,6 @@ class TradingApp:
 
         self.log_message("=" * 80, "green")
 
-
         return {
             'quality_minimum_score': min_score,
             'fuzzy_mode_enabled': fuzzy_enabled,

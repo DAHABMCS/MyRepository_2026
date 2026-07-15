@@ -3,18 +3,18 @@
     "parameters": {
         "quality_tier1_min": {
             "active": true,
-            "value1": "58",
-            "value2": "62",
+            "value1": "62",
+            "value2": "65",
             "value3": "68",
-            "value4": "70",
+            "value4": "72",
             "description": "Tier 1 Minimum Score (LONG)"
         },
         "quality_tier2_min": {
-            "active": true,
-            "value1": "52",
-            "value2": "56",
-            "value3": "60",
-            "value4": "64",
+            "active": false,
+            "value1": "55",
+            "value2": "58",
+            "value3": "62",
+            "value4": "65",
             "description": "Tier 2 Minimum Score (LONG)"
         },
         "fixed_threshold": {
@@ -26,7 +26,7 @@
             "description": "Fixed Entry Threshold"
         },
         "short_quality_tier1_min": {
-            "active": false,
+            "active": true,
             "value1": "65",
             "value2": "68",
             "value3": "70",
@@ -59,30 +59,30 @@
         },
         "ema_fast_period": {
             "active": true,
-            "value1": "7",
-            "value2": "8",
-            "value3": "9",
-            "value4": "10",
+            "value1": "8",
+            "value2": "9",
+            "value3": "10",
+            "value4": "12",
             "description": "EMA Fast Period"
         },
         "ema_mid_period": {
             "active": true,
             "value1": "18",
             "value2": "20",
-            "value3": "22",
+            "value3": "21",
             "value4": "24",
             "description": "EMA Mid Period"
         },
         "ema_slow_period": {
             "active": true,
-            "value1": "40",
-            "value2": "45",
-            "value3": "50",
-            "value4": "55",
+            "value1": "45",
+            "value2": "50",
+            "value3": "55",
+            "value4": "60",
             "description": "EMA Slow Period"
         },
         "daily_ema_period": {
-            "active": false,
+            "active": true,
             "value1": "480",
             "value2": "600",
             "value3": "720",
@@ -146,11 +146,11 @@
             "description": "Tier 1 ADX Hard Min (LONG)"
         },
         "tier1_adx_min": {
-            "active": true,
-            "value1": "18",
-            "value2": "20",
-            "value3": "22",
-            "value4": "25",
+            "active": false,
+            "value1": "16",
+            "value2": "18",
+            "value3": "20",
+            "value4": "22",
             "description": "Tier 1 ADX Min (soft)"
         },
         "tier1_rsi_min": {
@@ -178,7 +178,7 @@
             "description": "Tier 1 Volume Min (LONG)"
         },
         "tier1_momentum_min": {
-            "active": false,
+            "active": true,
             "value1": "0.01",
             "value2": "0.015",
             "value3": "0.02",
@@ -250,7 +250,7 @@
             "description": "Tier 1 Volume Min (SHORT)"
         },
         "short_tier1_momentum_min": {
-            "active": false,
+            "active": true,
             "value1": "0.03",
             "value2": "0.04",
             "value3": "0.05",
@@ -290,19 +290,19 @@
             "description": "Short: Lower Lows Bars Required"
         },
         "pullback_zone_lower_pct": {
-            "active": true,
-            "value1": "-4",
-            "value2": "-3",
-            "value3": "-2",
-            "value4": "-1",
+            "active": false,
+            "value1": "-3.0",
+            "value2": "-2.5",
+            "value3": "-2.0",
+            "value4": "-1.5",
             "description": "Pullback Zone Lower %"
         },
         "pullback_zone_upper_pct": {
-            "active": true,
-            "value1": "0.5",
-            "value2": "1.0",
-            "value3": "1.5",
-            "value4": "2.0",
+            "active": false,
+            "value1": "1.0",
+            "value2": "1.5",
+            "value3": "2.0",
+            "value4": "3.0",
             "description": "Pullback Zone Upper %"
         },
         "adx_slope_min": {
@@ -354,7 +354,7 @@
             "description": "Enable Tier 2 Cooldown"
         },
         "regime_filter_enabled": {
-            "active": true,
+            "active": false,
             "value1": "false",
             "value2": "true",
             "value3": "",
@@ -362,15 +362,16 @@
             "description": "Regime Filter Enabled"
         },
         "chop_threshold": {
-            "active": true,
-            "value1": "48",
-            "value2": "52",
-            "value3": "56",
-            "value4": "60",
+            "active": false,
+            "value1": "50",
+            "value2": "54",
+            "value3": "58",
+            "value4": "62",
             "description": "Choppiness Index Threshold"
         },
+
         "atr_compression_enabled": {
-            "active": true,
+            "active": false,
             "value1": "false",
             "value2": "true",
             "value3": "",
@@ -378,11 +379,11 @@
             "description": "ATR Compression Filter Enabled"
         },
         "atr_compression_threshold": {
-            "active": true,
-            "value1": "0.10",
-            "value2": "0.15",
-            "value3": "0.20",
-            "value4": "0.25",
+            "active": false,
+            "value1": "0.15",
+            "value2": "0.20",
+            "value3": "0.25",
+            "value4": "0.30",
             "description": "ATR Compression Threshold"
         },
         "extended_run_max_pct_long": {
@@ -715,13 +716,13 @@
         }
     },
     "metrics": {
-        "sharpe": true,
+        "sharpe": false,
         "sortino": true,
-        "returns": true,
+        "returns": false,
         "winrate": true,
         "profit_factor": true,
         "equity": true,
-        "trade_count": true
+        "trade_count": false
     },
-    "timestamp": "2026-06-30T00:00:00.000000"
+    "timestamp": "2026-07-14T13:22:02.543682"
 }
