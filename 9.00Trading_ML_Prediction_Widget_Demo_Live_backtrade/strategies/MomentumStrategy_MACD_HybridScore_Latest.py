@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# v10.0 - THREE-TIER RISK SYSTEM WITH DIRECTION GATE + POWER SCORE + ML ADJUSTMENT
+# v10.0 - TWO-TIER RISK SYSTEM WITH DIRECTION GATE + POWER SCORE + ML ADJUSTMENT
 # ═══════════════════════════════════════════════════════════════════════════
 import json
 import logging
@@ -259,7 +259,7 @@ BACKTEST_PARAMS = {
     'weight_volume': {'active': True, 'values': [10, 12, 15, 18], 'description': 'Volume Weight'},
     'risk_tier1': {'active': True, 'values': [0.015, 0.020, 0.025, 0.030], 'description': 'Tier 1 Risk %'},
     'risk_tier2': {'active': True, 'values': [0.010, 0.015, 0.018, 0.022], 'description': 'Tier 2 Risk %'},
-    'risk_tier3': {'active': True, 'values': [0.005, 0.008, 0.010, 0.012], 'description': 'Tier 3 Risk %'},
+
     'stop_loss_mult': {'active': True, 'values': [2.0, 2.5, 3.0, 3.5, 4.0], 'description': 'Stop Loss ATR Multiplier'},
     'trailing_activation': {'active': True, 'values': [0.02, 0.03, 0.04, 0.05], 'description': 'Trailing Activation %'},
     'trailing_distance': {'active': True, 'values': [0.025, 0.035, 0.045, 0.055], 'description': 'Trailing Distance %'},
@@ -268,7 +268,7 @@ BACKTEST_PARAMS = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 2: RISK MANAGEMENT — THREE-TIER SYSTEM
+# PART 2: RISK MANAGEMENT — TWO-TIER SYSTEM
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ProfessionalRiskController:
@@ -290,29 +290,24 @@ class ProfessionalRiskController:
         self.min_cash_reserve = 0.15
         self.base_risk_pct = 0.025
 
-        # THREE-TIER RISK SETTINGS
+        # TWO-TIER RISK SETTINGS
         self.tier1_risk_pct = 0.025  # 2.5%
         self.tier2_risk_pct = 0.015  # 1.5%
-        self.tier3_risk_pct = 0.008  # 0.8%
 
         # TIER PASS MARKS
         self.tier1_pass_long = 75
         self.tier2_pass_long = 65
-        self.tier3_pass_long = 55
 
         self.tier1_pass_short = 75
         self.tier2_pass_short = 65
-        self.tier3_pass_short = 58
 
         # POSITION SIZE MULTIPLIERS
         self.tier1_size_mult = 1.0  # 100%
         self.tier2_size_mult = 0.70  # 70%
-        self.tier3_size_mult = 0.35  # 35%
 
         # STOP LOSS MULTIPLIERS
         self.tier1_stop_mult = 2.0  # 2x ATR
         self.tier2_stop_mult = 2.5  # 2.5x ATR
-        self.tier3_stop_mult = 3.5  # 3.5x ATR
 
         # ═══ Hard cap on position size in units ═══
         self.max_position_units = 50
@@ -353,43 +348,29 @@ class ProfessionalRiskController:
                 'name': 'Tier 2 (Medium Risk)',
                 'color': 'yellow'
             }
-        elif tier == 3:
-            return {
-                'risk_pct': self.tier3_risk_pct,
-                'size_mult': self.tier3_size_mult,
-                'stop_mult': self.tier3_stop_mult,
-                'pass_long': self.tier3_pass_long,
-                'pass_short': self.tier3_pass_short,
-                'name': 'Tier 3 (High Risk)',
-                'color': 'red'
-            }
         else:
             return None
 
     def determine_tier(self, quality_score: int, direction: str = 'long') -> int:
         """
         Determine the appropriate tier based on quality score and direction.
-        Returns: 1, 2, 3, or 0 (no entry)
+        Returns: 1, 2, or 0 (no entry)
         """
         if direction == 'long':
             if quality_score >= self.tier1_pass_long:
                 return 1
             elif quality_score >= self.tier2_pass_long:
                 return 2
-            elif quality_score >= self.tier3_pass_long:
-                return 3
         else:  # short
             if quality_score >= self.tier1_pass_short:
                 return 1
             elif quality_score >= self.tier2_pass_short:
                 return 2
-            elif quality_score >= self.tier3_pass_short:
-                return 3
         return 0  # No entry
 
     def calculate_position_size(self, entry_price, stop_loss_price, win_rate=0.50,
                                 profit_factor=1.0, quality_score=75, tier=1, adx=25,
-                                tier1_risk_pct=None, tier2_risk_pct=None, tier3_risk_pct=None):
+                                tier1_risk_pct=None, tier2_risk_pct=None):
         if entry_price <= 0:
             return 0
 
@@ -407,8 +388,6 @@ class ProfessionalRiskController:
             base_risk = tier1_risk_pct
         elif tier == 2 and tier2_risk_pct is not None:
             base_risk = tier2_risk_pct
-        elif tier == 3 and tier3_risk_pct is not None:
-            base_risk = tier3_risk_pct
         else:
             base_risk = tier_config['risk_pct']
 
@@ -597,7 +576,7 @@ class MacroRegimeDetector:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 4: EXIT MANAGER — THREE-TIER EXIT RULES
+# PART 4: EXIT MANAGER — TWO-TIER EXIT RULES
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ProfessionalExitManager:
@@ -622,10 +601,9 @@ class ProfessionalExitManager:
         self.take_profit_r3 = config.get('take_profit_r3', 8.0)
         self.partial_exit_pct = config.get('partial_exit_pct', 0.33)
 
-        # THREE-TIER EXIT THRESHOLDS
+        # TWO-TIER EXIT THRESHOLDS
         self.exit_threshold_tier1 = 60  # Tier 1 exits at 60% reversal power
         self.exit_threshold_tier2 = 50  # Tier 2 exits at 50% reversal power
-        self.exit_threshold_tier3 = 40  # Tier 3 exits at 40% reversal power
 
     def get_exit_threshold(self, tier: int) -> int:
         """Get exit threshold based on tier"""
@@ -633,8 +611,6 @@ class ProfessionalExitManager:
             return self.exit_threshold_tier1
         elif tier == 2:
             return self.exit_threshold_tier2
-        elif tier == 3:
-            return self.exit_threshold_tier3
         return 50  # Default
 
     def get_trailing_config(self, tier: int) -> dict:
@@ -643,8 +619,6 @@ class ProfessionalExitManager:
             return {'activation': 0.03, 'distance': 0.025}
         elif tier == 2:
             return {'activation': 0.04, 'distance': 0.035}
-        elif tier == 3:
-            return {'activation': 0.06, 'distance': 0.05}
         return {'activation': 0.04, 'distance': 0.035}
 
     def get_initial_trailing_stop(self, entry_price, atr=None, position_type='long'):
@@ -658,7 +632,7 @@ class ProfessionalExitManager:
 
         if not hasattr(self, '_version_printed'):
             print("=" * 70)
-            print("🎯 EXIT MANAGER VERSION: v10.0 - THREE-TIER EXIT RULES")
+            print("🎯 EXIT MANAGER VERSION: v10.0 - TWO-TIER EXIT RULES")
             print("=" * 70)
             self._version_printed = True
 
@@ -757,49 +731,41 @@ class ProfessionalExitManager:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 5: CONFIGURATION — THREE-TIER SYSTEM
+# PART 5: CONFIGURATION — TWO-TIER SYSTEM
 # ═══════════════════════════════════════════════════════════════════════════
 
 MOMENTUM_PARAMS = {
     # ═══ DIRECTION CONTROL ════════════════════════════════════════════
     "trade_direction": "both",
 
-    # ═══ THREE-TIER PASS MARKS ════════════════════════════════════════
+    # ═══ TWO-TIER PASS MARKS ════════════════════════════════════════
     "quality_tier1_min_long": 75,  # Tier 1 (Low Risk)
     "quality_tier2_min_long": 65,  # Tier 2 (Medium Risk)
-    "quality_tier3_min_long": 55,  # Tier 3 (High Risk)
 
     "quality_tier1_min_short": 75,  # Tier 1 (Low Risk)
     "quality_tier2_min_short": 65,  # Tier 2 (Medium Risk)
-    "quality_tier3_min_short": 58,  # Tier 3 (High Risk)
 
-    # ═══ THREE-TIER RISK PERCENTAGES ═══════════════════════════════════
+    # ═══ TWO-TIER RISK PERCENTAGES ═══════════════════════════════════
     "risk_tier1": 0.025,  # 2.5%
     "risk_tier2": 0.015,  # 1.5%
-    "risk_tier3": 0.008,  # 0.8%
 
-    # ═══ THREE-TIER POSITION SIZE MULTIPLIERS ═══════════════════════════
+    # ═══ TWO-TIER POSITION SIZE MULTIPLIERS ═══════════════════════════
     "tier1_size_multiplier": 1.0,  # 100%
     "tier2_size_multiplier": 0.70,  # 70%
-    "tier3_size_multiplier": 0.35,  # 35%
 
-    # ═══ THREE-TIER STOP LOSS MULTIPLIERS ═══════════════════════════════
+    # ═══ TWO-TIER STOP LOSS MULTIPLIERS ═══════════════════════════════
     "tier1_stop_multiplier": 2.0,  # 2x ATR
     "tier2_stop_multiplier": 2.5,  # 2.5x ATR
-    "tier3_stop_multiplier": 3.5,  # 3.5x ATR
 
-    # ═══ THREE-TIER EXIT THRESHOLDS ═════════════════════════════════════
+    # ═══ TWO-TIER EXIT THRESHOLDS ═════════════════════════════════════
     "exit_threshold_tier1": 60,
     "exit_threshold_tier2": 50,
-    "exit_threshold_tier3": 40,
 
-    # ═══ THREE-TIER TRAILING CONFIG ═════════════════════════════════════
+    # ═══ TWO-TIER TRAILING CONFIG ═════════════════════════════════════
     "trailing_activation_tier1": 0.03,
     "trailing_activation_tier2": 0.04,
-    "trailing_activation_tier3": 0.06,
     "trailing_distance_tier1": 0.025,
     "trailing_distance_tier2": 0.035,
-    "trailing_distance_tier3": 0.05,
 
     # ═══ ML WEIGHT ════════════════════════════════════════════════════
     "ml_weight": 0.20,  # 20% influence
@@ -941,14 +907,6 @@ MOMENTUM_PARAMS = {
     "tier2_momentum_min": 0.05,
     "tier2_macd_histogram_min": 0.001,
     "tier2_require_macd_histogram": True,
-
-    # Tier 3 Filters (High Risk)
-    "tier3_adx_min": 15,
-    "tier3_volume_min": 0.3,
-    "tier3_volume_min_ratio": 0.9,
-    "tier3_momentum_min": 0.03,
-    "tier3_macd_histogram_min": 0.0005,
-    "tier3_require_macd_histogram": False,
 
     # MACD Settings
     "macd_fast": 12,
@@ -1491,7 +1449,7 @@ class IndicatorCalculator:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 8: CORE MOMENTUM LOGIC — THREE-TIER SYSTEM
+# PART 8: CORE MOMENTUM LOGIC — TWO-TIER SYSTEM
 # ═══════════════════════════════════════════════════════════════════════════
 
 class MomentumLogic:
@@ -1518,18 +1476,18 @@ class MomentumLogic:
         required_params = {
             'trailing_activation_pct': 0.03, 'trailing_distance_pct': 0.035,
             'trade_direction': 'both', 'only_tier2_entries': False,
-            'quality_tier1_min_long': 75, 'quality_tier2_min_long': 65, 'quality_tier3_min_long': 55,
-            'quality_tier1_min_short': 75, 'quality_tier2_min_short': 65, 'quality_tier3_min_short': 58,
+            'quality_tier1_min_long': 75, 'quality_tier2_min_long': 65,
+            'quality_tier1_min_short': 75, 'quality_tier2_min_short': 65,
             'quality_tier1_min': 75, 'quality_tier2_min': 65,
             'short_quality_tier1_min': 75, 'short_quality_tier2_min': 65,
             'short_fixed_threshold': 75, 'fixed_threshold': 75,
             'tier1_adx_hard_min': 25, 'short_tier1_adx_hard_min': 30,
             'tier1_volume_min': 0.8, 'stop_loss_atr_mult': 2.5,
             'max_position_units': 50, 'ml_weight': 0.20,
-            'risk_tier1': 0.025, 'risk_tier2': 0.015, 'risk_tier3': 0.008,
-            'tier1_size_multiplier': 1.0, 'tier2_size_multiplier': 0.70, 'tier3_size_multiplier': 0.35,
-            'tier1_stop_multiplier': 2.0, 'tier2_stop_multiplier': 2.5, 'tier3_stop_multiplier': 3.5,
-            'exit_threshold_tier1': 60, 'exit_threshold_tier2': 50, 'exit_threshold_tier3': 40,
+            'risk_tier1': 0.025, 'risk_tier2': 0.015,
+            'tier1_size_multiplier': 1.0, 'tier2_size_multiplier': 0.70,
+            'tier1_stop_multiplier': 2.0, 'tier2_stop_multiplier': 2.5,
+            'exit_threshold_tier1': 60, 'exit_threshold_tier2': 50,
         }
 
         for param_name, default_value in required_params.items():
@@ -1555,7 +1513,6 @@ class MomentumLogic:
         self.trade_counter = 0
         self.tier1_trades = 0
         self.tier2_trades = 0
-        self.tier3_trades = 0
         self._last_quality_score = 0
         self._last_entry_tier = None
         self.near_miss_trades = []
@@ -1598,15 +1555,13 @@ class MomentumLogic:
 
     def _log_parameter_source(self):
         logging.info("=" * 70)
-        logging.info("📊 PARAMETER SOURCE v10.0 (THREE-TIER SYSTEM)")
+        logging.info("📊 PARAMETER SOURCE v10.0 (TWO-TIER SYSTEM)")
         logging.info("=" * 70)
         logging.info(f"   Direction: {self.trade_direction.upper()}")
         logging.info(f"   Tier 1 Pass (LONG): {getattr(self, 'quality_tier1_min_long', 75)}")
         logging.info(f"   Tier 2 Pass (LONG): {getattr(self, 'quality_tier2_min_long', 65)}")
-        logging.info(f"   Tier 3 Pass (LONG): {getattr(self, 'quality_tier3_min_long', 55)}")
         logging.info(f"   Tier 1 Risk: {getattr(self, 'risk_tier1', 0.025):.1%}")
         logging.info(f"   Tier 2 Risk: {getattr(self, 'risk_tier2', 0.015):.1%}")
-        logging.info(f"   Tier 3 Risk: {getattr(self, 'risk_tier3', 0.008):.1%}")
         logging.info(f"   ML Weight: {getattr(self, 'ml_weight', 0.20):.0%}")
         logging.info("=" * 70)
 
@@ -1752,23 +1707,19 @@ class MomentumLogic:
     def _determine_tier(self, power_score: int, direction: str) -> int:
         """
         Determine entry tier based on power score and direction.
-        Returns: 1, 2, 3, or 0 (no entry)
+        Returns: 1, 2, or 0 (no entry)
         """
         if direction == 'long':
             tier1_pass = getattr(self, 'quality_tier1_min_long', 75)
             tier2_pass = getattr(self, 'quality_tier2_min_long', 65)
-            tier3_pass = getattr(self, 'quality_tier3_min_long', 55)
         else:
             tier1_pass = getattr(self, 'quality_tier1_min_short', 75)
             tier2_pass = getattr(self, 'quality_tier2_min_short', 65)
-            tier3_pass = getattr(self, 'quality_tier3_min_short', 58)
 
         if power_score >= tier1_pass:
             return 1
         elif power_score >= tier2_pass:
             return 2
-        elif power_score >= tier3_pass:
-            return 3
         return 0
 
     def _get_tier_config(self, tier: int) -> dict:
@@ -1794,17 +1745,6 @@ class MomentumLogic:
                 'trailing_distance': getattr(self, 'trailing_distance_tier2', 0.035),
                 'name': 'Tier 2 (Medium Risk)',
                 'color': 'yellow'
-            }
-        elif tier == 3:
-            return {
-                'risk_pct': getattr(self, 'risk_tier3', 0.008),
-                'size_mult': getattr(self, 'tier3_size_multiplier', 0.35),
-                'stop_mult': getattr(self, 'tier3_stop_multiplier', 3.5),
-                'exit_threshold': getattr(self, 'exit_threshold_tier3', 40),
-                'trailing_activation': getattr(self, 'trailing_activation_tier3', 0.06),
-                'trailing_distance': getattr(self, 'trailing_distance_tier3', 0.05),
-                'name': 'Tier 3 (High Risk)',
-                'color': 'red'
             }
         return None
 
@@ -2852,36 +2792,6 @@ class MomentumLogic:
             return False
         return True
 
-    def _validate_tier3_conditions(self, data):
-        if getattr(self, 'regime_filter_enabled', True) and data.get('Ranging', False):
-            return False
-        rsi = data.get('RSI', 50)
-        if rsi > 85 or rsi < 15:
-            return False
-        macd_hist = data.get('MACD_Histogram', 0)
-        if abs(macd_hist) < 0.0005:
-            return False
-        bars_since = self.bar_count - self.last_trade_bar
-        cooldown_bars = getattr(self, 'cooldown_after_loss_bars', 12)
-        if (bars_since < cooldown_bars and self.trade_history and self.trade_history[-1]['profit'] < 0):
-            return False
-        return True
-
-    def _validate_tier3_conditions_short(self, data):
-        if getattr(self, 'regime_filter_enabled', True) and data.get('Ranging', False):
-            return False
-        rsi = data.get('RSI', 50)
-        if rsi > 85 or rsi < 15:
-            return False
-        macd_hist = data.get('MACD_Histogram', 0)
-        if abs(macd_hist) < 0.0005:
-            return False
-        bars_since = self.bar_count - self.last_trade_bar
-        cooldown_bars = getattr(self, 'cooldown_after_loss_bars', 12)
-        if (bars_since < cooldown_bars and self.trade_history and self.trade_history[-1]['profit'] < 0):
-            return False
-        return True
-
     # ═══════════════════════════════════════════════════════════════════════
     # FUZZY LEARNING
     # ═══════════════════════════════════════════════════════════════════════
@@ -3000,8 +2910,8 @@ class MomentumLogic:
         }
         self._signal_bar = self.bar_count
         self._signal_price = data.get('Close', 0)
-        tier_colors = {1: 'green', 2: 'yellow', 3: 'red'}
-        tier_emojis = {1: '🟢', 2: '🟡', 3: '🔴'}
+        tier_colors = {1: 'green', 2: 'yellow'}
+        tier_emojis = {1: '🟢', 2: '🟡'}
         self._log(f"{tier_emojis.get(tier, '📊')} TIER{tier} {direction.upper()} SIGNAL PENDING: "
                   f"Power={power_score} @ ${self._signal_price:.2f} (execute next bar)",
                   tier_colors.get(tier, 'purple'))
@@ -3082,7 +2992,7 @@ class MomentumLogic:
         tier = self._determine_tier(adjusted_power, 'long')
         if tier == 0:
             return ("hold", adjusted_power, None,
-                    f"power_below_tier3_{adjusted_power}_need_{getattr(self, 'quality_tier3_min_long', 55)}",
+                    f"power_below_tier2_{adjusted_power}_need_{getattr(self, 'quality_tier2_min_long', 65)}",
                     component_scores)
 
         # Validate tier-specific conditions
@@ -3100,9 +3010,6 @@ class MomentumLogic:
             elif tier == 2:
                 if not self._validate_tier2_conditions(data):
                     return ("hold", adjusted_power, None, "tier2_conditions_not_met", component_scores)
-            elif tier == 3:
-                if not self._validate_tier3_conditions(data):
-                    return ("hold", adjusted_power, None, "tier3_conditions_not_met", component_scores)
 
         return self._create_pending_signal('long', adjusted_power, tier, component_scores, breakdown, data,
                                            ml_prediction, ml_confidence)
@@ -3151,7 +3058,7 @@ class MomentumLogic:
         tier = self._determine_tier(adjusted_power, 'short')
         if tier == 0:
             return ("hold", adjusted_power, None,
-                    f"power_below_tier3_{adjusted_power}_need_{getattr(self, 'quality_tier3_min_short', 58)}",
+                    f"power_below_tier2_{adjusted_power}_need_{getattr(self, 'quality_tier2_min_short', 65)}",
                     component_scores)
 
         # Validate tier-specific conditions
@@ -3169,9 +3076,6 @@ class MomentumLogic:
             elif tier == 2:
                 if not self._validate_tier2_conditions_short(data):
                     return ("hold", adjusted_power, None, "short_tier2_conditions_not_met", component_scores)
-            elif tier == 3:
-                if not self._validate_tier3_conditions_short(data):
-                    return ("hold", adjusted_power, None, "short_tier3_conditions_not_met", component_scores)
 
         return self._create_pending_signal('short', adjusted_power, tier, component_scores, breakdown, data,
                                            ml_prediction, ml_confidence)
@@ -3246,8 +3150,7 @@ class MomentumLogic:
             win_rate=win_rate / 100, profit_factor=pf,
             quality_score=quality_score, tier=tier, adx=adx,
             tier1_risk_pct=getattr(self, 'risk_tier1', None),
-            tier2_risk_pct=getattr(self, 'risk_tier2', None),
-            tier3_risk_pct=getattr(self, 'risk_tier3', None))
+            tier2_risk_pct=getattr(self, 'risk_tier2', None))
 
         regime_mult = self.regime_detector.get_position_multiplier(self.current_regime)
         raw_size = base_size * regime_mult * position_mult
@@ -3299,8 +3202,6 @@ class MomentumLogic:
             self.tier1_trades += 1
         elif tier == 2:
             self.tier2_trades += 1
-        elif tier == 3:
-            self.tier3_trades += 1
 
         self.last_trade_bar = self.bar_count
 
@@ -3319,8 +3220,20 @@ class MomentumLogic:
         }
 
         self.trade_history.append(trade_record)
-        if len(self.trade_history) > 100:
-            self.trade_history = self.trade_history[-100:]
+        # ═══ FIX: this used to unconditionally truncate trade_history to the
+        # last 100 entries. That's reasonable for live trading (bounded memory
+        # over months/years of uptime), but this method is shared by
+        # BacktestMomentumStrategy too — where it silently discarded every
+        # trade beyond the 100th. That broke two things for any backtest with
+        # >100 trades: (1) get_performance_stats() below computed avg_win/
+        # avg_loss from only the most recent 100 trades, not the true total,
+        # and (2) trade-history lookups by later export code (e.g. the Excel
+        # export in app.py) found no match for older trades and fell back to
+        # placeholder/default values, corrupting reported Quality_Score and
+        # Tier for those trades. Only cap history when actually running live.
+        is_live = isinstance(self, MomentumStrategy)
+        if is_live and len(self.trade_history) > 5000:
+            self.trade_history = self.trade_history[-5000:]
 
         if exit_reason and 'profit_target' in exit_reason:
             self._last_profit_target_bar = self.bar_count
@@ -3333,7 +3246,7 @@ class MomentumLogic:
         if self.total_trades == 0:
             return {'total_trades': 0, 'win_rate': 0, 'total_profit': 0,
                     'avg_win': 0, 'avg_loss': 0, 'tier1_trades': 0,
-                    'tier2_trades': 0, 'tier3_trades': 0}
+                    'tier2_trades': 0}
         wr = (self.winning_trades / self.total_trades) * 100
         wins = [t['profit'] for t in self.trade_history if t['profit'] > 0]
         losses = [t['profit'] for t in self.trade_history if t['profit'] < 0]
@@ -3345,10 +3258,8 @@ class MomentumLogic:
             'avg_loss': abs(np.mean(losses)) if losses else 0,
             'winning_trades': self.winning_trades, 'losing_trades': self.losing_trades,
             'tier1_trades': self.tier1_trades, 'tier2_trades': self.tier2_trades,
-            'tier3_trades': self.tier3_trades,
             'tier1_pct': (self.tier1_trades / self.total_trades * 100) if self.total_trades > 0 else 0,
             'tier2_pct': (self.tier2_trades / self.total_trades * 100) if self.total_trades > 0 else 0,
-            'tier3_pct': (self.tier3_trades / self.total_trades * 100) if self.total_trades > 0 else 0,
         }
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -3407,7 +3318,7 @@ class MomentumLogic:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class MomentumStrategy(BaseStrategy, MomentumLogic):
-    """v10.0 Live trading — THREE-TIER SYSTEM"""
+    """v10.0 Live trading — TWO-TIER SYSTEM"""
 
     def __init__(self, trading_app=None):
         BaseStrategy.__init__(self, trading_app)
@@ -3418,7 +3329,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
         MomentumLogic.__init__(self, config=params, trading_app=trading_app)
 
         self.trade_counter = 0
-        self.name = "Professional Momentum Strategy v10.0 — THREE-TIER RISK SYSTEM"
+        self.name = "Professional Momentum Strategy v10.0 — TWO-TIER RISK SYSTEM"
 
         self.position = {
             'type': None, 'entry_price': None, 'quantity': None,
@@ -3441,16 +3352,13 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
 
         if self.trading_app:
             self._log("=" * 70, "cyan")
-            self._log("MOMENTUM STRATEGY v10.0 — THREE-TIER RISK SYSTEM", "bold green")
+            self._log("MOMENTUM STRATEGY v10.0 — TWO-TIER RISK SYSTEM", "bold green")
             self._log(
                 f"✅ Tier 1 (Low Risk):  Pass={getattr(self, 'quality_tier1_min_long', 75)} | Risk={getattr(self, 'risk_tier1', 0.025):.1%}",
                 "green")
             self._log(
                 f"✅ Tier 2 (Medium Risk): Pass={getattr(self, 'quality_tier2_min_long', 65)} | Risk={getattr(self, 'risk_tier2', 0.015):.1%}",
                 "yellow")
-            self._log(
-                f"✅ Tier 3 (High Risk):  Pass={getattr(self, 'quality_tier3_min_long', 55)} | Risk={getattr(self, 'risk_tier3', 0.008):.1%}",
-                "red")
             self._log(f"✅ ML Weight: {getattr(self, 'ml_weight', 0.20):.0%}", "purple")
             self._log("=" * 70, "cyan")
 
@@ -3849,7 +3757,6 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
             'total_profit': stats['total_profit'],
             'tier1_trades': stats['tier1_trades'],
             'tier2_trades': stats['tier2_trades'],
-            'tier3_trades': stats['tier3_trades'],
             'profit_factor': risk_stats['profit_factor'],
             'max_drawdown': risk_stats['max_drawdown'],
             'sharpe_ratio': risk_stats['sharpe_ratio'],
@@ -3895,7 +3802,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
 # ═══════════════════════════════════════════════════════════════════════════
 
 class BacktestMomentumStrategy(Strategy, MomentumLogic):
-    """v10.0 Backtest — THREE-TIER SYSTEM"""
+    """v10.0 Backtest — TWO-TIER SYSTEM"""
 
     _use_updated_params = False
     _updated_params = {}
@@ -3953,8 +3860,6 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
     backtest_risk_tier1_values = [0.015, 0.020, 0.025, 0.030]
     backtest_risk_tier2_active = True
     backtest_risk_tier2_values = [0.010, 0.015, 0.018, 0.022]
-    backtest_risk_tier3_active = True
-    backtest_risk_tier3_values = [0.005, 0.008, 0.010, 0.012]
     backtest_stop_loss_mult_active = True
     backtest_stop_loss_mult_values = [2.0, 2.5, 3.0, 3.5, 4.0]
     backtest_only_tier2_active = True
@@ -3980,17 +3885,17 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             'trailing_activation_pct': 0.03, 'trailing_distance_pct': 0.035,
             'trade_direction': 'both', 'stop_loss_atr_mult': 2.5,
             'only_tier2_entries': False,
-            'quality_tier1_min_long': 75, 'quality_tier2_min_long': 65, 'quality_tier3_min_long': 55,
-            'quality_tier1_min_short': 75, 'quality_tier2_min_short': 65, 'quality_tier3_min_short': 58,
+            'quality_tier1_min_long': 75, 'quality_tier2_min_long': 65,
+            'quality_tier1_min_short': 75, 'quality_tier2_min_short': 65,
             'quality_tier1_min': 75, 'quality_tier2_min': 65,
             'short_quality_tier1_min': 75, 'short_quality_tier2_min': 65,
             'short_fixed_threshold': 75, 'fixed_threshold': 75,
             'tier1_adx_hard_min': 25, 'short_tier1_adx_hard_min': 30,
             'tier1_volume_min': 0.8, 'max_position_units': 50,
-            'risk_tier1': 0.025, 'risk_tier2': 0.015, 'risk_tier3': 0.008,
-            'tier1_size_multiplier': 1.0, 'tier2_size_multiplier': 0.70, 'tier3_size_multiplier': 0.35,
-            'tier1_stop_multiplier': 2.0, 'tier2_stop_multiplier': 2.5, 'tier3_stop_multiplier': 3.5,
-            'exit_threshold_tier1': 60, 'exit_threshold_tier2': 50, 'exit_threshold_tier3': 40,
+            'risk_tier1': 0.025, 'risk_tier2': 0.015,
+            'tier1_size_multiplier': 1.0, 'tier2_size_multiplier': 0.70,
+            'tier1_stop_multiplier': 2.0, 'tier2_stop_multiplier': 2.5,
+            'exit_threshold_tier1': 60, 'exit_threshold_tier2': 50,
             'ml_weight': 0.20,
         }
         for attr, default_val in critical_defaults.items():
@@ -4000,15 +3905,13 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         MomentumLogic.__init__(self, config=config, trading_app=None)
 
         print(f"\n{'=' * 70}")
-        print(f"BACKTEST v10.0 CONFIGURATION LOADED — THREE-TIER SYSTEM")
+        print(f"BACKTEST v10.0 CONFIGURATION LOADED — TWO-TIER SYSTEM")
         print(f"{'=' * 70}")
         print(f"Direction: {self.trade_direction.upper()}")
         print(
             f"Tier 1 (Low Risk):  Pass={getattr(self, 'quality_tier1_min_long', 75)} | Risk={getattr(self, 'risk_tier1', 0.025):.1%}")
         print(
             f"Tier 2 (Medium Risk): Pass={getattr(self, 'quality_tier2_min_long', 65)} | Risk={getattr(self, 'risk_tier2', 0.015):.1%}")
-        print(
-            f"Tier 3 (High Risk):  Pass={getattr(self, 'quality_tier3_min_long', 55)} | Risk={getattr(self, 'risk_tier3', 0.008):.1%}")
         print(f"ML Weight: {getattr(self, 'ml_weight', 0.20):.0%}")
         print(f"{'=' * 70}\n")
 
@@ -4054,7 +3957,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
     def _get_optimization_ranges(self):
         ranges = {}
         optimization_map = {
-            'backtest_quality_values': ['quality_tier1_min_long', 'quality_tier2_min_long', 'quality_tier3_min_long'],
+            'backtest_quality_values': ['quality_tier1_min_long', 'quality_tier2_min_long'],
             'backtest_adx_values': ['tier1_adx_hard_min', 'adx_min'],
             'backtest_rsi_values': ['tier1_rsi_min', 'rsi_entry_min'],
             'backtest_volume_values': ['tier1_volume_min', 'volume_min_ratio'],
@@ -4069,7 +3972,6 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             'backtest_weight_volume_values': ['weight_volume'],
             'backtest_risk_tier1_values': ['risk_tier1'],
             'backtest_risk_tier2_values': ['risk_tier2'],
-            'backtest_risk_tier3_values': ['risk_tier3'],
             'backtest_stop_loss_mult_values': ['stop_loss_atr_mult'],
             'backtest_only_tier2_values': ['only_tier2_entries'],
         }
@@ -4172,7 +4074,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             self._signal_ml_prediction = self._pending_signal.get('ml_prediction', 0)
             self._signal_ml_confidence = self._pending_signal.get('ml_confidence', 0.0)
 
-        tier_names = {1: 'Low Risk', 2: 'Medium Risk', 3: 'High Risk'}
+        tier_names = {1: 'Low Risk', 2: 'Medium Risk'}
         direction_icon = "⬆️" if self._position_direction == 'long' else "⬇️"
         print(f"{direction_icon} ENTER T{tier} ({tier_names.get(tier, 'Unknown')}) Q={quality_score} "
               f"@ ${current_price:.2f} ADX={current_data['ADX']:.1f} RSI={current_data['RSI']:.1f} "
@@ -4186,8 +4088,6 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 return 1
             elif quality_score >= self.quality_tier2_min_long:
                 return 2
-            elif quality_score >= self.quality_tier3_min_long:
-                return 3
             else:
                 return 0
 
@@ -4342,7 +4242,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             signal_price=self._signal_price,
             signal_time=self._signal_time, signal_bar=self._signal_bar)
 
-        tier_names = {1: 'Low Risk', 2: 'Medium Risk', 3: 'High Risk'}
+        tier_names = {1: 'Low Risk', 2: 'Medium Risk'}
         direction_icon = "⬆️" if self._position_direction == 'long' else "⬇️"
         win_loss_icon = "✅" if total_profit > 0 else "❌"
         print(f"{win_loss_icon} {direction_icon} EXIT @ ${exit_fill_price:.2f} {profit_pct_calc:+.2f}% "
@@ -4498,7 +4398,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 self._signal_ml_confidence = signal.get('ml_confidence', 0.0)
                 self._transition_to_in_trade()
 
-                tier_names = {1: 'Low Risk', 2: 'Medium Risk', 3: 'High Risk'}
+                tier_names = {1: 'Low Risk', 2: 'Medium Risk'}
                 direction_icon = "⬆️" if self._position_direction == 'long' else "⬇️"
                 print(f"{direction_icon} ENTER T{tier} ({tier_names.get(tier, 'Unknown')}) "
                       f"Q={signal['power_score']} @ ${execution_price:.2f} Size={size} Stop=${stop:.2f}")
@@ -4715,7 +4615,7 @@ def run_walk_forward_optimization(
     if param_ranges is None:
         param_ranges = {}
         optimization_map = {
-            'backtest_quality_values': ['quality_tier1_min_long', 'quality_tier2_min_long', 'quality_tier3_min_long'],
+            'backtest_quality_values': ['quality_tier1_min_long', 'quality_tier2_min_long'],
             'backtest_adx_values': ['tier1_adx_hard_min', 'adx_min'],
             'backtest_rsi_values': ['tier1_rsi_min', 'rsi_entry_min'],
             'backtest_volume_values': ['tier1_volume_min', 'volume_min_ratio'],
@@ -4730,7 +4630,6 @@ def run_walk_forward_optimization(
             'backtest_weight_volume_values': ['weight_volume'],
             'backtest_risk_tier1_values': ['risk_tier1'],
             'backtest_risk_tier2_values': ['risk_tier2'],
-            'backtest_risk_tier3_values': ['risk_tier3'],
             'backtest_stop_loss_mult_values': ['stop_loss_atr_mult'],
             'backtest_only_tier2_values': ['only_tier2_entries'],
         }
