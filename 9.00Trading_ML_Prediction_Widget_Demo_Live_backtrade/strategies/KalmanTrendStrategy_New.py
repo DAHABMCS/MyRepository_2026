@@ -11,7 +11,7 @@ FIXES APPLIED:
 """
 
 from datetime import datetime, timezone
-import pandas_ta as ta
+import talib as ta
 from backtesting import Strategy
 from .base3_New import BaseStrategy
 import numpy as np
@@ -167,21 +167,40 @@ class KalmanIndicatorCalculator:
             df['MA_Slow'] = df['Close'].rolling(params['ma_slow_period']).mean()
 
             # RSI
-            df['RSI'] = ta.rsi(df['Close'], length=params['rsi_period'])
-
+            df['ATR'] = ta.ATR(
+                df['High'],
+                df['Low'],
+                df['Close'],
+                timeperiod=params['atr_period']
+            )
             # ATR
-            df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=params['atr_period'])
+            df['ATR'] = ta.ATR(
+                df['High'],
+                df['Low'],
+                df['Close'],
+                timeperiod=params['atr_period']
+            )
 
             # Bollinger Bands
-            bbands = ta.bbands(df['Close'], length=params['bb_period'], std=params['bb_std'])
-            df['UpperBand'] = bbands['BBU_20_2.0']
-            df['MiddleBand'] = bbands['BBM_20_2.0']
-            df['LowerBand'] = bbands['BBL_20_2.0']
+            upper, middle, lower = ta.BBANDS(
+                df['Close'],
+                timeperiod=params['bb_period'],
+                nbdevup=params['bb_std'],
+                nbdevdn=params['bb_std'],
+                matype=0
+            )
+
+            df['UpperBand'] = upper
+            df['MiddleBand'] = middle
+            df['LowerBand'] = lower
 
             # ADX for trend strength
-            adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=params['adx_period'])
-            df['ADX'] = adx_df['ADX_25']
-
+            df['ADX'] = ta.ADX(
+                df['High'],
+                df['Low'],
+                df['Close'],
+                timeperiod=params['adx_period']
+            )
             # Volume analysis
             df['Volume_MA'] = df['Volume'].rolling(params['volume_period']).mean()
             df['Volume_Ratio'] = df['Volume'] / df['Volume_MA']

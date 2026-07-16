@@ -21,11 +21,8 @@ from PIL import Image, ImageTk
 import numpy as np
 import pandas as pd
 import matplotlib
-
-
 matplotlib.use('TkAgg')
-import mplfinance as mpf
-import ccxt
+
 
 # Handle PyInstaller paths
 if hasattr(sys, "_MEIPASS"):
