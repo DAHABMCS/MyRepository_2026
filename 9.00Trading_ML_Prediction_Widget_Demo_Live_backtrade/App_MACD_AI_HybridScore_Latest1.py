@@ -1096,6 +1096,8 @@ class TradingApp:
             prior optimizer runs, or the fuzzy-learning threshold decay).
             This fixes non-reproducible backtests where the same "Default
             Parameters" mode produced different Tier 1 minimums across runs.
+
+        Returns a 3-tuple: (quality_tier1_min, quality_tier2_min, source).
         """
         quality_tier1_min = None
         quality_tier2_min = None
@@ -1273,6 +1275,27 @@ class TradingApp:
                     params['trade_direction'] = gui_dir
         except Exception:
             pass
+        # ─────────────────────────────────────────────────────────────────
+        # FIX: sync legacy "bare" quality-tier keys into the REAL _long/_short
+        # suffixed attributes the strategy's entry logic actually reads.
+        #
+        # The strategy (MomentumStrategy_MACD_HybridScore_Latest.py) gates
+        # LONG entries on quality_tier1_min_long / quality_tier2_min_long,
+        # and SHORT entries on the _short-suffixed equivalents. The GUI,
+        # however, has always exposed the older bare names
+        # ('quality_tier1_min', 'quality_tier2_min') for LONG and the
+        # 'short_'-prefixed names ('short_quality_tier1_min',
+        # 'short_quality_tier2_min') for SHORT. Without this sync, editing
+        # those GUI fields silently had NO effect on real trade entries --
+        # only the never-edited MOMENTUM_PARAMS defaults for the _long/_short
+        # keys were actually being used.
+        #
+        # Bare/legacy key -> real key actually used by the strategy:
+        params['quality_tier1_min_long']  = params.get('quality_tier1_min',  params.get('quality_tier1_min_long'))
+        params['quality_tier2_min_long']  = params.get('quality_tier2_min',  params.get('quality_tier2_min_long'))
+        params['quality_tier1_min_short'] = params.get('short_quality_tier1_min', params.get('quality_tier1_min_short'))
+        params['quality_tier2_min_short'] = params.get('short_quality_tier2_min', params.get('quality_tier2_min_short'))
+
         self.log_message(
             f"📋 get_current_momentum_params() - Mode: {current_mode}, "
             f"Tier1={params.get('quality_tier1_min')}, Tier2={params.get('quality_tier2_min')}", "cyan")
@@ -1542,17 +1565,18 @@ class TradingApp:
             '🎯 SHORT Quality Thresholds': ['short_quality_tier1_min','short_quality_tier2_min','short_fixed_threshold'],
             '📊 Quality Component Weights': ['weight_ema','weight_adx','weight_macd','weight_rsi','weight_volume'],
             '🎯 TIER CONTROL': ['only_tier2_entries'],
+            '⏱️ TIER COOLDOWN & CONFLUENCE': ['min_bars_between_trades_tier1','min_bars_between_trades_tier2','cooldown_tier2_enabled','tier1_confluence_min','tier2_confluence_min'],
             '⬆️ TIER 1 LONG FILTERS': ['tier1_adx_hard_min','tier1_adx_min','tier1_rsi_min','tier1_rsi_max','tier1_volume_min','tier1_momentum_min','tier1_kalman_min','tier1_macd_gate','tier1_price_ema_max_pct','daily_trend_filter_enabled','pullback_zone_lower_pct','pullback_zone_upper_pct','adx_slope_min'],
             '⬇️ TIER 1 SHORT FILTERS': ['short_tier1_adx_hard_min','short_tier1_rsi_min','short_tier1_rsi_max','short_tier1_volume_min','short_tier1_momentum_min','short_tier1_macd_gate','daily_trend_down_filter_enabled'],
             '🎯 TIER 2 FILTERS': ['tier2_adx_min','tier2_volume_min','tier2_volume_min_ratio','tier2_momentum_min','tier2_macd_histogram_min','tier2_require_macd_histogram'],
             '🔬 Indicator Periods': ['adx_period','rsi_period','cci_period','atr_period','volume_ma_period','macd_fast','macd_slow','macd_signal','supertrend_atr_period','supertrend_multiplier','kalman_q_param','kalman_r_param','vix_atr_period','vix_rolling_period'],
             '🎯 Entry Filters': ['adx_min','adx_min_trend','rsi_entry_min','rsi_entry_max','volume_min_ratio','volume_period','momentum_min','kalman_min_strength','cci_filter_enabled','vix_max_threshold','rsi_dynamic_enabled'],
-            '🛡️ Risk Management': ['risk_per_trade','risk_full_position','risk_reduced_position','risk_aggressive_position','risk_tier1','risk_tier2','risk_tier2_exceptional'],
+            '🛡️ Risk Management': ['risk_per_trade','risk_full_position','risk_reduced_position','risk_aggressive_position','risk_tier1','risk_tier2','risk_tier2_exceptional','tier1_size_multiplier','tier2_size_multiplier','tier1_stop_multiplier','tier2_stop_multiplier'],
             '🛑 STOP LOSS & TRAILING': ['stop_loss_atr_mult','trailing_stop_atr_mult','trailing_activation_pct','trailing_distance_pct','trailing_stop_pct','trailing_activation_r','initial_trailing_atr_mult'],
             '🔒 BREAKEVEN STOP': ['be_stop_enabled','be_stop_r_trigger','be_stop_no_progress_bars'],
             '💰 Profit Targets': ['take_profit_r1','take_profit_r2','take_profit_r3','profit_target_r1','profit_target_r2','profit_target_r3'],
             '📉 Exit Conditions': ['max_hold_bars','min_hold_bars_before_stop','emergency_stop_multiplier','macd_bearish_cross_exit','macd_bearish_cross_profit_min','ema_cross_exit','rsi_exit_threshold','kalman_fade_threshold','momentum_reversal_exit','momentum_reversal_threshold','momentum_reversal_profit_min','profit_min_fade','profit_min_time_exit','profit_min_ma_crossover'],
-            '⏱️ COOLDOWN & TRADE MANAGEMENT': ['max_daily_trades','min_bars_between_trades','min_bars_between_trades_tier2','cooldown_after_profit_target_bars','cooldown_after_loss_bars','cooldown_tier2_enabled'],
+            '⏱️ COOLDOWN & TRADE MANAGEMENT': ['max_daily_trades','min_bars_between_trades','cooldown_after_profit_target_bars','cooldown_after_loss_bars'],
             '🔬 PRECISION FILTERS': ['dmi_spread_min_long','dmi_spread_min_short','ema_trending_bars','macd_hist_rising_bars','rsi_direction_bars','rsi_direction_min_move','macd_hist_positive_required_long','macd_hist_negative_required_short','bb_expand_required','time_filter_enabled','time_filter_start_utc','time_filter_end_utc'],
             '⚙️ Regime & Strategy Control': ['regime_filter_enabled','ranging_min_checks','bb_period','bb_std','kc_period','kc_atr_mult','chop_period','chop_threshold','volatility_scaling','trade_high_vol','trade_ranging','supertrend_exit_enabled'],
             '📊 PRICE POSITIONING': ['price_percentile_bonus_early','price_percentile_penalty_late','price_percentile_early_threshold','price_percentile_late_threshold','price_percentile_lookback'],
@@ -2179,7 +2203,7 @@ class TradingApp:
         ttk.Label(self.backtest_controls_frame, text="Dates:").grid(row=2, column=0, sticky="w", padx=3, pady=2)
         date_frame = ttk.Frame(self.backtest_controls_frame)
         date_frame.grid(row=2, column=1, columnspan=2, sticky="ew", padx=3, pady=2)
-        self.start_date_var = tk.StringVar(value="2024-01-01")
+        self.start_date_var = tk.StringVar(value="2025-01-01")
         self.end_date_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
         ttk.Entry(date_frame, textvariable=self.start_date_var, width=10).pack(side=tk.LEFT)
         ttk.Label(date_frame, text="-").pack(side=tk.LEFT, padx=2)
@@ -4855,7 +4879,8 @@ class TradingApp:
         # STEP 2: Apply the selected parameters to the strategy
         self.apply_selected_parameters()
 
-        # Log final Tier 1 status
+        # Log final Tier 1 status (only_tier2_entries blocks Tier 1,
+        # allowing only Tier 2 through)
         only_tier2 = self.custom_params['momentum'].get('only_tier2_entries', False)
         self.log_message("=" * 70, "green")
         self.log_message(f"📊 FINAL TIER 1 STATUS: {'BLOCKED' if only_tier2 else 'ACTIVE'}",
@@ -5723,6 +5748,11 @@ class TradingApp:
             '🎯 TIER CONTROL': [
                 'only_tier2_entries',
             ],
+            '⏱️ TIER COOLDOWN & CONFLUENCE': [
+                'min_bars_between_trades_tier1', 'min_bars_between_trades_tier2',
+                'cooldown_tier2_enabled',
+                'tier1_confluence_min', 'tier2_confluence_min',
+            ],
             '⬆️ TIER 1 LONG FILTERS': [
                 'tier1_adx_hard_min', 'tier1_adx_min',
                 'tier1_rsi_min', 'tier1_rsi_max',
@@ -5742,6 +5772,13 @@ class TradingApp:
             '🎯 TIER 2 FILTERS': [
                 'tier2_adx_min', 'tier2_volume_min', 'tier2_volume_min_ratio',
                 'tier2_momentum_min', 'tier2_macd_histogram_min', 'tier2_require_macd_histogram',
+            ],
+            '🎯 TIER SIZE / STOP / EXIT / TRAILING MULTIPLIERS': [
+                'tier1_size_multiplier', 'tier2_size_multiplier',
+                'tier1_stop_multiplier', 'tier2_stop_multiplier',
+                'exit_threshold_tier1', 'exit_threshold_tier2',
+                'trailing_activation_tier1', 'trailing_activation_tier2',
+                'trailing_distance_tier1', 'trailing_distance_tier2',
             ],
             '🔬 Indicator Periods': [
                 'adx_period', 'rsi_period', 'cci_period', 'atr_period',
@@ -5781,9 +5818,8 @@ class TradingApp:
             ],
             '⏱️ COOLDOWN & TRADE MANAGEMENT': [
                 'max_daily_trades',
-                'min_bars_between_trades', 'min_bars_between_trades_tier2',
+                'min_bars_between_trades',
                 'cooldown_after_profit_target_bars', 'cooldown_after_loss_bars',
-                'cooldown_tier2_enabled',
             ],
             '🔬 PRECISION FILTERS': [
                 'dmi_spread_min_long', 'dmi_spread_min_short',
@@ -6536,6 +6572,27 @@ class TradingApp:
                 'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
 
             # ──────────────────────────────────────────────────────────────────────
+            # TIER-AWARE COOLDOWN & CONFLUENCE (bars-since-last-trade + secondary
+            # directional-agreement gate, scaled by tier risk)
+            # ──────────────────────────────────────────────────────────────────────
+            'min_bars_between_trades_tier1': {
+                'description': 'Min Bars Between Trades (Tier 1)',
+                'current': current_params.get('min_bars_between_trades_tier1', 4),
+                'v1': '3', 'v2': '4', 'v3': '5', 'v4': '6'},
+            'min_bars_between_trades_tier2': {
+                'description': 'Min Bars Between Trades (Tier 2)',
+                'current': current_params.get('min_bars_between_trades_tier2', 3),
+                'v1': '3', 'v2': '4', 'v3': '5', 'v4': '6'},
+            'tier1_confluence_min': {
+                'description': 'Tier 1 Min Directional Confluence (0-1)',
+                'current': current_params.get('tier1_confluence_min', 0.65),
+                'v1': '0.55', 'v2': '0.60', 'v3': '0.65', 'v4': '0.70'},
+            'tier2_confluence_min': {
+                'description': 'Tier 2 Min Directional Confluence (0-1)',
+                'current': current_params.get('tier2_confluence_min', 0.70),
+                'v1': '0.60', 'v2': '0.65', 'v3': '0.70', 'v4': '0.75'},
+
+            # ──────────────────────────────────────────────────────────────────────
             # REGIME & VOLATILITY FILTERS
             # ──────────────────────────────────────────────────────────────────────
             'regime_filter_enabled': {
@@ -6710,6 +6767,52 @@ class TradingApp:
                 'description': 'Tier 2 Risk %',
                 'current': current_params.get('risk_tier2', 0.030),
                 'v1': '0.020', 'v2': '0.025', 'v3': '0.030', 'v4': '0.035'},
+
+            'tier1_size_multiplier': {
+                'description': 'Tier 1 Position Size Multiplier',
+                'current': current_params.get('tier1_size_multiplier', 1.0),
+                'v1': '0.8', 'v2': '0.9', 'v3': '1.0', 'v4': '1.2'},
+            'tier2_size_multiplier': {
+                'description': 'Tier 2 Position Size Multiplier',
+                'current': current_params.get('tier2_size_multiplier', 0.70),
+                'v1': '0.5', 'v2': '0.6', 'v3': '0.70', 'v4': '0.8'},
+
+            'tier1_stop_multiplier': {
+                'description': 'Tier 1 Stop ATR Multiplier',
+                'current': current_params.get('tier1_stop_multiplier', 2.0),
+                'v1': '1.5', 'v2': '1.8', 'v3': '2.0', 'v4': '2.5'},
+            'tier2_stop_multiplier': {
+                'description': 'Tier 2 Stop ATR Multiplier',
+                'current': current_params.get('tier2_stop_multiplier', 2.5),
+                'v1': '2.0', 'v2': '2.2', 'v3': '2.5', 'v4': '3.0'},
+
+            'exit_threshold_tier1': {
+                'description': 'Exit Power Threshold (Tier 1)',
+                'current': current_params.get('exit_threshold_tier1', 60),
+                'v1': '50', 'v2': '55', 'v3': '60', 'v4': '65'},
+            'exit_threshold_tier2': {
+                'description': 'Exit Power Threshold (Tier 2)',
+                'current': current_params.get('exit_threshold_tier2', 50),
+                'v1': '40', 'v2': '45', 'v3': '50', 'v4': '55'},
+
+            'trailing_activation_tier1': {
+                'description': 'Trailing Activation % (Tier 1)',
+                'current': current_params.get('trailing_activation_tier1', 0.03),
+                'v1': '0.02', 'v2': '0.025', 'v3': '0.03', 'v4': '0.04'},
+            'trailing_activation_tier2': {
+                'description': 'Trailing Activation % (Tier 2)',
+                'current': current_params.get('trailing_activation_tier2', 0.04),
+                'v1': '0.03', 'v2': '0.035', 'v3': '0.04', 'v4': '0.05'},
+
+            'trailing_distance_tier1': {
+                'description': 'Trailing Distance % (Tier 1)',
+                'current': current_params.get('trailing_distance_tier1', 0.025),
+                'v1': '0.015', 'v2': '0.02', 'v3': '0.025', 'v4': '0.03'},
+            'trailing_distance_tier2': {
+                'description': 'Trailing Distance % (Tier 2)',
+                'current': current_params.get('trailing_distance_tier2', 0.035),
+                'v1': '0.025', 'v2': '0.03', 'v3': '0.035', 'v4': '0.045'},
+
             'risk_per_trade': {
                 'description': 'Base Risk Per Trade',
                 'current': current_params.get('risk_per_trade', 0.022),
@@ -8875,6 +8978,7 @@ class TradingApp:
             'risk_tier1': 0.02,
             'risk_tier2': 0.025,
 
+
             # Entry filters
             'tier1_adx_hard_min': 20,
             'tier1_rsi_min': 44,
@@ -8892,6 +8996,24 @@ class TradingApp:
             # Tier 2
             'tier2_adx_min': 18,
             'tier2_volume_min': 0.8,
+
+            # Tier 3
+
+            'tier1_size_multiplier': 1.0,
+            'tier2_size_multiplier': 0.70,
+
+            'tier1_stop_multiplier': 2.0,
+            'tier2_stop_multiplier': 2.5,
+
+            'min_bars_between_trades': 4,
+            'min_bars_between_trades_tier1': 4,
+            'min_bars_between_trades_tier2': 3,
+
+            'cooldown_tier2_enabled': True,
+
+            'tier1_confluence_min': 0.65,
+            'tier2_confluence_min': 0.70,
+
 
             # Trade management
             'only_tier2_entries': False,
@@ -9410,6 +9532,29 @@ class TradingApp:
             'tier2_volume_min': '🎯 TIER 2: Minimum volume ratio for high-quality entries. Default: 0.9x',
             'tier2_momentum_min': '🎯 TIER 2: Minimum momentum % for high-quality entries. Default: 0.3%',
             'tier2_macd_histogram_min': '🎯 TIER 2: Minimum MACD histogram value for entry quality. Default: 0.0001',
+            # ═══ TIER 3 SPECIFIC FILTER DESCRIPTIONS ════════════════════════
+
+            'min_bars_between_trades_tier1': 'Minimum bars since last trade before a new TIER 1 entry is allowed. Combined with the blanket min_bars_between_trades via max() — never more permissive than the blanket gate. Default: 4',
+            'min_bars_between_trades_tier2': 'Minimum bars since last trade before a new TIER 2 entry is allowed. Default: 3',
+
+            'tier1_confluence_min': '🎯 Minimum fraction (0-1) of independent confirming signals (EMA stack, MACD momentum, RSI positioning, volume, CCI, Kalman) that must agree with the trade direction for a TIER 1 entry, on top of the quality-score gate. Default: 0.65',
+            'tier2_confluence_min': '🎯 Same confluence check as Tier 1, but for TIER 2 entries. Set higher than Tier 1 to compensate for the lower quality-score bar. Default: 0.70',
+
+            'tier1_size_multiplier': 'Position size multiplier applied to Tier 1 (Low Risk) entries. Default: 1.0 (full size)',
+            'tier2_size_multiplier': 'Position size multiplier applied to Tier 2 (Medium Risk) entries. Default: 0.70',
+
+            'tier1_stop_multiplier': 'ATR multiplier used for the stop-loss distance on Tier 1 entries. Default: 2.0',
+            'tier2_stop_multiplier': 'ATR multiplier used for the stop-loss distance on Tier 2 entries. Default: 2.5',
+
+            'exit_threshold_tier1': 'Exit-power score below which a Tier 1 trade is closed. Default: 60',
+            'exit_threshold_tier2': 'Exit-power score below which a Tier 2 trade is closed. Default: 50',
+
+            'trailing_activation_tier1': 'Profit % required to arm the trailing stop for Tier 1 trades. Default: 3%',
+            'trailing_activation_tier2': 'Profit % required to arm the trailing stop for Tier 2 trades. Default: 4%',
+
+            'trailing_distance_tier1': 'Trailing stop distance (from peak) for Tier 1 trades. Default: 2.5%',
+            'trailing_distance_tier2': 'Trailing stop distance (from peak) for Tier 2 trades. Default: 3.5%',
+
             # ═══ NEW: IMPROVEMENT 2 & 3 DESCRIPTIONS ════════════════════════
             'trailing_stop_pct': 'IMP-2: Trailing stop percentage from peak. Widened from 4% → 6%',
             'trailing_activation_r': 'IMP-2: R-multiple to activate trailing stop. Changed from 2.0 → 3.0',
@@ -9683,7 +9828,7 @@ class TradingApp:
             self.log_message(f"📁 Full path: {full_path}", "blue")
             self.log_message(f"💾 File size: {file_size:,} bytes", "blue")
 
-            # Log Tier 1 status
+            # Log Tier 1 status (only_tier2_entries blocks it)
             only_tier2 = self.custom_params['momentum'].get('only_tier2_entries', False)
             self.log_message(
                 f"📊 TIER 1 STATUS SAVED: {'BLOCKED' if only_tier2 else 'ACTIVE'} (only_tier2_entries = {only_tier2})",
@@ -12639,6 +12784,9 @@ class TradingApp:
             if not (tier1_risk <= tier2_risk):
                 return False
 
+
+
+
         # ── Quality tier ordering ─────────────────────────────────────────────
         # FIX: Tier 1 is the HIGHER-quality tier (more selective → higher min score).
         #      Tier 2 is the LOWER-quality tier (less selective → lower min score).
@@ -12650,6 +12798,16 @@ class TradingApp:
             t2 = get_param(params, 'quality_tier2_min', 62)
             if not (t1 >= t2):  # ← was (t1 <= t2), which is backwards
                 return False
+
+        # ── Tier 3 quality ordering: Tier 3 is the LOWEST-quality/highest-risk
+
+        if ('quality_tier2_min' in self.optimization_params_active  in self.optimization_params_active):
+            t2 = get_param(params, 'quality_tier2_min', 62)
+
+
+        if ('short_quality_tier2_min' in self.optimization_params_active  in self.optimization_params_active):
+            st2 = get_param(params, 'short_quality_tier2_min', 65)
+
 
         # ── Short quality tier ordering (same logic) ─────────────────────────
         if ('short_quality_tier1_min' in self.optimization_params_active and
@@ -12814,6 +12972,7 @@ class TradingApp:
             'quality_tier1_min',
             'tier1_adx_hard_min',
             'tier1_volume_min',
+
             'stop_loss_atr_mult',
             'trailing_activation_pct',
             'trailing_distance_pct',
@@ -14130,34 +14289,39 @@ class TradingApp:
                         self.log_message(f"   Adding Tier column to {sheet_name} sheet...", "blue")
 
                         # Get tier thresholds from strategy
-                        # quality_tier2_min = 88
-                        # quality_tier1_min = 75
+                        # quality_tier1_min = 75  (highest bar, checked first)
+                        # quality_tier2_min = 65
+
 
                         if hasattr(self, 'strategy') and self.strategy is not None:
-                            quality_tier2_min = getattr(self.strategy, 'quality_tier2_min', 62)  # v9.4.2: was 88
                             quality_tier1_min = getattr(self.strategy, 'quality_tier1_min', 72)  # v9.4.2: was 75
+                            quality_tier2_min = getattr(self.strategy, 'quality_tier2_min', 62)  # v9.4.2: was 88
+
 
                         # Check if Quality_Score column exists
                         if 'Quality_Score' in df.columns:
-                            # Add Tier column based on quality score
+                            # Add Tier column based on quality score.
+                            # NOTE: Tier 1 is the highest/most-selective bar, so it must
+                            # be checked FIRST (np.select takes the first True condition).
                             conditions = [
-                                (df['Quality_Score'] >= quality_tier2_min),
                                 (df['Quality_Score'] >= quality_tier1_min),
+                                (df['Quality_Score'] >= quality_tier2_min),
                                 (df['Quality_Score'] > 0)
                             ]
-                            choices = ['Tier 2', 'Tier 1', 'Below Tier 1']
+                            choices = ['Tier 1', 'Tier 2', 'Tier 3', 'Below Tier 3']
                             df['Tier'] = np.select(conditions, choices, default='Unknown')
 
                             # Add numeric tier for filtering
-                            tier_map = {'Tier 2': 2, 'Tier 1': 1, 'Below Tier 1': 0, 'Unknown': -1}
+                            tier_map = {'Tier 1': 1, 'Tier 2': 2, 'Tier 3': 3, 'Below Tier 3': 0, 'Unknown': -1}
                             df['Tier_Number'] = df['Tier'].map(tier_map)
 
                             # Log tier summary
                             tier_counts = df['Tier'].value_counts()
                             self.log_message(f"   ✅ Added Tier column:", "green")
+                            tier_colors = {"Tier 1": "blue", "Tier 2": "green", "Tier 3": "red"}
                             for tier_name, count in tier_counts.items():
                                 pct = (count / len(df)) * 100
-                                color = "green" if tier_name == "Tier 2" else "blue" if tier_name == "Tier 1" else "orange"
+                                color = tier_colors.get(tier_name, "orange")
                                 self.log_message(f"      {tier_name}: {count} ({pct:.1f}%)", color)
                         else:
                             self.log_message(f"   ⚠️ Quality_Score column not found in Trades sheet", "orange")
@@ -14182,6 +14346,10 @@ class TradingApp:
             return None
 
     def save_backtest_results_to_excel(self, df, stats=None, suffix=""):
+        """
+        Export backtest results to Excel with 100% accurate trade data.
+        Uses the strategy's trade_records as the single source of truth.
+        """
         try:
             if stats is None:
                 self.log_message("⚠️ No stats provided - cannot export", "orange")
@@ -14191,7 +14359,6 @@ class TradingApp:
             symbol = self.symbol_var.get().replace('-', '_')
             interval = self.interval_var.get()
             strategy = self.strategy_type_var.get()
-            # FIX: Sanitize strategy name for filename
             strategy_clean = strategy.replace(' ', '_').replace('(', '').replace(')', '').replace('\\', '_').replace(
                 '/', '_')
             suffix_str = f"_{suffix}" if suffix else ""
@@ -14199,380 +14366,279 @@ class TradingApp:
 
             self.log_message(f"📝 Creating Excel file: {filename}", "blue")
 
-            # ═══════════════════════════════════════════════════════════════════
-            # GET CURRENT TIER THRESHOLDS FROM GUI (NO HARD-CODED FALLBACKS!)
-            # backtest_mode=True: never inherit from the live/paper-trading
-            # strategy object here — always reflect the Parameter Mode the
-            # user actually selected for THIS backtest run.
-            # ═══════════════════════════════════════════════════════════════════
+            # Get tier thresholds for reporting
             quality_tier1_min, quality_tier2_min, source = self.get_current_tier_thresholds(backtest_mode=True)
-
             self.log_message(
                 f"✅ USING TIER THRESHOLDS (source: {source}): Tier1={quality_tier1_min}, Tier2={quality_tier2_min}",
                 "bold green")
+
             import re
-            filename = re.sub(r'[\\/*?:"<>|]', '_', filename)  # strip all Windows-illegal chars
-            filename = filename.replace(' ', '_')  # optional: spaces → underscores
+            filename = re.sub(r'[\\/*?:"<>|]', '_', filename)
+            filename = filename.replace(' ', '_')
             writer = pd.ExcelWriter(filename, engine='openpyxl')
             sheets_created = 0
 
             try:
-                # Strategy instance + trade history, keyed by entry_bar so both
-                # the Market_Data sheet (Risk_Allocation_%) and the Trades sheet
-                # (Quality_Score / Tier) can look trades up reliably instead of
-                # relying on fragile positional-index alignment against trades_df.
                 strategy_instance = getattr(stats, '_strategy', None)
-                trade_history = getattr(strategy_instance, 'trade_history', []) if strategy_instance else []
-                trade_history_by_entry_bar = {
-                    t['entry_bar']: t for t in trade_history
-                    if isinstance(t, dict) and t.get('entry_bar') is not None
-                }
 
-                # ═══ TEMP DIAGNOSTIC — remove once the entry_bar mismatch is
-                # found and fixed. Tells us exactly why Quality_Score/Tier
-                # lookups are (or aren't) resolving against real trade data. ═══
-                _trades_preview = stats.get('_trades') if hasattr(stats, 'get') else None
-                _hist_keys_sample = sorted(trade_history_by_entry_bar.keys())[:10]
-                _trades_entry_bars_sample = (
-                    _trades_preview['EntryBar'].head(10).tolist()
-                    if isinstance(_trades_preview, pd.DataFrame) and not _trades_preview.empty
-                    else []
-                )
-                self.log_message(
-                    f"🔎 DIAG: strategy_instance={'OK' if strategy_instance is not None else 'MISSING'} | "
-                    f"trade_history len={len(trade_history)} | "
-                    f"trade_history_by_entry_bar len={len(trade_history_by_entry_bar)}",
-                    "cyan"
-                )
-                self.log_message(f"🔎 DIAG: hist entry_bar keys (sample): {_hist_keys_sample}", "cyan")
-                self.log_message(f"🔎 DIAG: trades_df EntryBar (sample): {_trades_entry_bars_sample}", "cyan")
-                if trade_history:
-                    _sample_rec = {
-                        k: v for k, v in trade_history[0].items()
-                        if k in ('entry_bar', 'tier', 'entry_quality', 'quality_score')
-                    }
-                    self.log_message(f"🔎 DIAG: sample trade_history record: {_sample_rec}", "cyan")
-                # ═══ END TEMP DIAGNOSTIC ═══
+                # ─── GET TRADE RECORDS DIRECTLY FROM STRATEGY ──────────────────────
+                trade_records = []
+                if strategy_instance and hasattr(strategy_instance, 'trade_records'):
+                    trade_records = strategy_instance.trade_records
+                    self.log_message(f"📊 Found {len(trade_records)} trade records in strategy", "green")
+                else:
+                    self.log_message("⚠️ No trade_records found in strategy instance", "orange")
+                    # Fallback: try to get from trade_history
+                    if strategy_instance and hasattr(strategy_instance, 'trade_history'):
+                        trade_records = strategy_instance.trade_history
+                        self.log_message(f"📊 Falling back to trade_history: {len(trade_records)} records", "yellow")
 
+                # ─── EXPORT TRADES SHEET (DIRECT, NO MERGING) ──────────────────────
+                if trade_records:
+                    trades_data = []
+
+                    for i, record in enumerate(trade_records):
+                        try:
+                            # Handle both dataclass and dict formats
+                            if hasattr(record, '__dataclass_fields__'):
+                                # It's a TradeRecord dataclass
+                                entry_tier = getattr(record, 'entry_tier', 0)
+                                entry_quality = getattr(record, 'entry_quality_score', 0)
+                                direction = getattr(record, 'entry_direction', 'long')
+                                entry_price = getattr(record, 'entry_price', 0)
+                                exit_price = getattr(record, 'exit_price', 0)
+                                entry_size = getattr(record, 'entry_size', 0)
+                                profit = getattr(record, 'profit', 0)
+                                profit_pct = getattr(record, 'profit_pct', 0)
+                                exit_reason = getattr(record, 'exit_reason', '')
+                                hold_duration = getattr(record, 'hold_duration', 0)
+                                confluence = getattr(record, 'confluence_score', 0)
+                                signal_adx = getattr(record, 'signal_adx', 0)
+                                signal_rsi = getattr(record, 'signal_rsi', 50)
+                                signal_macd = getattr(record, 'signal_macd', 0)
+                                signal_volume = getattr(record, 'signal_volume', 1.0)
+                                signal_price_pct = getattr(record, 'signal_price_pct', 50)
+                                ml_pred = getattr(record, 'signal_ml_prediction', 0)
+                                ml_conf = getattr(record, 'signal_ml_confidence', 0.0)
+                                entry_time = getattr(record, 'entry_time', None)
+                                exit_time = getattr(record, 'exit_time', None)
+                                market_regime = getattr(record, 'market_regime', 'UNKNOWN')
+                                original_size = getattr(record, 'original_size', entry_size)
+                                partial_exits = getattr(record, 'partial_exits_taken', 0)
+
+                            elif isinstance(record, dict):
+                                # It's a dict (from legacy trade_history)
+                                entry_tier = record.get('tier', 0)
+                                entry_quality = record.get('entry_quality', 0)
+                                direction = record.get('direction', 'long')
+                                entry_price = record.get('entry_price', 0)
+                                exit_price = record.get('exit_price', 0)
+                                entry_size = record.get('size', 0)
+                                profit = record.get('profit', 0)
+                                profit_pct = record.get('profit_pct', 0)
+                                exit_reason = record.get('exit_reason', '')
+                                hold_duration = record.get('hold_duration', 0)
+                                confluence = record.get('confluence_score', 0)
+                                signal_adx = record.get('signal_adx', 0)
+                                signal_rsi = record.get('signal_rsi', 50)
+                                signal_macd = record.get('signal_macd', 0)
+                                signal_volume = record.get('signal_volume', 1.0)
+                                signal_price_pct = record.get('signal_price_pct', 50)
+                                ml_pred = record.get('ml_prediction', 0)
+                                ml_conf = record.get('ml_confidence', 0.0)
+                                entry_time = record.get('entry_time', None)
+                                exit_time = record.get('exit_time', None)
+                                market_regime = record.get('market_regime', 'UNKNOWN')
+                                original_size = record.get('original_size', entry_size)
+                                partial_exits = record.get('partial_exits_taken', 0)
+                            else:
+                                continue
+
+                            # Determine tier name
+                            if entry_tier == 1:
+                                tier_name = "Tier 1"
+                            elif entry_tier == 2:
+                                tier_name = "Tier 2"
+                            elif entry_quality is not None and entry_quality > 0:
+                                # Fallback: classify by quality score
+                                if entry_quality >= quality_tier1_min:
+                                    tier_name = "Tier 1"
+                                    entry_tier = 1
+                                elif entry_quality >= quality_tier2_min:
+                                    tier_name = "Tier 2"
+                                    entry_tier = 2
+                                else:
+                                    tier_name = "Below Tier 2"
+                                    entry_tier = 0
+                            else:
+                                tier_name = "Unknown"
+                                entry_tier = 0
+
+                            # Format times - STRIP TIMEZONE INFO
+                            entry_time_str = ''
+                            exit_time_str = ''
+                            if entry_time:
+                                if hasattr(entry_time, 'strftime'):
+                                    # Remove timezone info if present
+                                    if hasattr(entry_time, 'tzinfo') and entry_time.tzinfo is not None:
+                                        entry_time = entry_time.replace(tzinfo=None)
+                                    entry_time_str = entry_time.strftime('%Y-%m-%d %H:%M:%S')
+                                else:
+                                    entry_time_str = str(entry_time)
+                            if exit_time:
+                                if hasattr(exit_time, 'strftime'):
+                                    if hasattr(exit_time, 'tzinfo') and exit_time.tzinfo is not None:
+                                        exit_time = exit_time.replace(tzinfo=None)
+                                    exit_time_str = exit_time.strftime('%Y-%m-%d %H:%M:%S')
+                                else:
+                                    exit_time_str = str(exit_time)
+
+                            # Calculate return percentage if not already set
+                            if profit_pct == 0 and entry_price > 0 and exit_price > 0:
+                                if direction == 'short':
+                                    profit_pct = (entry_price - exit_price) / entry_price * 100
+                                else:
+                                    profit_pct = (exit_price - entry_price) / entry_price * 100
+
+                            trades_data.append({
+                                'Trade_#': i + 1,
+                                'Tier': tier_name,
+                                'Tier_Number': entry_tier,
+                                'Direction': direction.upper() if direction else 'UNKNOWN',
+                                'Entry_Time': entry_time_str,
+                                'Entry_Price': round(entry_price, 4) if entry_price else 0,
+                                'Entry_Size': round(entry_size, 4) if entry_size else 0,
+                                'Exit_Time': exit_time_str,
+                                'Exit_Price': round(exit_price, 4) if exit_price else 0,
+                                'Exit_Reason': exit_reason or '',
+                                'PnL': round(profit, 2) if profit else 0,
+                                'Return_%': round(profit_pct, 2) if profit_pct else 0,
+                                'Hold_Duration_Minutes': round(hold_duration, 1) if hold_duration else 0,
+                                'Quality_Score': entry_quality if entry_quality else 0,
+                                'Confluence_Score': round(confluence, 2) if confluence else 0,
+                                'Signal_ADX': round(signal_adx, 1) if signal_adx else 0,
+                                'Signal_RSI': round(signal_rsi, 1) if signal_rsi else 50,
+                                'Signal_MACD': round(signal_macd, 4) if signal_macd else 0,
+                                'Signal_Volume_Ratio': round(signal_volume, 2) if signal_volume else 1.0,
+                                'Signal_Price_Percentile': round(signal_price_pct, 1) if signal_price_pct else 50,
+                                'ML_Prediction': ml_pred if ml_pred else 0,
+                                'ML_Confidence_%': round(ml_conf, 1) if ml_conf else 0,
+                                'Market_Regime': market_regime or 'UNKNOWN',
+                                'Original_Size': round(original_size, 4) if original_size else 0,
+                                'Partial_Exits': partial_exits if partial_exits else 0,
+                                'Win': 'Yes' if profit and profit > 0 else 'No',
+                            })
+
+                        except Exception as e:
+                            self.log_message(f"⚠️ Error processing trade record {i}: {e}", "orange")
+                            continue
+
+                    if trades_data:
+                        trade_output_df = pd.DataFrame(trades_data)
+
+                        # Reorder columns for readability
+                        col_order = [
+                            'Trade_#', 'Tier', 'Tier_Number', 'Direction',
+                            'Entry_Time', 'Entry_Price', 'Entry_Size',
+                            'Exit_Time', 'Exit_Price', 'Exit_Reason',
+                            'PnL', 'Return_%', 'Hold_Duration_Minutes',
+                            'Quality_Score', 'Confluence_Score',
+                            'Signal_ADX', 'Signal_RSI', 'Signal_MACD',
+                            'Signal_Volume_Ratio', 'Signal_Price_Percentile',
+                            'ML_Prediction', 'ML_Confidence_%',
+                            'Market_Regime', 'Original_Size', 'Partial_Exits', 'Win'
+                        ]
+                        # Keep only columns that exist
+                        existing_cols = [c for c in col_order if c in trade_output_df.columns]
+                        trade_output_df = trade_output_df[existing_cols]
+
+                        trade_output_df.to_excel(writer, sheet_name='Trades', index=False)
+                        sheets_created += 1
+
+                        self.log_message(f"   ✅ Trades sheet created ({len(trade_output_df)} trades)", "green")
+
+                        # Log tier summary
+                        tier_counts = trade_output_df['Tier'].value_counts()
+                        self.log_message(f"   📊 TIER SUMMARY (Tier1={quality_tier1_min}, Tier2={quality_tier2_min})",
+                                         "blue")
+                        tier_color = {"Tier 1": "blue", "Tier 2": "green", "Unknown": "orange", "Below Tier 2": "red"}
+                        for tier_name, count in tier_counts.items():
+                            pct = (count / len(trade_output_df)) * 100
+                            tier_wins = trade_output_df[
+                                (trade_output_df['Tier'] == tier_name) & (trade_output_df['Win'] == 'Yes')]
+                            tier_win_rate = (len(tier_wins) / count * 100) if count else 0
+                            color = tier_color.get(tier_name, "orange")
+                            self.log_message(
+                                f"      {tier_name}: {count} ({pct:.1f}%) — Win rate: {tier_win_rate:.1f}%", color)
+
+                        # Log direction summary
+                        dir_counts = trade_output_df['Direction'].value_counts()
+                        self.log_message("   📊 DIRECTION SUMMARY:", "blue")
+                        for dir_name, count in dir_counts.items():
+                            dir_wins = trade_output_df[
+                                (trade_output_df['Direction'] == dir_name) & (trade_output_df['Win'] == 'Yes')]
+                            dir_win_rate = (len(dir_wins) / count * 100) if count else 0
+                            self.log_message(f"      {dir_name}: {count} trades — Win rate: {dir_win_rate:.1f}%",
+                                             "cyan")
+
+                # ─── MARKET DATA SHEET ─────────────────────────────────────────────
+                # FIX: Strip timezone info from index and all datetime columns
                 market_df = df.copy()
 
-                if isinstance(market_df.index, pd.DatetimeIndex) and market_df.index.tz is not None:
-                    market_df.index = market_df.index.tz_localize(None)
+                # Strip timezone from index
+                if isinstance(market_df.index, pd.DatetimeIndex):
+                    if market_df.index.tz is not None:
+                        market_df.index = market_df.index.tz_localize(None)
 
-                for col in market_df.select_dtypes(include=['datetime64']).columns:
-                    if market_df[col].dt.tz is not None:
-                        market_df[col] = market_df[col].dt.tz_localize(None)
-
-                market_df['Entry_Signal'] = ''
-                market_df['Exit_Signal'] = ''
-                market_df['Exit_Reason'] = ''
-                market_df['Confluence_Score'] = 0
-                market_df['Risk_Allocation_%'] = 0.0
-
-                trades_processed = 0
-                if '_trades' in stats and stats['_trades'] is not None:
-                    trades_df = stats['_trades']
-
-                    if isinstance(trades_df, pd.DataFrame) and not trades_df.empty:
-                        for idx, trade in trades_df.iterrows():
-                            try:
-                                entry_bar = int(trade.get('EntryBar', 0))
-                                exit_bar = int(trade.get('ExitBar', 0))
-
-                                if 0 <= entry_bar < len(market_df):
-                                    entry_idx = market_df.index[entry_bar]
-                                    market_df.at[entry_idx, 'Entry_Signal'] = 'BUY'
-
-                                    entry_data = market_df.iloc[entry_bar]
-                                    confluence = self._calculate_entry_confluence(entry_data)
-                                    market_df.at[entry_idx, 'Confluence_Score'] = confluence
-
-                                    # ═══ FIX: this used to call _calculate_risk_allocation(),
-                                    # which derives a risk % purely from the confluence score
-                                    # (0.5%/0.75%/1.0%/1.5%) — completely disconnected from the
-                                    # tier system and from what the strategy actually used to
-                                    # size the position (risk_tier1=2.5% / risk_tier2=1.5%).
-                                    # That made Risk_Allocation_% identical for Tier 1 and
-                                    # Tier 2 trades with the same confluence, which is
-                                    # misleading. Report the real tier-based risk % instead,
-                                    # falling back to the confluence estimate only if the
-                                    # trade's tier can't be determined.
-                                    hist_trade = trade_history_by_entry_bar.get(entry_bar)
-                                    real_tier = hist_trade.get('tier') if isinstance(hist_trade, dict) else None
-                                    if real_tier == 1:
-                                        risk_pct = getattr(strategy_instance, 'risk_tier1', 0.025)
-                                    elif real_tier == 2:
-                                        risk_pct = getattr(strategy_instance, 'risk_tier2', 0.015)
-                                    else:
-                                        risk_pct = self._calculate_risk_allocation(entry_data, confluence)
-                                    market_df.at[entry_idx, 'Risk_Allocation_%'] = risk_pct * 100
-
-                                    trades_processed += 1
-
-                                if 0 <= exit_bar < len(market_df):
-                                    exit_idx = market_df.index[exit_bar]
-                                    market_df.at[exit_idx, 'Exit_Signal'] = 'SELL'
-
-                                    exit_reason = self._extract_exit_reason(trade, exit_bar, market_df)
-                                    market_df.at[exit_idx, 'Exit_Reason'] = exit_reason
-
-                            except Exception as e:
-                                continue
+                # FIX: SAFELY strip timezone from datetime columns without using invalid dtype strings
+                for col in market_df.columns:
+                    # Check if column is datetime-like
+                    if pd.api.types.is_datetime64_any_dtype(market_df[col]):
+                        # Strip timezone by converting to naive datetime
+                        if hasattr(market_df[col].dtype, 'tz') and market_df[col].dtype.tz is not None:
+                            market_df[col] = market_df[col].dt.tz_localize(None)
+                    # Also check for object columns that might contain Timestamps with timezone
+                    elif pd.api.types.is_object_dtype(market_df[col]):
+                        # Check if first non-null value is a Timestamp with timezone
+                        non_null = market_df[col].dropna()
+                        if len(non_null) > 0:
+                            first = non_null.iloc[0]
+                            if hasattr(first, 'tzinfo') and first.tzinfo is not None:
+                                market_df[col] = market_df[col].apply(
+                                    lambda x: x.replace(tzinfo=None) if hasattr(x, 'replace') and hasattr(x,
+                                                                                                          'tzinfo') and x.tzinfo is not None else x
+                                )
 
                 export_columns = [
                     'Open', 'High', 'Low', 'Close', 'Volume',
                     'EMA_Fast', 'EMA_Mid', 'EMA_Slow',
-                    'RSI', 'CCI', 'ADX', 'ATR', 'VIX',
+                    'RSI', 'CCI', 'ADX', 'ATR',
                     'SuperTrend', 'Direction', 'Kalman_Strength', 'Volume_Ratio',
                     'Entry_Signal', 'Exit_Signal', 'Exit_Reason',
                     'Confluence_Score', 'Risk_Allocation_%'
                 ]
-
                 export_columns = [col for col in export_columns if col in market_df.columns]
-                market_export = market_df[export_columns].copy()
+                if export_columns:
+                    market_export = market_df[export_columns].copy()
+                    numeric_cols = market_export.select_dtypes(include=[np.number]).columns
+                    market_export[numeric_cols] = market_export[numeric_cols].round(4)
+                    market_export.to_excel(writer, sheet_name='Market_Data')
+                    sheets_created += 1
 
-                numeric_cols = market_export.select_dtypes(include=[np.number]).columns
-                market_export[numeric_cols] = market_export[numeric_cols].round(4)
-
-                market_export.to_excel(writer, sheet_name='Market_Data')
-                sheets_created += 1
-
-                # ============================================================
-                # TRADES SHEET - USE GUI-SELECTED THRESHOLDS
-                # ============================================================
-                if '_trades' in stats and stats['_trades'] is not None:
-                    trades_df = stats['_trades']
-
-                    if isinstance(trades_df, pd.DataFrame) and not trades_df.empty:
-                        trades_data = []
-
-                        # strategy_instance / trade_history_by_entry_bar were already
-                        # built once above (used for both sheets) — reuse them here.
-
-                        # Log the thresholds being used
-                        self.log_message(
-                            f"   🎯 Using thresholds: Tier1={quality_tier1_min}, Tier2={quality_tier2_min}",
-                            "cyan")
-
-                        for idx, row in trades_df.iterrows():
-                            try:
-                                entry_bar = int(row.get('EntryBar', 0))
-                                exit_bar = int(row.get('ExitBar', 0))
-
-                                entry_time = df.index[entry_bar] if entry_bar < len(df) else pd.NaT
-                                exit_time = df.index[exit_bar] if exit_bar < len(df) else pd.NaT
-
-                                entry_time_str = ''
-                                exit_time_str = ''
-
-                                if not pd.isna(entry_time):
-                                    if hasattr(entry_time, 'tz') and entry_time.tz is not None:
-                                        entry_time_str = entry_time.tz_localize(None).strftime('%Y-%m-%d %H:%M:%S')
-                                    else:
-                                        entry_time_str = entry_time.strftime('%Y-%m-%d %H:%M:%S')
-
-                                if not pd.isna(exit_time):
-                                    if hasattr(exit_time, 'tz') and exit_time.tz is not None:
-                                        exit_time_str = exit_time.tz_localize(None).strftime('%Y-%m-%d %H:%M:%S')
-                                    else:
-                                        exit_time_str = exit_time.strftime('%Y-%m-%d %H:%M:%S')
-
-                                # FIX: previously reconstructed entry/exit price from the
-                                # bar's *closing* price, which is only correct if the trade
-                                # entered/exited exactly at a bar close. Any stop-loss,
-                                # take-profit, or other intrabar exit (e.g. Exit_Reason ==
-                                # 'stop_loss_hard') actually fills at the stop/target level,
-                                # not the bar close — so the old columns could show a price
-                                # that implies a win while PnL/Win correctly say loss (or
-                                # vice versa). backtesting.py's own trades_df already has the
-                                # real fill prices in 'EntryPrice'/'ExitPrice'; use those.
-                                if 'EntryPrice' in row and pd.notna(row.get('EntryPrice')):
-                                    entry_price = float(row['EntryPrice'])
-                                elif entry_bar < len(df):
-                                    entry_price = float(df.iloc[entry_bar]['Close'])
-                                else:
-                                    entry_price = 0
-
-                                if 'ExitPrice' in row and pd.notna(row.get('ExitPrice')):
-                                    exit_price = float(row['ExitPrice'])
-                                elif exit_bar < len(df):
-                                    exit_price = float(df.iloc[exit_bar]['Close'])
-                                else:
-                                    exit_price = 0
-                                size = float(row.get('Size', 0))
-                                # backtesting.py gives Size < 0 for short positions, so
-                                # (exit_price - entry_price) * size already flips sign
-                                # correctly for shorts: a short profits when exit < entry.
-                                pnl = float(row.get('PnL', (exit_price - entry_price) * size))
-
-                                # ═══ DIRECTION: Long if Size > 0, Short if Size < 0 ═══
-                                direction = 'Long' if size > 0 else ('Short' if size < 0 else 'Unknown')
-
-                                duration = exit_time - entry_time if not pd.isna(entry_time) and not pd.isna(
-                                    exit_time) else pd.NaT
-
-                                # Get quality score from trade history — look up by
-                                # entry_bar (unique per trade), NOT by list position,
-                                # since trade_history and trades_df are independent
-                                # lists that can drift out of sync in count/order.
-                                hist_trade = trade_history_by_entry_bar.get(entry_bar)
-                                quality_score = None
-                                if isinstance(hist_trade, dict):
-                                    if hist_trade.get('entry_quality') is not None:
-                                        quality_score = hist_trade.get('entry_quality')
-                                    elif hist_trade.get('quality_score') is not None:
-                                        quality_score = hist_trade.get('quality_score')
-
-                                # ═══ DETERMINE TIER ═══
-                                # Tier is either known or it isn't — no need to fabricate
-                                # a stand-in quality_score to reverse-derive it. If the
-                                # trade record has an actual 'tier', that IS the answer.
-                                hist_tier = hist_trade.get('tier') if isinstance(hist_trade, dict) else None
-                                if hist_tier == 1:
-                                    tier = "Tier 1"
-                                    tier_num = 1
-                                elif hist_tier == 2:
-                                    tier = "Tier 2"
-                                    tier_num = 2
-                                elif quality_score is not None:
-                                    # No explicit tier recorded, but we do have a real
-                                    # score — classify it against the thresholds.
-                                    # FIX: check high-to-low (tier1_min > tier2_min
-                                    # always), or the tier1 branch is unreachable.
-                                    if quality_score >= quality_tier1_min:
-                                        tier = "Tier 1"
-                                        tier_num = 1
-                                    elif quality_score >= quality_tier2_min:
-                                        tier = "Tier 2"
-                                        tier_num = 2
-                                    else:
-                                        tier = "Below Tier 2"
-                                        tier_num = 0
-                                else:
-                                    # Genuinely unknown — say so, don't guess a tier.
-                                    tier = "Unknown"
-                                    tier_num = 0
-
-                                # Quality_Score column: show the real score when we have
-                                # it; otherwise be honest that it's missing rather than
-                                # displaying a fabricated number.
-                                if quality_score is None:
-                                    quality_score = "N/A"
-
-                                # Get exit reason
-                                exit_reason = self._extract_exit_reason(row, exit_bar, market_export)
-                                if isinstance(hist_trade, dict) and 'exit_reason' in hist_trade:
-                                    if hist_trade.get('exit_reason'):
-                                        exit_reason = hist_trade.get('exit_reason')
-
-                                # Calculate return percentage.
-                                # FIX: the old check `(entry_price * size) > 0` is always
-                                # False for short trades (size is negative), which silently
-                                # forced Return_% to 0 for every short trade regardless of
-                                # actual PnL. Use the absolute notional value instead so
-                                # both long and short returns are computed correctly.
-                                notional = abs(entry_price * size)
-                                return_pct = (pnl / notional * 100) if notional > 0 else 0
-
-                                trades_data.append({
-                                    'Trade_#': idx + 1,
-                                    'Tier': tier,
-                                    'Tier_Number': tier_num,
-                                    'Direction': direction,
-                                    'Entry_Time': entry_time_str,
-                                    'Entry_Bar': entry_bar,
-                                    'Entry_Price': round(entry_price, 4),
-                                    'Exit_Time': exit_time_str,
-                                    'Exit_Bar': exit_bar,
-                                    'Exit_Price': round(exit_price, 4),
-                                    'Exit_Reason': exit_reason,
-                                    'Size': round(size, 4),
-                                    'PnL': round(pnl, 2),
-                                    'Return_%': round(return_pct, 2),
-                                    'Duration': str(duration),
-                                    # Win/loss is driven purely by the PnL sign, which
-                                    # backtesting.py (and our fallback formula above) already
-                                    # computes correctly for both directions:
-                                    #   Long:  PnL = (exit_price - entry_price) * size,  size > 0
-                                    #          → win when exit_price > entry_price (bought low, sold high)
-                                    #   Short: PnL = (exit_price - entry_price) * size,  size < 0
-                                    #          → win when exit_price < entry_price (sold high, bought back low)
-                                    'Win': 'Yes' if pnl > 0 else 'No',
-                                    'Quality_Score': quality_score,
-                                    'Confluence_Score': market_export.iloc[entry_bar].get('Confluence_Score',
-                                                                                          0) if entry_bar < len(
-                                        market_export) else 0,
-                                    'Risk_Allocation_%': market_export.iloc[entry_bar].get('Risk_Allocation_%',
-                                                                                           0) if entry_bar < len(
-                                        market_export) else 0
-                                })
-
-                            except Exception as e:
-                                continue
-
-                        if trades_data:
-                            trade_output_df = pd.DataFrame(trades_data)
-
-                            # Reorder columns - move Tier, Tier_Number, Direction to front
-                            cols = trade_output_df.columns.tolist()
-                            tier_cols = ['Tier', 'Tier_Number', 'Direction']
-                            for tier_col in tier_cols:
-                                if tier_col in cols:
-                                    cols.remove(tier_col)
-                            if 'Trade_#' in cols:
-                                insert_pos = cols.index('Trade_#') + 1
-                                for tier_col in tier_cols:
-                                    cols.insert(insert_pos, tier_col)
-                                    insert_pos += 1
-
-                            trade_output_df = trade_output_df[cols]
-                            trade_output_df.to_excel(writer, sheet_name='Trades', index=False)
-                            sheets_created += 1
-
-                            # Log summary with actual tier counts
-                            self.log_message(f"   ✅ Trades sheet created ({len(trade_output_df)} trades)", "green")
-
-                            tier_counts = trade_output_df['Tier'].value_counts()
-                            self.log_message(
-                                f"   📊 TIER SUMMARY (Tier1={quality_tier1_min}, Tier2={quality_tier2_min}):",
-                                "blue")
-                            tier_color = {"Tier 1": "blue", "Tier 2": "green"}
-                            for tier_name, count in tier_counts.items():
-                                pct = (count / len(trade_output_df)) * 100
-                                tier_wins = trade_output_df[
-                                    (trade_output_df['Tier'] == tier_name) & (trade_output_df['Win'] == 'Yes')]
-                                tier_win_rate = (len(tier_wins) / count * 100) if count else 0
-                                color = tier_color.get(tier_name, "orange")
-                                self.log_message(
-                                    f"      {tier_name}: {count} ({pct:.1f}%) — Win rate: {tier_win_rate:.1f}%",
-                                    color)
-
-                            # Long / Short breakdown
-                            dir_counts = trade_output_df['Direction'].value_counts()
-                            self.log_message("   📊 DIRECTION SUMMARY:", "blue")
-                            for dir_name, count in dir_counts.items():
-                                dir_wins = trade_output_df[
-                                    (trade_output_df['Direction'] == dir_name) & (trade_output_df['Win'] == 'Yes')]
-                                dir_win_rate = (len(dir_wins) / count * 100) if count else 0
-                                self.log_message(
-                                    f"      {dir_name}: {count} trades — Win rate: {dir_win_rate:.1f}%", "cyan")
-
+                # ─── SUMMARY SHEET ─────────────────────────────────────────────────
                 _start = datetime.strptime(self.start_date_var.get(), "%Y-%m-%d")
                 _end = datetime.strptime(self.end_date_var.get(), "%Y-%m-%d")
                 _num_months = max((_end - _start).days / 30.44, 1)
                 _total_trades = stats.get('# Trades', 0)
                 _avg_trades_per_month = _total_trades / _num_months
 
-                # ============================================================
-                # SUMMARY SHEET
-                # ============================================================
                 summary_data = [
                     ['═══ PERFORMANCE METRICS ═══', ''],
                     ['Start Date', self.start_date_var.get()],
                     ['End Date', self.end_date_var.get()],
                     ['Final Equity', f"${stats.get('Equity Final [$]', 0):,.2f}"],
                     ['Total Return', f"{stats.get('Return [%]', 0):.2f}%"],
-                    ['Months', f"{_num_months:.1f}"],  # ← added
+                    ['Months', f"{_num_months:.1f}"],
                     ['', ''],
                     ['═══ TRADE STATISTICS ═══', ''],
                     ['Total Trades', stats.get('# Trades', 0)],
@@ -14624,6 +14690,338 @@ class TradingApp:
             self.log_message(traceback.format_exc(), "red")
             return None
 
+
+    # def save_backtest_results_to_excel(self, df, stats=None, suffix=""):
+    #     """
+    #     Export backtest results to Excel with 100% accurate trade data.
+    #     Uses the strategy's trade_records as the single source of truth.
+    #     """
+    #     try:
+    #         if stats is None:
+    #             self.log_message("⚠️ No stats provided - cannot export", "orange")
+    #             return None
+    #
+    #         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    #         symbol = self.symbol_var.get().replace('-', '_')
+    #         interval = self.interval_var.get()
+    #         strategy = self.strategy_type_var.get()
+    #         strategy_clean = strategy.replace(' ', '_').replace('(', '').replace(')', '').replace('\\', '_').replace(
+    #             '/', '_')
+    #         suffix_str = f"_{suffix}" if suffix else ""
+    #         filename = f"backtest_{symbol}_{interval}_{strategy}{suffix_str}_{timestamp}.xlsx"
+    #
+    #         self.log_message(f"📝 Creating Excel file: {filename}", "blue")
+    #
+    #         # Get tier thresholds for reporting
+    #         quality_tier1_min, quality_tier2_min, source = self.get_current_tier_thresholds(backtest_mode=True)
+    #         self.log_message(
+    #             f"✅ USING TIER THRESHOLDS (source: {source}): Tier1={quality_tier1_min}, Tier2={quality_tier2_min}",
+    #             "bold green")
+    #
+    #         import re
+    #         filename = re.sub(r'[\\/*?:"<>|]', '_', filename)
+    #         filename = filename.replace(' ', '_')
+    #         writer = pd.ExcelWriter(filename, engine='openpyxl')
+    #         sheets_created = 0
+    #
+    #         try:
+    #             strategy_instance = getattr(stats, '_strategy', None)
+    #
+    #             # ─── GET TRADE RECORDS DIRECTLY FROM STRATEGY ──────────────────────
+    #             trade_records = []
+    #             if strategy_instance and hasattr(strategy_instance, 'trade_records'):
+    #                 trade_records = strategy_instance.trade_records
+    #                 self.log_message(f"📊 Found {len(trade_records)} trade records in strategy", "green")
+    #             else:
+    #                 self.log_message("⚠️ No trade_records found in strategy instance", "orange")
+    #                 # Fallback: try to get from trade_history
+    #                 if strategy_instance and hasattr(strategy_instance, 'trade_history'):
+    #                     trade_records = strategy_instance.trade_history
+    #                     self.log_message(f"📊 Falling back to trade_history: {len(trade_records)} records", "yellow")
+    #
+    #             # ─── EXPORT TRADES SHEET (DIRECT, NO MERGING) ──────────────────────
+    #             if trade_records:
+    #                 trades_data = []
+    #
+    #                 for i, record in enumerate(trade_records):
+    #                     try:
+    #                         # Handle both dataclass and dict formats
+    #                         if hasattr(record, '__dataclass_fields__'):
+    #                             # It's a TradeRecord dataclass
+    #                             entry_tier = getattr(record, 'entry_tier', 0)
+    #                             entry_quality = getattr(record, 'entry_quality_score', 0)
+    #                             direction = getattr(record, 'entry_direction', 'long')
+    #                             entry_price = getattr(record, 'entry_price', 0)
+    #                             exit_price = getattr(record, 'exit_price', 0)
+    #                             entry_size = getattr(record, 'entry_size', 0)
+    #                             profit = getattr(record, 'profit', 0)
+    #                             profit_pct = getattr(record, 'profit_pct', 0)
+    #                             exit_reason = getattr(record, 'exit_reason', '')
+    #                             hold_duration = getattr(record, 'hold_duration', 0)
+    #                             confluence = getattr(record, 'confluence_score', 0)
+    #                             signal_adx = getattr(record, 'signal_adx', 0)
+    #                             signal_rsi = getattr(record, 'signal_rsi', 50)
+    #                             signal_macd = getattr(record, 'signal_macd', 0)
+    #                             signal_volume = getattr(record, 'signal_volume', 1.0)
+    #                             signal_price_pct = getattr(record, 'signal_price_pct', 50)
+    #                             ml_pred = getattr(record, 'signal_ml_prediction', 0)
+    #                             ml_conf = getattr(record, 'signal_ml_confidence', 0.0)
+    #                             entry_time = getattr(record, 'entry_time', None)
+    #                             exit_time = getattr(record, 'exit_time', None)
+    #                             market_regime = getattr(record, 'market_regime', 'UNKNOWN')
+    #                             original_size = getattr(record, 'original_size', entry_size)
+    #                             partial_exits = getattr(record, 'partial_exits_taken', 0)
+    #
+    #                         elif isinstance(record, dict):
+    #                             # It's a dict (from legacy trade_history)
+    #                             entry_tier = record.get('tier', 0)
+    #                             entry_quality = record.get('entry_quality', 0)
+    #                             direction = record.get('direction', 'long')
+    #                             entry_price = record.get('entry_price', 0)
+    #                             exit_price = record.get('exit_price', 0)
+    #                             entry_size = record.get('size', 0)
+    #                             profit = record.get('profit', 0)
+    #                             profit_pct = record.get('profit_pct', 0)
+    #                             exit_reason = record.get('exit_reason', '')
+    #                             hold_duration = record.get('hold_duration', 0)
+    #                             confluence = record.get('confluence_score', 0)
+    #                             signal_adx = record.get('signal_adx', 0)
+    #                             signal_rsi = record.get('signal_rsi', 50)
+    #                             signal_macd = record.get('signal_macd', 0)
+    #                             signal_volume = record.get('signal_volume', 1.0)
+    #                             signal_price_pct = record.get('signal_price_pct', 50)
+    #                             ml_pred = record.get('ml_prediction', 0)
+    #                             ml_conf = record.get('ml_confidence', 0.0)
+    #                             entry_time = record.get('entry_time', None)
+    #                             exit_time = record.get('exit_time', None)
+    #                             market_regime = record.get('market_regime', 'UNKNOWN')
+    #                             original_size = record.get('original_size', entry_size)
+    #                             partial_exits = record.get('partial_exits_taken', 0)
+    #                         else:
+    #                             continue
+    #
+    #                         # Determine tier name
+    #                         if entry_tier == 1:
+    #                             tier_name = "Tier 1"
+    #                         elif entry_tier == 2:
+    #                             tier_name = "Tier 2"
+    #                         elif entry_quality is not None and entry_quality > 0:
+    #                             # Fallback: classify by quality score
+    #                             if entry_quality >= quality_tier1_min:
+    #                                 tier_name = "Tier 1"
+    #                                 entry_tier = 1
+    #                             elif entry_quality >= quality_tier2_min:
+    #                                 tier_name = "Tier 2"
+    #                                 entry_tier = 2
+    #                             else:
+    #                                 tier_name = "Below Tier 2"
+    #                                 entry_tier = 0
+    #                         else:
+    #                             tier_name = "Unknown"
+    #                             entry_tier = 0
+    #
+    #                         # Format times - STRIP TIMEZONE INFO
+    #                         entry_time_str = ''
+    #                         exit_time_str = ''
+    #                         if entry_time:
+    #                             if hasattr(entry_time, 'strftime'):
+    #                                 # Remove timezone info if present
+    #                                 if hasattr(entry_time, 'tzinfo') and entry_time.tzinfo is not None:
+    #                                     entry_time = entry_time.replace(tzinfo=None)
+    #                                 entry_time_str = entry_time.strftime('%Y-%m-%d %H:%M:%S')
+    #                             else:
+    #                                 entry_time_str = str(entry_time)
+    #                         if exit_time:
+    #                             if hasattr(exit_time, 'strftime'):
+    #                                 if hasattr(exit_time, 'tzinfo') and exit_time.tzinfo is not None:
+    #                                     exit_time = exit_time.replace(tzinfo=None)
+    #                                 exit_time_str = exit_time.strftime('%Y-%m-%d %H:%M:%S')
+    #                             else:
+    #                                 exit_time_str = str(exit_time)
+    #
+    #                         # Calculate return percentage if not already set
+    #                         if profit_pct == 0 and entry_price > 0 and exit_price > 0:
+    #                             if direction == 'short':
+    #                                 profit_pct = (entry_price - exit_price) / entry_price * 100
+    #                             else:
+    #                                 profit_pct = (exit_price - entry_price) / entry_price * 100
+    #
+    #                         trades_data.append({
+    #                             'Trade_#': i + 1,
+    #                             'Tier': tier_name,
+    #                             'Tier_Number': entry_tier,
+    #                             'Direction': direction.upper() if direction else 'UNKNOWN',
+    #                             'Entry_Time': entry_time_str,
+    #                             'Entry_Price': round(entry_price, 4) if entry_price else 0,
+    #                             'Entry_Size': round(entry_size, 4) if entry_size else 0,
+    #                             'Exit_Time': exit_time_str,
+    #                             'Exit_Price': round(exit_price, 4) if exit_price else 0,
+    #                             'Exit_Reason': exit_reason or '',
+    #                             'PnL': round(profit, 2) if profit else 0,
+    #                             'Return_%': round(profit_pct, 2) if profit_pct else 0,
+    #                             'Hold_Duration_Minutes': round(hold_duration, 1) if hold_duration else 0,
+    #                             'Quality_Score': entry_quality if entry_quality else 0,
+    #                             'Confluence_Score': round(confluence, 2) if confluence else 0,
+    #                             'Signal_ADX': round(signal_adx, 1) if signal_adx else 0,
+    #                             'Signal_RSI': round(signal_rsi, 1) if signal_rsi else 50,
+    #                             'Signal_MACD': round(signal_macd, 4) if signal_macd else 0,
+    #                             'Signal_Volume_Ratio': round(signal_volume, 2) if signal_volume else 1.0,
+    #                             'Signal_Price_Percentile': round(signal_price_pct, 1) if signal_price_pct else 50,
+    #                             'ML_Prediction': ml_pred if ml_pred else 0,
+    #                             'ML_Confidence_%': round(ml_conf, 1) if ml_conf else 0,
+    #                             'Market_Regime': market_regime or 'UNKNOWN',
+    #                             'Original_Size': round(original_size, 4) if original_size else 0,
+    #                             'Partial_Exits': partial_exits if partial_exits else 0,
+    #                             'Win': 'Yes' if profit and profit > 0 else 'No',
+    #                         })
+    #
+    #                     except Exception as e:
+    #                         self.log_message(f"⚠️ Error processing trade record {i}: {e}", "orange")
+    #                         continue
+    #
+    #                 if trades_data:
+    #                     trade_output_df = pd.DataFrame(trades_data)
+    #
+    #                     # Reorder columns for readability
+    #                     col_order = [
+    #                         'Trade_#', 'Tier', 'Tier_Number', 'Direction',
+    #                         'Entry_Time', 'Entry_Price', 'Entry_Size',
+    #                         'Exit_Time', 'Exit_Price', 'Exit_Reason',
+    #                         'PnL', 'Return_%', 'Hold_Duration_Minutes',
+    #                         'Quality_Score', 'Confluence_Score',
+    #                         'Signal_ADX', 'Signal_RSI', 'Signal_MACD',
+    #                         'Signal_Volume_Ratio', 'Signal_Price_Percentile',
+    #                         'ML_Prediction', 'ML_Confidence_%',
+    #                         'Market_Regime', 'Original_Size', 'Partial_Exits', 'Win'
+    #                     ]
+    #                     # Keep only columns that exist
+    #                     existing_cols = [c for c in col_order if c in trade_output_df.columns]
+    #                     trade_output_df = trade_output_df[existing_cols]
+    #
+    #                     trade_output_df.to_excel(writer, sheet_name='Trades', index=False)
+    #                     sheets_created += 1
+    #
+    #                     self.log_message(f"   ✅ Trades sheet created ({len(trade_output_df)} trades)", "green")
+    #
+    #                     # Log tier summary
+    #                     tier_counts = trade_output_df['Tier'].value_counts()
+    #                     self.log_message(f"   📊 TIER SUMMARY (Tier1={quality_tier1_min}, Tier2={quality_tier2_min})",
+    #                                      "blue")
+    #                     tier_color = {"Tier 1": "blue", "Tier 2": "green", "Unknown": "orange", "Below Tier 2": "red"}
+    #                     for tier_name, count in tier_counts.items():
+    #                         pct = (count / len(trade_output_df)) * 100
+    #                         tier_wins = trade_output_df[
+    #                             (trade_output_df['Tier'] == tier_name) & (trade_output_df['Win'] == 'Yes')]
+    #                         tier_win_rate = (len(tier_wins) / count * 100) if count else 0
+    #                         color = tier_color.get(tier_name, "orange")
+    #                         self.log_message(
+    #                             f"      {tier_name}: {count} ({pct:.1f}%) — Win rate: {tier_win_rate:.1f}%", color)
+    #
+    #                     # Log direction summary
+    #                     dir_counts = trade_output_df['Direction'].value_counts()
+    #                     self.log_message("   📊 DIRECTION SUMMARY:", "blue")
+    #                     for dir_name, count in dir_counts.items():
+    #                         dir_wins = trade_output_df[
+    #                             (trade_output_df['Direction'] == dir_name) & (trade_output_df['Win'] == 'Yes')]
+    #                         dir_win_rate = (len(dir_wins) / count * 100) if count else 0
+    #                         self.log_message(f"      {dir_name}: {count} trades — Win rate: {dir_win_rate:.1f}%",
+    #                                          "cyan")
+    #
+    #             # ─── MARKET DATA SHEET ─────────────────────────────────────────────
+    #             # FIX: Strip timezone info from index and all datetime columns
+    #             market_df = df.copy()
+    #
+    #             # Strip timezone from index
+    #             if isinstance(market_df.index, pd.DatetimeIndex):
+    #                 if market_df.index.tz is not None:
+    #                     market_df.index = market_df.index.tz_localize(None)
+    #
+    #             # Strip timezone from all datetime columns
+    #             for col in market_df.select_dtypes(include=['datetime64[ns, UTC]', 'datetime64[ns, tz]']).columns:
+    #                 if market_df[col].dt.tz is not None:
+    #                     market_df[col] = market_df[col].dt.tz_localize(None)
+    #
+    #             export_columns = [
+    #                 'Open', 'High', 'Low', 'Close', 'Volume',
+    #                 'EMA_Fast', 'EMA_Mid', 'EMA_Slow',
+    #                 'RSI', 'CCI', 'ADX', 'ATR',
+    #                 'SuperTrend', 'Direction', 'Kalman_Strength', 'Volume_Ratio',
+    #                 'Entry_Signal', 'Exit_Signal', 'Exit_Reason',
+    #                 'Confluence_Score', 'Risk_Allocation_%'
+    #             ]
+    #             export_columns = [col for col in export_columns if col in market_df.columns]
+    #             market_export = market_df[export_columns].copy()
+    #             numeric_cols = market_export.select_dtypes(include=[np.number]).columns
+    #             market_export[numeric_cols] = market_export[numeric_cols].round(4)
+    #             market_export.to_excel(writer, sheet_name='Market_Data')
+    #             sheets_created += 1
+    #
+    #             # ─── SUMMARY SHEET ─────────────────────────────────────────────────
+    #             _start = datetime.strptime(self.start_date_var.get(), "%Y-%m-%d")
+    #             _end = datetime.strptime(self.end_date_var.get(), "%Y-%m-%d")
+    #             _num_months = max((_end - _start).days / 30.44, 1)
+    #             _total_trades = stats.get('# Trades', 0)
+    #             _avg_trades_per_month = _total_trades / _num_months
+    #
+    #             summary_data = [
+    #                 ['═══ PERFORMANCE METRICS ═══', ''],
+    #                 ['Start Date', self.start_date_var.get()],
+    #                 ['End Date', self.end_date_var.get()],
+    #                 ['Final Equity', f"${stats.get('Equity Final [$]', 0):,.2f}"],
+    #                 ['Total Return', f"{stats.get('Return [%]', 0):.2f}%"],
+    #                 ['Months', f"{_num_months:.1f}"],
+    #                 ['', ''],
+    #                 ['═══ TRADE STATISTICS ═══', ''],
+    #                 ['Total Trades', stats.get('# Trades', 0)],
+    #                 ['Win Rate', f"{stats.get('Win Rate [%]', 0):.2f}%"],
+    #                 ['Avg Trades / Month', f"{_avg_trades_per_month:.1f}"],
+    #                 ['', ''],
+    #                 ['═══ RISK METRICS ═══', ''],
+    #                 ['Sharpe Ratio', f"{stats.get('Sharpe Ratio', 0):.3f}"],
+    #                 ['Sortino Ratio', f"{stats.get('Sortino Ratio', 0):.3f}"],
+    #                 ['Max Drawdown', f"{stats.get('Max. Drawdown [%]', 0):.2f}%"],
+    #                 ['Profit Factor', f"{stats.get('Profit Factor', 0):.2f}"],
+    #                 ['', ''],
+    #                 ['═══ TIER THRESHOLDS USED ═══', ''],
+    #                 ['Tier 1 Minimum', quality_tier1_min],
+    #                 ['Tier 2 Minimum', quality_tier2_min],
+    #                 ['Parameter Mode', self.param_toggle_var.get()],
+    #                 ['Threshold Source', source],
+    #             ]
+    #
+    #             summary_df = pd.DataFrame(summary_data, columns=['Metric', 'Value'])
+    #             summary_df.to_excel(writer, sheet_name='Summary', index=False)
+    #             sheets_created += 1
+    #
+    #             writer.close()
+    #
+    #             file_size_kb = os.path.getsize(filename) / 1024
+    #             self.log_message(f"✅ Excel file created successfully!", "green")
+    #             self.log_message(f"   📁 File: {filename}", "green")
+    #             self.log_message(f"   📊 Sheets: {sheets_created}", "green")
+    #             self.log_message(f"   💾 Size: {file_size_kb:.1f} KB", "green")
+    #
+    #             try:
+    #                 os.startfile(filename)
+    #             except:
+    #                 pass
+    #
+    #             return filename
+    #
+    #         except Exception as inner_e:
+    #             try:
+    #                 writer.close()
+    #             except:
+    #                 pass
+    #             raise inner_e
+    #
+    #     except Exception as e:
+    #         self.log_message(f"❌ Excel export failed: {str(e)}", "red")
+    #         import traceback
+    #         self.log_message(traceback.format_exc(), "red")
+    #         return None
+
+
     def fix_existing_excel_tiers(self, excel_file):
         """Fix Tier classifications in an existing Excel file"""
         import pandas as pd
@@ -14642,30 +15040,35 @@ class TradingApp:
                     self.log_message(f"   Fixing {sheet_name} sheet...", "blue")
 
                     # Get tier thresholds
-                    # quality_tier2_min = 88
-                    # quality_tier1_min = 75
+                    # quality_tier1_min = 75 (highest bar, checked first)
+                    # quality_tier2_min = 65
+
 
                     if hasattr(self, 'strategy') and self.strategy is not None:
-                        quality_tier2_min = getattr(self.strategy, 'quality_tier2_min', 62)  # v9.4.2: was 88
                         quality_tier1_min = getattr(self.strategy, 'quality_tier1_min', 72)  # v9.4.2: was 75
+                        quality_tier2_min = getattr(self.strategy, 'quality_tier2_min', 62)  # v9.4.2: was 88
+
 
                     # Fix Tier based on Quality_Score
+                    # NOTE: Tier 1 is the highest/most-selective bar, so it must
+                    # be checked FIRST (np.select takes the first True condition).
                     conditions = [
-                        (df['Quality_Score'] >= quality_tier2_min),
                         (df['Quality_Score'] >= quality_tier1_min),
+                        (df['Quality_Score'] >= quality_tier2_min),
                         (df['Quality_Score'] > 0)
                     ]
-                    choices = ['Tier 2', 'Tier 1', 'Below Tier 1']
+                    choices = ['Tier 1', 'Tier 2', 'Tier 3', 'Below Tier 3']
                     df['Tier'] = np.select(conditions, choices, default='Unknown')
 
                     # Update Tier_Number
-                    tier_map = {'Tier 2': 2, 'Tier 1': 1, 'Below Tier 1': 0, 'Unknown': -1}
+                    tier_map = {'Tier 1': 1, 'Tier 2': 2, 'Tier 3': 3, 'Below Tier 3': 0, 'Unknown': -1}
                     df['Tier_Number'] = df['Tier'].map(tier_map)
 
                     # Log the fixes
                     tier_counts = df['Tier'].value_counts()
+                    tier_colors = {"Tier 1": "blue", "Tier 2": "green", "Tier 3": "red"}
                     for tier_name, count in tier_counts.items():
-                        self.log_message(f"      {tier_name}: {count}", "green" if tier_name == "Tier 2" else "blue")
+                        self.log_message(f"      {tier_name}: {count}", tier_colors.get(tier_name, "orange"))
 
                 df.to_excel(writer, sheet_name=sheet_name, index=False)
 
@@ -15741,6 +16144,7 @@ class TradingApp:
         self.log_message(f"\n   Tier 2 ADX Min: {params.get('tier2_adx_min', 15)}", "white")
         self.log_message(f"   Tier 2 Volume Min: {params.get('tier2_volume_min', 0.6)}x", "white")
 
+
         self.log_message(f"\n📈 PRICE POSITIONING:", "cyan")
         early_bonus = params.get('price_percentile_bonus_early', 15)
         late_penalty = params.get('price_percentile_penalty_late', 15)
@@ -15760,4 +16164,5 @@ class TradingApp:
             'weights': weights,
             'tier1_adx_min': params.get('tier1_adx_hard_min', 25),
             'tier1_volume_min': params.get('tier1_volume_min', 1.0),
+
         }
