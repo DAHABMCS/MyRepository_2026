@@ -702,16 +702,16 @@ MOMENTUM_PARAMS = {
     "trade_direction": "both",
 
     # TWO-TIER PASS MARKS (LONG / SHORT)
-    "quality_tier1_min_long": 75,
-    "quality_tier2_min_long": 65,
-    "quality_tier1_min_short": 75,
-    "quality_tier2_min_short": 65,
+    "quality_tier1_min_long": 78,
+    "quality_tier2_min_long": 73,
+    "quality_tier1_min_short": 78,
+    "quality_tier2_min_short": 73,
 
     # LEGACY (mapped to _long/_short in get_current_momentum_params)
-    "quality_tier1_min": 75,
-    "quality_tier2_min": 65,
-    "short_quality_tier1_min": 75,
-    "short_quality_tier2_min": 65,
+    # "quality_tier1_min": 75,
+    # "quality_tier2_min": 65,
+    # "short_quality_tier1_min": 75,
+    # "short_quality_tier2_min": 65,
 
     # ENTRY MODE
     "only_tier1_entries": False,          # True = only Tier 1 allowed
@@ -1412,8 +1412,8 @@ class MomentumLogic:
             'trade_direction': 'both',
             'quality_tier1_min_long': 75, 'quality_tier2_min_long': 65,
             'quality_tier1_min_short': 75, 'quality_tier2_min_short': 65,
-            'quality_tier1_min': 75, 'quality_tier2_min': 65,
-            'short_quality_tier1_min': 75, 'short_quality_tier2_min': 65,
+            # 'quality_tier1_min': 75, 'quality_tier2_min': 65,
+            # 'short_quality_tier1_min': 75, 'short_quality_tier2_min': 65,
             'tier1_adx_hard_min': 25, 'short_tier1_adx_hard_min': 30,
             'tier1_volume_min': 0.8, 'stop_loss_atr_mult': 2.5,
             'max_position_units': 50, 'ml_weight': 0.20,
@@ -3716,8 +3716,8 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             'trade_direction': 'both', 'stop_loss_atr_mult': 2.5,
             'quality_tier1_min_long': 75, 'quality_tier2_min_long': 65,
             'quality_tier1_min_short': 75, 'quality_tier2_min_short': 65,
-            'quality_tier1_min': 75, 'quality_tier2_min': 65,
-            'short_quality_tier1_min': 75, 'short_quality_tier2_min': 65,
+            # 'quality_tier1_min': 75, 'quality_tier2_min': 65,
+            # 'short_quality_tier1_min': 75, 'short_quality_tier2_min': 65,
             'tier1_adx_hard_min': 25, 'short_tier1_adx_hard_min': 30,
             'tier1_volume_min': 0.8, 'max_position_units': 50,
             'risk_tier1': 0.025, 'risk_tier2': 0.015,
@@ -4269,6 +4269,8 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                         self.buy(size=self._bt_safe_size(size, execution_price))
                         fill_price = self._slippage_adjusted_price(
                             execution_price, size, current_data, adverse_direction=+1)
+                        self._diag_orders_placed = getattr(self, '_diag_orders_placed', {'long': 0, 'short': 0})
+                        self._diag_orders_placed['long'] += 1
                     else:
                         self._pending_signal = None
                         return
@@ -4278,6 +4280,8 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                         self.sell(size=self._bt_safe_size(size, execution_price))
                         fill_price = self._slippage_adjusted_price(
                             execution_price, size, current_data, adverse_direction=-1)
+                        self._diag_orders_placed = getattr(self, '_diag_orders_placed', {'long': 0, 'short': 0})
+                        self._diag_orders_placed['short'] += 1
                     else:
                         self._pending_signal = None
                         return
@@ -4331,31 +4335,41 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 self._entry_time = bar_entry_time
                 self._entry_time_pending = True
                 self.trade_counter = getattr(self, 'trade_counter', 0) + 1
-                trade_record = TradeRecord(
-                    trade_id=self.trade_counter,
-                    symbol=getattr(self, 'symbol', 'SOL-USDT'),
-                    entry_time=bar_entry_time,
-                    entry_price=fill_price,
-                    entry_size=size,
-                    entry_tier=tier,
-                    entry_quality_score=signal['power_score'],
-                    entry_reason="entry_signal",
-                    entry_direction=self._position_direction,
-                    signal_adx=self._signal_adx or current_data.get('ADX', 0),
-                    signal_rsi=self._signal_rsi or current_data.get('RSI', 50),
-                    signal_macd=self._signal_macd or current_data.get('MACD', 0),
-                    signal_volume=self._signal_volume or current_data.get('Volume_Ratio', 1.0),
-                    signal_price_pct=self._signal_price_pct or current_data.get('Price_Percentile_20bar', 50),
-                    signal_ml_prediction=self._signal_ml_prediction,
-                    signal_ml_confidence=self._signal_ml_confidence,
-                    confluence_score=self._entry_confluence_score,
-                    market_regime=getattr(self, 'current_regime', 'UNKNOWN'),
-                    original_size=size,
-                )
-                if not hasattr(self, 'trade_records'):
-                    self.trade_records = []
-                self.trade_records.append(trade_record)
-                self._active_trade_record = trade_record
+                try:
+                    trade_record = TradeRecord(
+                        trade_id=self.trade_counter,
+                        symbol=getattr(self, 'symbol', 'SOL-USDT'),
+                        entry_time=bar_entry_time,
+                        entry_price=fill_price,
+                        entry_size=size,
+                        entry_tier=tier,
+                        entry_quality_score=signal['power_score'],
+                        entry_reason="entry_signal",
+                        entry_direction=self._position_direction,
+                        signal_adx=self._signal_adx or current_data.get('ADX', 0),
+                        signal_rsi=self._signal_rsi or current_data.get('RSI', 50),
+                        signal_macd=self._signal_macd or current_data.get('MACD', 0),
+                        signal_volume=self._signal_volume or current_data.get('Volume_Ratio', 1.0),
+                        signal_price_pct=self._signal_price_pct or current_data.get('Price_Percentile_20bar', 50),
+                        signal_ml_prediction=self._signal_ml_prediction,
+                        signal_ml_confidence=self._signal_ml_confidence,
+                        confluence_score=self._entry_confluence_score,
+                        market_regime=getattr(self, 'current_regime', 'UNKNOWN'),
+                        original_size=size,
+                    )
+                    if not hasattr(self, 'trade_records'):
+                        self.trade_records = []
+                    self.trade_records.append(trade_record)
+                    self._active_trade_record = trade_record
+                    self._diag_records_appended = getattr(self, '_diag_records_appended', {'long': 0, 'short': 0})
+                    self._diag_records_appended[self._position_direction] += 1
+                except Exception as e:
+                    # Surface this loudly instead of letting it disappear —
+                    # this is exactly the kind of failure that would silently
+                    # shrink trade_records relative to actual executed orders.
+                    print(f"🔴 DIAG: TradeRecord build/append FAILED for a "
+                          f"{self._position_direction} entry at bar {idx} "
+                          f"({bar_entry_time}): {type(e).__name__}: {e}")
 
             self._pending_signal = None
             self._signal_bar = -999

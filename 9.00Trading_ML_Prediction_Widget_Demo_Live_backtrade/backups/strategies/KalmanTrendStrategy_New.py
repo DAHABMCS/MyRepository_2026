@@ -11,7 +11,7 @@ FIXES APPLIED:
 """
 
 from datetime import datetime, timezone
-import pandas_ta as ta
+import ta
 from backtesting import Strategy
 from .base3_New import BaseStrategy
 import numpy as np
@@ -48,8 +48,8 @@ KALMAN_PARAMS = {
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # MOVING AVERAGES
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    "ma_fast_period": 20,
-    "ma_slow_period": 50,
+    "ema_fast_period": 20,
+    "ema_slow_period": 50,
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # TECHNICAL INDICATORS
@@ -163,8 +163,8 @@ class KalmanIndicatorCalculator:
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
             # Moving averages
-            df['MA_Fast'] = df['Close'].rolling(params['ma_fast_period']).mean()
-            df['MA_Slow'] = df['Close'].rolling(params['ma_slow_period']).mean()
+            df['EMA_Fast'] = df['Close'].rolling(params['ema_fast_period']).mean()
+            df['EMA_Slow'] = df['Close'].rolling(params['ema_slow_period']).mean()
 
             # RSI
             df['RSI'] = ta.rsi(df['Close'], length=params['rsi_period'])
@@ -227,7 +227,7 @@ class KalmanIndicatorCalculator:
             # CREATE "CLOSED" VERSIONS FOR BACKTESTING (shift by 1)
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             indicators_to_shift = [
-                'MA_Fast', 'MA_Slow', 'RSI', 'ATR', 'ADX', 'Volatility',
+                'EMA_Fast', 'EMA_Slow', 'RSI', 'ATR', 'ADX', 'Volatility',
                 'Kalman_Osc', 'Kalman_Strength', 'Kalman_Color',
                 'UpperBand', 'MiddleBand', 'LowerBand',
                 'Pullback_Pct', 'Rally_Pct', 'Recent_High', 'Recent_Low',
@@ -401,8 +401,8 @@ class KalmanLogic:
         ]
 
         supporting = [
-            data.get('MA_Fast_closed', 0) > data.get('MA_Slow_closed', 0),
-            data.get('Close', 0) > data.get('MA_Fast_closed', 0),
+            data.get('EMA_Fast_closed', 0) > data.get('EMA_Slow_closed', 0),
+            data.get('Close', 0) > data.get('EMA_Fast_closed', 0),
             self.long_rsi_min < data.get('RSI_closed', 50) < self.long_rsi_max,
             data.get('Volume_Ratio', 1) > self.volume_min_ratio,
             data.get('Pullback_Pct_closed', 0) > self.long_pullback_percent,
@@ -428,8 +428,8 @@ class KalmanLogic:
         ]
 
         supporting = [
-            data.get('MA_Fast_closed', 0) < data.get('MA_Slow_closed', 0),
-            data.get('Close', 0) < data.get('MA_Fast_closed', 0),
+            data.get('EMA_Fast_closed', 0) < data.get('EMA_Slow_closed', 0),
+            data.get('Close', 0) < data.get('EMA_Fast_closed', 0),
             self.short_rsi_min < data.get('RSI_closed', 50) < self.short_rsi_max,
             data.get('Volume_Ratio', 1) > self.volume_min_ratio,
             data.get('Rally_Pct_closed', 0) > self.short_rally_percent,
@@ -738,8 +738,8 @@ class KalmanTrendStrategy(BaseStrategy, KalmanLogic):
         """Calculate quality score for LONG or SHORT entries"""
         kalman_strength = float(current_data.get('Kalman_Strength_closed', 0))
         kalman_color = str(current_data.get('Kalman_Color_closed', 'gray'))
-        ma_fast = float(current_data.get('MA_Fast_closed', 0))
-        ma_slow = float(current_data.get('MA_Slow_closed', 0))
+        ema_fast = float(current_data.get('EMA_Fast_closed', 0))
+        ema_slow = float(current_data.get('EMA_Slow_closed', 0))
         rsi = float(current_data.get('RSI_closed', 50))
         volume_ratio = float(current_data.get('Volume_Ratio', 1.0))
         adx = float(current_data.get('ADX_closed', 0))
@@ -753,7 +753,7 @@ class KalmanTrendStrategy(BaseStrategy, KalmanLogic):
                     score += 10
             else:
                 score -= 20
-            if ma_fast > ma_slow:
+            if ema_fast > ema_slow:
                 score += 15
             if 30 < rsi < 70:
                 score += 10
@@ -769,7 +769,7 @@ class KalmanTrendStrategy(BaseStrategy, KalmanLogic):
                     score += 10
             else:
                 score -= 20
-            if ma_fast < ma_slow:
+            if ema_fast < ema_slow:
                 score += 15
             if 30 < rsi < 70:
                 score += 10
@@ -1002,8 +1002,8 @@ class BacktestKalmanTrendStrategy(Strategy, KalmanLogic):
     strength_smooth_param = KALMAN_PARAMS['strength_smooth_param']
 
     # Moving Averages
-    ma_fast_period = KALMAN_PARAMS['ma_fast_period']
-    ma_slow_period = KALMAN_PARAMS['ma_slow_period']
+    ema_fast_period = KALMAN_PARAMS['ema_fast_period']
+    ema_slow_period = KALMAN_PARAMS['ema_slow_period']
 
     # Technical Indicators
     rsi_period = KALMAN_PARAMS['rsi_period']
@@ -1098,8 +1098,8 @@ class BacktestKalmanTrendStrategy(Strategy, KalmanLogic):
         self.df_enhanced = self.df.copy()
 
         # Register indicators
-        self.ma_fast = self.I(self.get_values, 'MA_Fast_closed')
-        self.ma_slow = self.I(self.get_values, 'MA_Slow_closed')
+        self.ema_fast = self.I(self.get_values, 'EMA_Fast_closed')
+        self.ema_slow = self.I(self.get_values, 'EMA_Slow_closed')
         self.rsi = self.I(self.get_values, 'RSI_closed')
         self.atr = self.I(self.get_values, 'ATR_closed')
         self.kalman_strength = self.I(self.get_values, 'Kalman_Strength_closed')
@@ -1123,8 +1123,8 @@ class BacktestKalmanTrendStrategy(Strategy, KalmanLogic):
         """Calculate quality score for backtest"""
         kalman_strength = current_data.get('Kalman_Strength_closed', 0)
         kalman_color = current_data.get('Kalman_Color_closed', 'gray')
-        ma_fast = current_data.get('MA_Fast_closed', 0)
-        ma_slow = current_data.get('MA_Slow_closed', 0)
+        ema_fast = current_data.get('EMA_Fast_closed', 0)
+        ema_slow = current_data.get('EMA_Slow_closed', 0)
         rsi = current_data.get('RSI_closed', 50)
         volume_ratio = current_data.get('Volume_Ratio', 1.0)
         adx = current_data.get('ADX_closed', 0)
@@ -1138,7 +1138,7 @@ class BacktestKalmanTrendStrategy(Strategy, KalmanLogic):
                     score += 10
             else:
                 score -= 20
-            if ma_fast > ma_slow:
+            if ema_fast > ema_slow:
                 score += 15
             if 30 < rsi < 70:
                 score += 10
@@ -1154,7 +1154,7 @@ class BacktestKalmanTrendStrategy(Strategy, KalmanLogic):
                     score += 10
             else:
                 score -= 20
-            if ma_fast < ma_slow:
+            if ema_fast < ema_slow:
                 score += 15
             if 30 < rsi < 70:
                 score += 10
@@ -1184,15 +1184,15 @@ class BacktestKalmanTrendStrategy(Strategy, KalmanLogic):
         volume_ratio = self.volume_ratio[idx]
         pullback_pct = self.pullback_pct[idx]
         rally_pct = self.rally_pct[idx]
-        ma_fast = self.ma_fast[idx]
-        ma_slow = self.ma_slow[idx]
+        ema_fast = self.ema_fast[idx]
+        ema_slow = self.ema_slow[idx]
 
         kalman_color = 'green' if kalman_color_num == 1 else ('red' if kalman_color_num == -1 else 'gray')
 
         data_dict = {
             'Close': price,
-            'MA_Fast_closed': ma_fast,
-            'MA_Slow_closed': ma_slow,
+            'EMA_Fast_closed': ema_fast,
+            'EMA_Slow_closed': ema_slow,
             'RSI_closed': rsi,
             'ATR_closed': atr,
             'Kalman_Strength_closed': kalman_strength,

@@ -14345,6 +14345,7 @@ class TradingApp:
             self.log_message(traceback.format_exc(), "red")
             return None
 
+
     def save_backtest_results_to_excel(self, df, stats=None, suffix=""):
         """
         Export backtest results to Excel with 100% accurate trade data.
@@ -14381,249 +14382,344 @@ class TradingApp:
             try:
                 strategy_instance = getattr(stats, '_strategy', None)
 
-                # ─── GET TRADE RECORDS DIRECTLY FROM STRATEGY ──────────────────────
+                # ─── SINGLE SOURCE OF TRUTH: stats['_trades'] (backtesting.py's own
+                # broker fill ledger) drives BOTH the Trades sheet and the
+                # Market_Data BUY/SELL markers from the exact same loop, over the
+                # exact same rows. This guarantees the two sheets can never
+                # disagree on trade count again. strategy_instance.trade_records /
+                # trade_history are used only to ENRICH rows (tier, confluence
+                # inputs, ML signals, etc.) when a match can be found — they are
+                # no longer the source of which trades exist.
+
                 trade_records = []
                 if strategy_instance and hasattr(strategy_instance, 'trade_records'):
                     trade_records = strategy_instance.trade_records
-                    self.log_message(f"📊 Found {len(trade_records)} trade records in strategy", "green")
-                else:
-                    self.log_message("⚠️ No trade_records found in strategy instance", "orange")
-                    # Fallback: try to get from trade_history
-                    if strategy_instance and hasattr(strategy_instance, 'trade_history'):
-                        trade_records = strategy_instance.trade_history
-                        self.log_message(f"📊 Falling back to trade_history: {len(trade_records)} records", "yellow")
+                    self.log_message(f"📊 Found {len(trade_records)} trade records in strategy (used for enrichment only)", "green")
+                trade_history = []
+                if strategy_instance and hasattr(strategy_instance, 'trade_history'):
+                    trade_history = strategy_instance.trade_history
+                    self.log_message(f"📊 Found {len(trade_history)} trade_history entries in strategy (used for enrichment only)", "green")
 
-                # ─── EXPORT TRADES SHEET (DIRECT, NO MERGING) ──────────────────────
-                if trade_records:
-                    trades_data = []
+                def _rec_get(rec, *names, default=None):
+                    """Read an attribute/key from either a TradeRecord dataclass or a dict, trying several name variants."""
+                    if rec is None:
+                        return default
+                    for name in names:
+                        if hasattr(rec, '__dataclass_fields__'):
+                            if hasattr(rec, name):
+                                val = getattr(rec, name)
+                                if val is not None:
+                                    return val
+                        elif isinstance(rec, dict):
+                            if name in rec and rec[name] is not None:
+                                return rec[name]
+                    return default
 
-                    for i, record in enumerate(trade_records):
-                        try:
-                            # Handle both dataclass and dict formats
-                            if hasattr(record, '__dataclass_fields__'):
-                                # It's a TradeRecord dataclass
-                                entry_tier = getattr(record, 'entry_tier', 0)
-                                entry_quality = getattr(record, 'entry_quality_score', 0)
-                                direction = getattr(record, 'entry_direction', 'long')
-                                entry_price = getattr(record, 'entry_price', 0)
-                                exit_price = getattr(record, 'exit_price', 0)
-                                entry_size = getattr(record, 'entry_size', 0)
-                                profit = getattr(record, 'profit', 0)
-                                profit_pct = getattr(record, 'profit_pct', 0)
-                                exit_reason = getattr(record, 'exit_reason', '')
-                                hold_duration = getattr(record, 'hold_duration', 0)
-                                confluence = getattr(record, 'confluence_score', 0)
-                                signal_adx = getattr(record, 'signal_adx', 0)
-                                signal_rsi = getattr(record, 'signal_rsi', 50)
-                                signal_macd = getattr(record, 'signal_macd', 0)
-                                signal_volume = getattr(record, 'signal_volume', 1.0)
-                                signal_price_pct = getattr(record, 'signal_price_pct', 50)
-                                ml_pred = getattr(record, 'signal_ml_prediction', 0)
-                                ml_conf = getattr(record, 'signal_ml_confidence', 0.0)
-                                entry_time = getattr(record, 'entry_time', None)
-                                exit_time = getattr(record, 'exit_time', None)
-                                market_regime = getattr(record, 'market_regime', 'UNKNOWN')
-                                original_size = getattr(record, 'original_size', entry_size)
-                                partial_exits = getattr(record, 'partial_exits_taken', 0)
+                def _fmt_time(t):
+                    if t is None:
+                        return ''
+                    if hasattr(t, 'strftime'):
+                        if hasattr(t, 'tzinfo') and t.tzinfo is not None:
+                            t = t.replace(tzinfo=None)
+                        return t.strftime('%Y-%m-%d %H:%M:%S')
+                    return str(t)
 
-                            elif isinstance(record, dict):
-                                # It's a dict (from legacy trade_history)
-                                entry_tier = record.get('tier', 0)
-                                entry_quality = record.get('entry_quality', 0)
-                                direction = record.get('direction', 'long')
-                                entry_price = record.get('entry_price', 0)
-                                exit_price = record.get('exit_price', 0)
-                                entry_size = record.get('size', 0)
-                                profit = record.get('profit', 0)
-                                profit_pct = record.get('profit_pct', 0)
-                                exit_reason = record.get('exit_reason', '')
-                                hold_duration = record.get('hold_duration', 0)
-                                confluence = record.get('confluence_score', 0)
-                                signal_adx = record.get('signal_adx', 0)
-                                signal_rsi = record.get('signal_rsi', 50)
-                                signal_macd = record.get('signal_macd', 0)
-                                signal_volume = record.get('signal_volume', 1.0)
-                                signal_price_pct = record.get('signal_price_pct', 50)
-                                ml_pred = record.get('ml_prediction', 0)
-                                ml_conf = record.get('ml_confidence', 0.0)
-                                entry_time = record.get('entry_time', None)
-                                exit_time = record.get('exit_time', None)
-                                market_regime = record.get('market_regime', 'UNKNOWN')
-                                original_size = record.get('original_size', entry_size)
-                                partial_exits = record.get('partial_exits_taken', 0)
-                            else:
+                def _norm_ts(t):
+                    try:
+                        ts = pd.Timestamp(t)
+                        if ts.tzinfo is not None:
+                            ts = ts.tz_localize(None)
+                        return ts
+                    except Exception:
+                        return None
+
+                # Lookup dicts built from the strategy's own bookkeeping, for enrichment
+                trade_history_by_entry_bar = {}
+                trade_history_by_exit_bar = {}
+                for t in trade_history:
+                    if isinstance(t, dict):
+                        ebar = t.get('entry_bar')
+                        if ebar is not None:
+                            try:
+                                trade_history_by_entry_bar[int(ebar)] = t
+                            except (ValueError, TypeError):
+                                pass
+                        xbar = t.get('exit_bar')
+                        if xbar is not None:
+                            try:
+                                trade_history_by_exit_bar[int(xbar)] = t
+                            except (ValueError, TypeError):
+                                pass
+
+                trade_records_by_entry_time = {}
+                for record in trade_records:
+                    et = _rec_get(record, 'entry_time')
+                    key = _norm_ts(et) if et is not None else None
+                    if key is not None:
+                        trade_records_by_entry_time[key] = record
+
+                # ─── RECONCILIATION (for visibility / debugging only) ───────────────
+                n_strategy_trades = len(trade_records)
+                n_broker_trades = 0
+                n_unique_entry_bars = None
+                if '_trades' in stats and stats['_trades'] is not None and isinstance(stats['_trades'], pd.DataFrame):
+                    n_broker_trades = len(stats['_trades'])
+                    if 'EntryBar' in stats['_trades'].columns:
+                        n_unique_entry_bars = stats['_trades']['EntryBar'].nunique()
+
+                total_partial_exits = 0
+                for record in trade_records:
+                    total_partial_exits += _rec_get(record, 'partial_exits_taken', default=0) or 0
+
+                diag_placed = getattr(strategy_instance, '_diag_orders_placed', {}) if strategy_instance else {}
+                diag_appended = getattr(strategy_instance, '_diag_records_appended', {}) if strategy_instance else {}
+                diag_line = (
+                    f"orders placed: long={diag_placed.get('long', 'n/a')}, short={diag_placed.get('short', 'n/a')} | "
+                    f"records appended: long={diag_appended.get('long', 'n/a')}, short={diag_appended.get('short', 'n/a')}"
+                )
+
+                self.log_message(
+                    f"🔎 TRADE COUNT RECONCILIATION: strategy trade_records={n_strategy_trades}, "
+                    f"broker stats['_trades']={n_broker_trades}, "
+                    f"unique EntryBar in broker trades={n_unique_entry_bars}, "
+                    f"sum(partial_exits_taken)={total_partial_exits}. "
+                    f"NOTE: Trades sheet is now built directly from stats['_trades'], so it will always "
+                    f"equal the Market_Data BUY/SELL count ({n_broker_trades}), regardless of this gap. "
+                    f"A gap here means trade_records under-counts what the strategy actually executed — "
+                    f"worth checking in the strategy file's trade-closing logic.",
+                    "cyan")
+                self.log_message(f"🔎 DIRECTION DIAG: {diag_line}", "cyan")
+
+                reconciliation_df = pd.DataFrame([{
+                    'Strategy_trade_records_count': n_strategy_trades,
+                    'Broker_stats_trades_count': n_broker_trades,
+                    'Unique_EntryBar_in_broker_trades': n_unique_entry_bars,
+                    'Sum_partial_exits_taken': total_partial_exits,
+                    'Orders_placed_long': diag_placed.get('long'),
+                    'Orders_placed_short': diag_placed.get('short'),
+                    'Records_appended_long': diag_appended.get('long'),
+                    'Records_appended_short': diag_appended.get('short'),
+                    'Trades_sheet_now_sourced_from': 'stats[_trades] (broker ledger)',
+                    'Trades_sheet_row_count': n_broker_trades,
+                }])
+                reconciliation_df.to_excel(writer, sheet_name='Trade_Reconciliation', index=False)
+                sheets_created += 1
+
+                # ─── MARKET DATA PREP (built first so both sheets share it) ────────
+                market_df = df.copy()
+                if isinstance(market_df.index, pd.DatetimeIndex) and market_df.index.tz is not None:
+                    market_df.index = market_df.index.tz_localize(None)
+                for col in market_df.select_dtypes(include=['datetime', 'datetimetz']).columns:
+                    if hasattr(market_df[col], 'dt') and market_df[col].dt.tz is not None:
+                        market_df[col] = market_df[col].dt.tz_convert(None)
+
+                market_df['Entry_Signal'] = ''
+                market_df['Exit_Signal'] = ''
+                market_df['Exit_Reason'] = ''
+                market_df['Confluence_Score'] = 0
+                market_df['Risk_Allocation_%'] = 0.0
+
+                # ─── ONE LOOP over stats['_trades'] feeds BOTH sheets ───────────────
+                trades_data = []
+                matched_count = 0
+                if '_trades' in stats and stats['_trades'] is not None:
+                    trades_df = stats['_trades']
+                    if isinstance(trades_df, pd.DataFrame) and not trades_df.empty:
+                        for pos, (idx, trade) in enumerate(trades_df.iterrows()):
+                            try:
+                                entry_bar = int(trade.get('EntryBar', 0))
+                                exit_bar = int(trade.get('ExitBar', 0))
+                                size = float(trade.get('Size', 0)) if 'Size' in trade else 0.0
+                                entry_price = float(trade.get('EntryPrice', 0)) if 'EntryPrice' in trade else 0.0
+                                exit_price = float(trade.get('ExitPrice', 0)) if 'ExitPrice' in trade else 0.0
+
+                                if 'PnL' in trade and trade.get('PnL') is not None:
+                                    pnl = float(trade.get('PnL', 0))
+                                elif entry_price and exit_price:
+                                    pnl = (exit_price - entry_price) * size
+                                else:
+                                    pnl = 0.0
+
+                                if 'ReturnPct' in trade and trade.get('ReturnPct') is not None:
+                                    return_pct = float(trade.get('ReturnPct', 0)) * 100
+                                elif entry_price:
+                                    return_pct = ((exit_price - entry_price) / entry_price * 100) if size >= 0 \
+                                        else ((entry_price - exit_price) / entry_price * 100)
+                                else:
+                                    return_pct = 0.0
+
+                                direction = 'LONG' if size >= 0 else 'SHORT'
+
+                                entry_time_val = trade.get('EntryTime') if 'EntryTime' in trade else \
+                                    (market_df.index[entry_bar] if 0 <= entry_bar < len(market_df) else None)
+                                exit_time_val = trade.get('ExitTime') if 'ExitTime' in trade else \
+                                    (market_df.index[exit_bar] if 0 <= exit_bar < len(market_df) else None)
+
+                                # --- populate Market_Data columns ---
+                                confluence = 0
+                                entry_data = None
+                                if 0 <= entry_bar < len(market_df):
+                                    entry_idx = market_df.index[entry_bar]
+                                    market_df.at[entry_idx, 'Entry_Signal'] = 'BUY'
+                                    entry_data = market_df.iloc[entry_bar]
+                                    confluence = self._calculate_entry_confluence(entry_data)
+                                    market_df.at[entry_idx, 'Confluence_Score'] = confluence
+
+                                hist_trade = None
+                                if entry_bar in trade_history_by_entry_bar:
+                                    hist_trade = trade_history_by_entry_bar[entry_bar]
+                                elif exit_bar in trade_history_by_exit_bar:
+                                    hist_trade = trade_history_by_exit_bar[exit_bar]
+
+                                matched_record = None
+                                key = _norm_ts(entry_time_val) if entry_time_val is not None else None
+                                if key is not None:
+                                    matched_record = trade_records_by_entry_time.get(key)
+
+                                enrich_source = matched_record if matched_record is not None else hist_trade
+                                if enrich_source is not None:
+                                    matched_count += 1
+
+                                real_tier = _rec_get(enrich_source, 'entry_tier', 'tier')
+
+                                if real_tier == 1:
+                                    risk_pct = getattr(strategy_instance, 'risk_tier1', 0.025)
+                                elif real_tier == 2:
+                                    risk_pct = getattr(strategy_instance, 'risk_tier2', 0.015)
+                                elif real_tier == 3:
+                                    risk_pct = getattr(strategy_instance, 'risk_tier3', 0.008)
+                                elif entry_data is not None:
+                                    risk_pct = self._calculate_risk_allocation(entry_data, confluence)
+                                else:
+                                    risk_pct = 0.0
+                                if 0 <= entry_bar < len(market_df):
+                                    market_df.at[entry_idx, 'Risk_Allocation_%'] = risk_pct * 100
+
+                                exit_reason = ''
+                                if 0 <= exit_bar < len(market_df):
+                                    exit_idx = market_df.index[exit_bar]
+                                    market_df.at[exit_idx, 'Exit_Signal'] = 'SELL'
+                                    exit_reason = self._extract_exit_reason(trade, exit_bar, market_df)
+                                    market_df.at[exit_idx, 'Exit_Reason'] = exit_reason
+
+                                # --- tier classification for Trades sheet ---
+                                entry_quality = _rec_get(enrich_source, 'entry_quality_score', 'entry_quality', default=0) or 0
+                                if real_tier == 1:
+                                    tier_name = "Tier 1"
+                                elif real_tier == 2:
+                                    tier_name = "Tier 2"
+                                elif entry_quality and entry_quality > 0:
+                                    if entry_quality >= quality_tier1_min:
+                                        tier_name, real_tier = "Tier 1", 1
+                                    elif entry_quality >= quality_tier2_min:
+                                        tier_name, real_tier = "Tier 2", 2
+                                    else:
+                                        tier_name, real_tier = "Below Tier 2", 0
+                                elif enrich_source is not None:
+                                    tier_name, real_tier = "Unknown", 0
+                                else:
+                                    tier_name, real_tier = "Not logged by strategy", -1
+
+                                trades_data.append({
+                                    'Trade_#': pos + 1,
+                                    'Tier': tier_name,
+                                    'Tier_Number': real_tier if real_tier is not None else -1,
+                                    'Direction': direction,
+                                    'Entry_Time': _fmt_time(entry_time_val),
+                                    'Entry_Price': round(entry_price, 4),
+                                    'Entry_Size': round(abs(size), 4),
+                                    'Exit_Time': _fmt_time(exit_time_val),
+                                    'Exit_Price': round(exit_price, 4),
+                                    'Exit_Reason': exit_reason,
+                                    'PnL': round(pnl, 2),
+                                    'Return_%': round(return_pct, 2),
+                                    'Confluence_Score': round(confluence, 2) if confluence else 0,
+                                    'Risk_Allocation_%': round(risk_pct * 100, 3),
+                                    'Quality_Score': entry_quality,
+                                    'Signal_ADX': round(_rec_get(enrich_source, 'signal_adx', default=0) or 0, 1),
+                                    'Signal_RSI': round(_rec_get(enrich_source, 'signal_rsi', default=50) or 50, 1),
+                                    'Signal_MACD': round(_rec_get(enrich_source, 'signal_macd', default=0) or 0, 4),
+                                    'Signal_Volume_Ratio': round(_rec_get(enrich_source, 'signal_volume', default=1.0) or 1.0, 2),
+                                    'ML_Prediction': _rec_get(enrich_source, 'signal_ml_prediction', default=0) or 0,
+                                    'ML_Confidence_%': round(_rec_get(enrich_source, 'signal_ml_confidence', default=0.0) or 0.0, 1),
+                                    'Market_Regime': _rec_get(enrich_source, 'market_regime', default='') or '',
+                                    'Matched_To_Strategy_Record': 'Yes' if enrich_source is not None else 'No',
+                                    'Win': 'Yes' if pnl > 0 else 'No',
+                                })
+
+                            except Exception as e:
+                                self.log_message(f"⚠️ Trade row build error at row {pos}: {e}", "orange")
                                 continue
 
-                            # Determine tier name
-                            if entry_tier == 1:
-                                tier_name = "Tier 1"
-                            elif entry_tier == 2:
-                                tier_name = "Tier 2"
-                            elif entry_quality is not None and entry_quality > 0:
-                                # Fallback: classify by quality score
-                                if entry_quality >= quality_tier1_min:
-                                    tier_name = "Tier 1"
-                                    entry_tier = 1
-                                elif entry_quality >= quality_tier2_min:
-                                    tier_name = "Tier 2"
-                                    entry_tier = 2
-                                else:
-                                    tier_name = "Below Tier 2"
-                                    entry_tier = 0
-                            else:
-                                tier_name = "Unknown"
-                                entry_tier = 0
+                        unmatched = len(trades_data) - matched_count
+                        self.log_message(
+                            f"   📊 Trades sheet built from broker ledger: {len(trades_data)} trades "
+                            f"({matched_count} matched to strategy records for tier/signal enrichment, "
+                            f"{unmatched} had no strategy-side match — shown as 'Not logged by strategy').",
+                            "cyan" if unmatched == 0 else "orange")
 
-                            # Format times - STRIP TIMEZONE INFO
-                            entry_time_str = ''
-                            exit_time_str = ''
-                            if entry_time:
-                                if hasattr(entry_time, 'strftime'):
-                                    # Remove timezone info if present
-                                    if hasattr(entry_time, 'tzinfo') and entry_time.tzinfo is not None:
-                                        entry_time = entry_time.replace(tzinfo=None)
-                                    entry_time_str = entry_time.strftime('%Y-%m-%d %H:%M:%S')
-                                else:
-                                    entry_time_str = str(entry_time)
-                            if exit_time:
-                                if hasattr(exit_time, 'strftime'):
-                                    if hasattr(exit_time, 'tzinfo') and exit_time.tzinfo is not None:
-                                        exit_time = exit_time.replace(tzinfo=None)
-                                    exit_time_str = exit_time.strftime('%Y-%m-%d %H:%M:%S')
-                                else:
-                                    exit_time_str = str(exit_time)
+                if trades_data:
+                    trade_output_df = pd.DataFrame(trades_data)
 
-                            # Calculate return percentage if not already set
-                            if profit_pct == 0 and entry_price > 0 and exit_price > 0:
-                                if direction == 'short':
-                                    profit_pct = (entry_price - exit_price) / entry_price * 100
-                                else:
-                                    profit_pct = (exit_price - entry_price) / entry_price * 100
+                    col_order = [
+                        'Trade_#', 'Tier', 'Tier_Number', 'Direction',
+                        'Entry_Time', 'Entry_Price', 'Entry_Size',
+                        'Exit_Time', 'Exit_Price', 'Exit_Reason',
+                        'PnL', 'Return_%',
+                        'Quality_Score', 'Confluence_Score', 'Risk_Allocation_%',
+                        'Signal_ADX', 'Signal_RSI', 'Signal_MACD',
+                        'Signal_Volume_Ratio', 'ML_Prediction', 'ML_Confidence_%',
+                        'Market_Regime', 'Matched_To_Strategy_Record', 'Win'
+                    ]
+                    existing_cols = [c for c in col_order if c in trade_output_df.columns]
+                    trade_output_df = trade_output_df[existing_cols]
 
-                            trades_data.append({
-                                'Trade_#': i + 1,
-                                'Tier': tier_name,
-                                'Tier_Number': entry_tier,
-                                'Direction': direction.upper() if direction else 'UNKNOWN',
-                                'Entry_Time': entry_time_str,
-                                'Entry_Price': round(entry_price, 4) if entry_price else 0,
-                                'Entry_Size': round(entry_size, 4) if entry_size else 0,
-                                'Exit_Time': exit_time_str,
-                                'Exit_Price': round(exit_price, 4) if exit_price else 0,
-                                'Exit_Reason': exit_reason or '',
-                                'PnL': round(profit, 2) if profit else 0,
-                                'Return_%': round(profit_pct, 2) if profit_pct else 0,
-                                'Hold_Duration_Minutes': round(hold_duration, 1) if hold_duration else 0,
-                                'Quality_Score': entry_quality if entry_quality else 0,
-                                'Confluence_Score': round(confluence, 2) if confluence else 0,
-                                'Signal_ADX': round(signal_adx, 1) if signal_adx else 0,
-                                'Signal_RSI': round(signal_rsi, 1) if signal_rsi else 50,
-                                'Signal_MACD': round(signal_macd, 4) if signal_macd else 0,
-                                'Signal_Volume_Ratio': round(signal_volume, 2) if signal_volume else 1.0,
-                                'Signal_Price_Percentile': round(signal_price_pct, 1) if signal_price_pct else 50,
-                                'ML_Prediction': ml_pred if ml_pred else 0,
-                                'ML_Confidence_%': round(ml_conf, 1) if ml_conf else 0,
-                                'Market_Regime': market_regime or 'UNKNOWN',
-                                'Original_Size': round(original_size, 4) if original_size else 0,
-                                'Partial_Exits': partial_exits if partial_exits else 0,
-                                'Win': 'Yes' if profit and profit > 0 else 'No',
-                            })
+                    trade_output_df.to_excel(writer, sheet_name='Trades', index=False)
+                    sheets_created += 1
 
-                        except Exception as e:
-                            self.log_message(f"⚠️ Error processing trade record {i}: {e}", "orange")
-                            continue
+                    self.log_message(f"   ✅ Trades sheet created ({len(trade_output_df)} trades)", "green")
 
-                    if trades_data:
-                        trade_output_df = pd.DataFrame(trades_data)
+                    tier_counts = trade_output_df['Tier'].value_counts()
+                    self.log_message(f"   📊 TIER SUMMARY (Tier1={quality_tier1_min}, Tier2={quality_tier2_min})",
+                                     "blue")
+                    tier_color = {"Tier 1": "blue", "Tier 2": "green", "Unknown": "orange",
+                                  "Below Tier 2": "red", "Not logged by strategy": "red"}
+                    for tier_name, count in tier_counts.items():
+                        pct = (count / len(trade_output_df)) * 100
+                        tier_wins = trade_output_df[
+                            (trade_output_df['Tier'] == tier_name) & (trade_output_df['Win'] == 'Yes')]
+                        tier_win_rate = (len(tier_wins) / count * 100) if count else 0
+                        color = tier_color.get(tier_name, "orange")
+                        self.log_message(
+                            f"      {tier_name}: {count} ({pct:.1f}%) — Win rate: {tier_win_rate:.1f}%", color)
 
-                        # Reorder columns for readability
-                        col_order = [
-                            'Trade_#', 'Tier', 'Tier_Number', 'Direction',
-                            'Entry_Time', 'Entry_Price', 'Entry_Size',
-                            'Exit_Time', 'Exit_Price', 'Exit_Reason',
-                            'PnL', 'Return_%', 'Hold_Duration_Minutes',
-                            'Quality_Score', 'Confluence_Score',
-                            'Signal_ADX', 'Signal_RSI', 'Signal_MACD',
-                            'Signal_Volume_Ratio', 'Signal_Price_Percentile',
-                            'ML_Prediction', 'ML_Confidence_%',
-                            'Market_Regime', 'Original_Size', 'Partial_Exits', 'Win'
-                        ]
-                        # Keep only columns that exist
-                        existing_cols = [c for c in col_order if c in trade_output_df.columns]
-                        trade_output_df = trade_output_df[existing_cols]
+                    dir_counts = trade_output_df['Direction'].value_counts()
+                    self.log_message("   📊 DIRECTION SUMMARY:", "blue")
+                    for dir_name, count in dir_counts.items():
+                        dir_wins = trade_output_df[
+                            (trade_output_df['Direction'] == dir_name) & (trade_output_df['Win'] == 'Yes')]
+                        dir_win_rate = (len(dir_wins) / count * 100) if count else 0
+                        self.log_message(f"      {dir_name}: {count} trades — Win rate: {dir_win_rate:.1f}%",
+                                         "cyan")
 
-                        trade_output_df.to_excel(writer, sheet_name='Trades', index=False)
-                        sheets_created += 1
-
-                        self.log_message(f"   ✅ Trades sheet created ({len(trade_output_df)} trades)", "green")
-
-                        # Log tier summary
-                        tier_counts = trade_output_df['Tier'].value_counts()
-                        self.log_message(f"   📊 TIER SUMMARY (Tier1={quality_tier1_min}, Tier2={quality_tier2_min})",
-                                         "blue")
-                        tier_color = {"Tier 1": "blue", "Tier 2": "green", "Unknown": "orange", "Below Tier 2": "red"}
-                        for tier_name, count in tier_counts.items():
-                            pct = (count / len(trade_output_df)) * 100
-                            tier_wins = trade_output_df[
-                                (trade_output_df['Tier'] == tier_name) & (trade_output_df['Win'] == 'Yes')]
-                            tier_win_rate = (len(tier_wins) / count * 100) if count else 0
-                            color = tier_color.get(tier_name, "orange")
-                            self.log_message(
-                                f"      {tier_name}: {count} ({pct:.1f}%) — Win rate: {tier_win_rate:.1f}%", color)
-
-                        # Log direction summary
-                        dir_counts = trade_output_df['Direction'].value_counts()
-                        self.log_message("   📊 DIRECTION SUMMARY:", "blue")
-                        for dir_name, count in dir_counts.items():
-                            dir_wins = trade_output_df[
-                                (trade_output_df['Direction'] == dir_name) & (trade_output_df['Win'] == 'Yes')]
-                            dir_win_rate = (len(dir_wins) / count * 100) if count else 0
-                            self.log_message(f"      {dir_name}: {count} trades — Win rate: {dir_win_rate:.1f}%",
-                                             "cyan")
-
-                # ─── MARKET DATA SHEET ─────────────────────────────────────────────
-                # FIX: Strip timezone info from index and all datetime columns
-                market_df = df.copy()
-
-                # Strip timezone from index
-                if isinstance(market_df.index, pd.DatetimeIndex):
-                    if market_df.index.tz is not None:
-                        market_df.index = market_df.index.tz_localize(None)
-
-                # FIX: SAFELY strip timezone from datetime columns without using invalid dtype strings
-                for col in market_df.columns:
-                    # Check if column is datetime-like
-                    if pd.api.types.is_datetime64_any_dtype(market_df[col]):
-                        # Strip timezone by converting to naive datetime
-                        if hasattr(market_df[col].dtype, 'tz') and market_df[col].dtype.tz is not None:
-                            market_df[col] = market_df[col].dt.tz_localize(None)
-                    # Also check for object columns that might contain Timestamps with timezone
-                    elif pd.api.types.is_object_dtype(market_df[col]):
-                        # Check if first non-null value is a Timestamp with timezone
-                        non_null = market_df[col].dropna()
-                        if len(non_null) > 0:
-                            first = non_null.iloc[0]
-                            if hasattr(first, 'tzinfo') and first.tzinfo is not None:
-                                market_df[col] = market_df[col].apply(
-                                    lambda x: x.replace(tzinfo=None) if hasattr(x, 'replace') and hasattr(x,
-                                                                                                          'tzinfo') and x.tzinfo is not None else x
-                                )
-
+                # ─── MARKET DATA SHEET (uses the SAME market_df populated above) ───
                 export_columns = [
                     'Open', 'High', 'Low', 'Close', 'Volume',
                     'EMA_Fast', 'EMA_Mid', 'EMA_Slow',
                     'RSI', 'CCI', 'ADX', 'ATR',
-                    'SuperTrend', 'Direction', 'Kalman_Strength', 'Volume_Ratio',
+                    'Kalman_Strength', 'Volume_Ratio',
                     'Entry_Signal', 'Exit_Signal', 'Exit_Reason',
                     'Confluence_Score', 'Risk_Allocation_%'
                 ]
+                missing_export_cols = [col for col in export_columns if col not in market_df.columns]
+                if missing_export_cols:
+                    self.log_message(f"⚠️ Market data export missing columns: {missing_export_cols}", "orange")
                 export_columns = [col for col in export_columns if col in market_df.columns]
-                if export_columns:
-                    market_export = market_df[export_columns].copy()
-                    numeric_cols = market_export.select_dtypes(include=[np.number]).columns
-                    market_export[numeric_cols] = market_export[numeric_cols].round(4)
-                    market_export.to_excel(writer, sheet_name='Market_Data')
-                    sheets_created += 1
+                market_export = market_df[export_columns].copy()
+                numeric_cols = market_export.select_dtypes(include=[np.number]).columns
+                market_export[numeric_cols] = market_export[numeric_cols].round(4)
+                market_export.to_excel(writer, sheet_name='Market_Data')
+                sheets_created += 1
 
                 # ─── SUMMARY SHEET ─────────────────────────────────────────────────
                 _start = datetime.strptime(self.start_date_var.get(), "%Y-%m-%d")
@@ -14689,337 +14785,6 @@ class TradingApp:
             import traceback
             self.log_message(traceback.format_exc(), "red")
             return None
-
-
-    # def save_backtest_results_to_excel(self, df, stats=None, suffix=""):
-    #     """
-    #     Export backtest results to Excel with 100% accurate trade data.
-    #     Uses the strategy's trade_records as the single source of truth.
-    #     """
-    #     try:
-    #         if stats is None:
-    #             self.log_message("⚠️ No stats provided - cannot export", "orange")
-    #             return None
-    #
-    #         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    #         symbol = self.symbol_var.get().replace('-', '_')
-    #         interval = self.interval_var.get()
-    #         strategy = self.strategy_type_var.get()
-    #         strategy_clean = strategy.replace(' ', '_').replace('(', '').replace(')', '').replace('\\', '_').replace(
-    #             '/', '_')
-    #         suffix_str = f"_{suffix}" if suffix else ""
-    #         filename = f"backtest_{symbol}_{interval}_{strategy}{suffix_str}_{timestamp}.xlsx"
-    #
-    #         self.log_message(f"📝 Creating Excel file: {filename}", "blue")
-    #
-    #         # Get tier thresholds for reporting
-    #         quality_tier1_min, quality_tier2_min, source = self.get_current_tier_thresholds(backtest_mode=True)
-    #         self.log_message(
-    #             f"✅ USING TIER THRESHOLDS (source: {source}): Tier1={quality_tier1_min}, Tier2={quality_tier2_min}",
-    #             "bold green")
-    #
-    #         import re
-    #         filename = re.sub(r'[\\/*?:"<>|]', '_', filename)
-    #         filename = filename.replace(' ', '_')
-    #         writer = pd.ExcelWriter(filename, engine='openpyxl')
-    #         sheets_created = 0
-    #
-    #         try:
-    #             strategy_instance = getattr(stats, '_strategy', None)
-    #
-    #             # ─── GET TRADE RECORDS DIRECTLY FROM STRATEGY ──────────────────────
-    #             trade_records = []
-    #             if strategy_instance and hasattr(strategy_instance, 'trade_records'):
-    #                 trade_records = strategy_instance.trade_records
-    #                 self.log_message(f"📊 Found {len(trade_records)} trade records in strategy", "green")
-    #             else:
-    #                 self.log_message("⚠️ No trade_records found in strategy instance", "orange")
-    #                 # Fallback: try to get from trade_history
-    #                 if strategy_instance and hasattr(strategy_instance, 'trade_history'):
-    #                     trade_records = strategy_instance.trade_history
-    #                     self.log_message(f"📊 Falling back to trade_history: {len(trade_records)} records", "yellow")
-    #
-    #             # ─── EXPORT TRADES SHEET (DIRECT, NO MERGING) ──────────────────────
-    #             if trade_records:
-    #                 trades_data = []
-    #
-    #                 for i, record in enumerate(trade_records):
-    #                     try:
-    #                         # Handle both dataclass and dict formats
-    #                         if hasattr(record, '__dataclass_fields__'):
-    #                             # It's a TradeRecord dataclass
-    #                             entry_tier = getattr(record, 'entry_tier', 0)
-    #                             entry_quality = getattr(record, 'entry_quality_score', 0)
-    #                             direction = getattr(record, 'entry_direction', 'long')
-    #                             entry_price = getattr(record, 'entry_price', 0)
-    #                             exit_price = getattr(record, 'exit_price', 0)
-    #                             entry_size = getattr(record, 'entry_size', 0)
-    #                             profit = getattr(record, 'profit', 0)
-    #                             profit_pct = getattr(record, 'profit_pct', 0)
-    #                             exit_reason = getattr(record, 'exit_reason', '')
-    #                             hold_duration = getattr(record, 'hold_duration', 0)
-    #                             confluence = getattr(record, 'confluence_score', 0)
-    #                             signal_adx = getattr(record, 'signal_adx', 0)
-    #                             signal_rsi = getattr(record, 'signal_rsi', 50)
-    #                             signal_macd = getattr(record, 'signal_macd', 0)
-    #                             signal_volume = getattr(record, 'signal_volume', 1.0)
-    #                             signal_price_pct = getattr(record, 'signal_price_pct', 50)
-    #                             ml_pred = getattr(record, 'signal_ml_prediction', 0)
-    #                             ml_conf = getattr(record, 'signal_ml_confidence', 0.0)
-    #                             entry_time = getattr(record, 'entry_time', None)
-    #                             exit_time = getattr(record, 'exit_time', None)
-    #                             market_regime = getattr(record, 'market_regime', 'UNKNOWN')
-    #                             original_size = getattr(record, 'original_size', entry_size)
-    #                             partial_exits = getattr(record, 'partial_exits_taken', 0)
-    #
-    #                         elif isinstance(record, dict):
-    #                             # It's a dict (from legacy trade_history)
-    #                             entry_tier = record.get('tier', 0)
-    #                             entry_quality = record.get('entry_quality', 0)
-    #                             direction = record.get('direction', 'long')
-    #                             entry_price = record.get('entry_price', 0)
-    #                             exit_price = record.get('exit_price', 0)
-    #                             entry_size = record.get('size', 0)
-    #                             profit = record.get('profit', 0)
-    #                             profit_pct = record.get('profit_pct', 0)
-    #                             exit_reason = record.get('exit_reason', '')
-    #                             hold_duration = record.get('hold_duration', 0)
-    #                             confluence = record.get('confluence_score', 0)
-    #                             signal_adx = record.get('signal_adx', 0)
-    #                             signal_rsi = record.get('signal_rsi', 50)
-    #                             signal_macd = record.get('signal_macd', 0)
-    #                             signal_volume = record.get('signal_volume', 1.0)
-    #                             signal_price_pct = record.get('signal_price_pct', 50)
-    #                             ml_pred = record.get('ml_prediction', 0)
-    #                             ml_conf = record.get('ml_confidence', 0.0)
-    #                             entry_time = record.get('entry_time', None)
-    #                             exit_time = record.get('exit_time', None)
-    #                             market_regime = record.get('market_regime', 'UNKNOWN')
-    #                             original_size = record.get('original_size', entry_size)
-    #                             partial_exits = record.get('partial_exits_taken', 0)
-    #                         else:
-    #                             continue
-    #
-    #                         # Determine tier name
-    #                         if entry_tier == 1:
-    #                             tier_name = "Tier 1"
-    #                         elif entry_tier == 2:
-    #                             tier_name = "Tier 2"
-    #                         elif entry_quality is not None and entry_quality > 0:
-    #                             # Fallback: classify by quality score
-    #                             if entry_quality >= quality_tier1_min:
-    #                                 tier_name = "Tier 1"
-    #                                 entry_tier = 1
-    #                             elif entry_quality >= quality_tier2_min:
-    #                                 tier_name = "Tier 2"
-    #                                 entry_tier = 2
-    #                             else:
-    #                                 tier_name = "Below Tier 2"
-    #                                 entry_tier = 0
-    #                         else:
-    #                             tier_name = "Unknown"
-    #                             entry_tier = 0
-    #
-    #                         # Format times - STRIP TIMEZONE INFO
-    #                         entry_time_str = ''
-    #                         exit_time_str = ''
-    #                         if entry_time:
-    #                             if hasattr(entry_time, 'strftime'):
-    #                                 # Remove timezone info if present
-    #                                 if hasattr(entry_time, 'tzinfo') and entry_time.tzinfo is not None:
-    #                                     entry_time = entry_time.replace(tzinfo=None)
-    #                                 entry_time_str = entry_time.strftime('%Y-%m-%d %H:%M:%S')
-    #                             else:
-    #                                 entry_time_str = str(entry_time)
-    #                         if exit_time:
-    #                             if hasattr(exit_time, 'strftime'):
-    #                                 if hasattr(exit_time, 'tzinfo') and exit_time.tzinfo is not None:
-    #                                     exit_time = exit_time.replace(tzinfo=None)
-    #                                 exit_time_str = exit_time.strftime('%Y-%m-%d %H:%M:%S')
-    #                             else:
-    #                                 exit_time_str = str(exit_time)
-    #
-    #                         # Calculate return percentage if not already set
-    #                         if profit_pct == 0 and entry_price > 0 and exit_price > 0:
-    #                             if direction == 'short':
-    #                                 profit_pct = (entry_price - exit_price) / entry_price * 100
-    #                             else:
-    #                                 profit_pct = (exit_price - entry_price) / entry_price * 100
-    #
-    #                         trades_data.append({
-    #                             'Trade_#': i + 1,
-    #                             'Tier': tier_name,
-    #                             'Tier_Number': entry_tier,
-    #                             'Direction': direction.upper() if direction else 'UNKNOWN',
-    #                             'Entry_Time': entry_time_str,
-    #                             'Entry_Price': round(entry_price, 4) if entry_price else 0,
-    #                             'Entry_Size': round(entry_size, 4) if entry_size else 0,
-    #                             'Exit_Time': exit_time_str,
-    #                             'Exit_Price': round(exit_price, 4) if exit_price else 0,
-    #                             'Exit_Reason': exit_reason or '',
-    #                             'PnL': round(profit, 2) if profit else 0,
-    #                             'Return_%': round(profit_pct, 2) if profit_pct else 0,
-    #                             'Hold_Duration_Minutes': round(hold_duration, 1) if hold_duration else 0,
-    #                             'Quality_Score': entry_quality if entry_quality else 0,
-    #                             'Confluence_Score': round(confluence, 2) if confluence else 0,
-    #                             'Signal_ADX': round(signal_adx, 1) if signal_adx else 0,
-    #                             'Signal_RSI': round(signal_rsi, 1) if signal_rsi else 50,
-    #                             'Signal_MACD': round(signal_macd, 4) if signal_macd else 0,
-    #                             'Signal_Volume_Ratio': round(signal_volume, 2) if signal_volume else 1.0,
-    #                             'Signal_Price_Percentile': round(signal_price_pct, 1) if signal_price_pct else 50,
-    #                             'ML_Prediction': ml_pred if ml_pred else 0,
-    #                             'ML_Confidence_%': round(ml_conf, 1) if ml_conf else 0,
-    #                             'Market_Regime': market_regime or 'UNKNOWN',
-    #                             'Original_Size': round(original_size, 4) if original_size else 0,
-    #                             'Partial_Exits': partial_exits if partial_exits else 0,
-    #                             'Win': 'Yes' if profit and profit > 0 else 'No',
-    #                         })
-    #
-    #                     except Exception as e:
-    #                         self.log_message(f"⚠️ Error processing trade record {i}: {e}", "orange")
-    #                         continue
-    #
-    #                 if trades_data:
-    #                     trade_output_df = pd.DataFrame(trades_data)
-    #
-    #                     # Reorder columns for readability
-    #                     col_order = [
-    #                         'Trade_#', 'Tier', 'Tier_Number', 'Direction',
-    #                         'Entry_Time', 'Entry_Price', 'Entry_Size',
-    #                         'Exit_Time', 'Exit_Price', 'Exit_Reason',
-    #                         'PnL', 'Return_%', 'Hold_Duration_Minutes',
-    #                         'Quality_Score', 'Confluence_Score',
-    #                         'Signal_ADX', 'Signal_RSI', 'Signal_MACD',
-    #                         'Signal_Volume_Ratio', 'Signal_Price_Percentile',
-    #                         'ML_Prediction', 'ML_Confidence_%',
-    #                         'Market_Regime', 'Original_Size', 'Partial_Exits', 'Win'
-    #                     ]
-    #                     # Keep only columns that exist
-    #                     existing_cols = [c for c in col_order if c in trade_output_df.columns]
-    #                     trade_output_df = trade_output_df[existing_cols]
-    #
-    #                     trade_output_df.to_excel(writer, sheet_name='Trades', index=False)
-    #                     sheets_created += 1
-    #
-    #                     self.log_message(f"   ✅ Trades sheet created ({len(trade_output_df)} trades)", "green")
-    #
-    #                     # Log tier summary
-    #                     tier_counts = trade_output_df['Tier'].value_counts()
-    #                     self.log_message(f"   📊 TIER SUMMARY (Tier1={quality_tier1_min}, Tier2={quality_tier2_min})",
-    #                                      "blue")
-    #                     tier_color = {"Tier 1": "blue", "Tier 2": "green", "Unknown": "orange", "Below Tier 2": "red"}
-    #                     for tier_name, count in tier_counts.items():
-    #                         pct = (count / len(trade_output_df)) * 100
-    #                         tier_wins = trade_output_df[
-    #                             (trade_output_df['Tier'] == tier_name) & (trade_output_df['Win'] == 'Yes')]
-    #                         tier_win_rate = (len(tier_wins) / count * 100) if count else 0
-    #                         color = tier_color.get(tier_name, "orange")
-    #                         self.log_message(
-    #                             f"      {tier_name}: {count} ({pct:.1f}%) — Win rate: {tier_win_rate:.1f}%", color)
-    #
-    #                     # Log direction summary
-    #                     dir_counts = trade_output_df['Direction'].value_counts()
-    #                     self.log_message("   📊 DIRECTION SUMMARY:", "blue")
-    #                     for dir_name, count in dir_counts.items():
-    #                         dir_wins = trade_output_df[
-    #                             (trade_output_df['Direction'] == dir_name) & (trade_output_df['Win'] == 'Yes')]
-    #                         dir_win_rate = (len(dir_wins) / count * 100) if count else 0
-    #                         self.log_message(f"      {dir_name}: {count} trades — Win rate: {dir_win_rate:.1f}%",
-    #                                          "cyan")
-    #
-    #             # ─── MARKET DATA SHEET ─────────────────────────────────────────────
-    #             # FIX: Strip timezone info from index and all datetime columns
-    #             market_df = df.copy()
-    #
-    #             # Strip timezone from index
-    #             if isinstance(market_df.index, pd.DatetimeIndex):
-    #                 if market_df.index.tz is not None:
-    #                     market_df.index = market_df.index.tz_localize(None)
-    #
-    #             # Strip timezone from all datetime columns
-    #             for col in market_df.select_dtypes(include=['datetime64[ns, UTC]', 'datetime64[ns, tz]']).columns:
-    #                 if market_df[col].dt.tz is not None:
-    #                     market_df[col] = market_df[col].dt.tz_localize(None)
-    #
-    #             export_columns = [
-    #                 'Open', 'High', 'Low', 'Close', 'Volume',
-    #                 'EMA_Fast', 'EMA_Mid', 'EMA_Slow',
-    #                 'RSI', 'CCI', 'ADX', 'ATR',
-    #                 'SuperTrend', 'Direction', 'Kalman_Strength', 'Volume_Ratio',
-    #                 'Entry_Signal', 'Exit_Signal', 'Exit_Reason',
-    #                 'Confluence_Score', 'Risk_Allocation_%'
-    #             ]
-    #             export_columns = [col for col in export_columns if col in market_df.columns]
-    #             market_export = market_df[export_columns].copy()
-    #             numeric_cols = market_export.select_dtypes(include=[np.number]).columns
-    #             market_export[numeric_cols] = market_export[numeric_cols].round(4)
-    #             market_export.to_excel(writer, sheet_name='Market_Data')
-    #             sheets_created += 1
-    #
-    #             # ─── SUMMARY SHEET ─────────────────────────────────────────────────
-    #             _start = datetime.strptime(self.start_date_var.get(), "%Y-%m-%d")
-    #             _end = datetime.strptime(self.end_date_var.get(), "%Y-%m-%d")
-    #             _num_months = max((_end - _start).days / 30.44, 1)
-    #             _total_trades = stats.get('# Trades', 0)
-    #             _avg_trades_per_month = _total_trades / _num_months
-    #
-    #             summary_data = [
-    #                 ['═══ PERFORMANCE METRICS ═══', ''],
-    #                 ['Start Date', self.start_date_var.get()],
-    #                 ['End Date', self.end_date_var.get()],
-    #                 ['Final Equity', f"${stats.get('Equity Final [$]', 0):,.2f}"],
-    #                 ['Total Return', f"{stats.get('Return [%]', 0):.2f}%"],
-    #                 ['Months', f"{_num_months:.1f}"],
-    #                 ['', ''],
-    #                 ['═══ TRADE STATISTICS ═══', ''],
-    #                 ['Total Trades', stats.get('# Trades', 0)],
-    #                 ['Win Rate', f"{stats.get('Win Rate [%]', 0):.2f}%"],
-    #                 ['Avg Trades / Month', f"{_avg_trades_per_month:.1f}"],
-    #                 ['', ''],
-    #                 ['═══ RISK METRICS ═══', ''],
-    #                 ['Sharpe Ratio', f"{stats.get('Sharpe Ratio', 0):.3f}"],
-    #                 ['Sortino Ratio', f"{stats.get('Sortino Ratio', 0):.3f}"],
-    #                 ['Max Drawdown', f"{stats.get('Max. Drawdown [%]', 0):.2f}%"],
-    #                 ['Profit Factor', f"{stats.get('Profit Factor', 0):.2f}"],
-    #                 ['', ''],
-    #                 ['═══ TIER THRESHOLDS USED ═══', ''],
-    #                 ['Tier 1 Minimum', quality_tier1_min],
-    #                 ['Tier 2 Minimum', quality_tier2_min],
-    #                 ['Parameter Mode', self.param_toggle_var.get()],
-    #                 ['Threshold Source', source],
-    #             ]
-    #
-    #             summary_df = pd.DataFrame(summary_data, columns=['Metric', 'Value'])
-    #             summary_df.to_excel(writer, sheet_name='Summary', index=False)
-    #             sheets_created += 1
-    #
-    #             writer.close()
-    #
-    #             file_size_kb = os.path.getsize(filename) / 1024
-    #             self.log_message(f"✅ Excel file created successfully!", "green")
-    #             self.log_message(f"   📁 File: {filename}", "green")
-    #             self.log_message(f"   📊 Sheets: {sheets_created}", "green")
-    #             self.log_message(f"   💾 Size: {file_size_kb:.1f} KB", "green")
-    #
-    #             try:
-    #                 os.startfile(filename)
-    #             except:
-    #                 pass
-    #
-    #             return filename
-    #
-    #         except Exception as inner_e:
-    #             try:
-    #                 writer.close()
-    #             except:
-    #                 pass
-    #             raise inner_e
-    #
-    #     except Exception as e:
-    #         self.log_message(f"❌ Excel export failed: {str(e)}", "red")
-    #         import traceback
-    #         self.log_message(traceback.format_exc(), "red")
-    #         return None
 
 
     def fix_existing_excel_tiers(self, excel_file):

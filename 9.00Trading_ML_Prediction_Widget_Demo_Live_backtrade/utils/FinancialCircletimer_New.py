@@ -859,6 +859,16 @@ class FinancialChartWidget:
         self.ax1.legend(loc='upper left', fontsize=8, facecolor='#1e1e1e',
                         edgecolor='white', labelcolor='white')
 
+        # FIX: previously this method only mutated the Axes object and relied on
+        # a *later, unrelated* update_chart() call to eventually trigger
+        # canvas.draw(). If that never happened (or happened on a different
+        # thread first and cleared the axes), the forecast line was silently
+        # never rendered. Force a repaint here so the call is self-sufficient.
+        try:
+            self.canvas.draw_idle()
+        except Exception as e:
+            print(f'plot_forecast draw error: {e}')
+
     def _format_axis_labels(self):
         for ax in [self.ax1, self.ax2]:
             if ax:

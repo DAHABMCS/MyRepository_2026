@@ -435,7 +435,7 @@ class TradingStrategy(BaseStrategy):
 
     def _validate_critical_data(self, current_data):
         """Validate that critical data points exist"""
-        required_fields = ['Close', 'SuperTrend_closed', 'MA_Fast_closed', 'MA_Slow_closed']
+        required_fields = ['Close', 'SuperTrend_closed', 'EMA_Fast_closed', 'EMA_Slow_closed']
         return all(field in current_data for field in required_fields)
 
     def _assess_current_market_regime(self, current_data):
