@@ -233,7 +233,7 @@ class BaseMLModel:
         self.name = "Base"
         self.features = [
             'Close', 'Volume', 'RSI_closed', 'MACD_closed', 'MACD_Signal_closed',
-            'MA_Fast_closed', 'MA_Slow_closed', 'ATR_closed', 'SuperTrend_closed'
+            'EMA_Fast_closed', 'EMA_Slow_closed', 'ATR_closed', 'SuperTrend_closed'
         ]
         self._accuracy = None
         self.scaler = None

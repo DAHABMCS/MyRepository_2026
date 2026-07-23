@@ -508,11 +508,41 @@ class MacroRegimeDetector:
         self.bb_squeeze_threshold = 25
 
     def detect_regime(self, ema_fast, ema_slow, adx, vol_ratio=1.0, bb_width_percentile=50):
+        """Enhanced regime detection with proper bear market identification"""
         is_uptrend = ema_fast > ema_slow
         trend_strong = adx > self.adx_threshold
+
+        # CRITICAL FIX: Proper downtrend detection
+        is_downtrend = ema_fast < ema_slow
+        is_very_bearish = ema_fast < ema_slow and (ema_slow - ema_fast) / ema_slow > 0.02  # 2% spread
+
         is_low_vol = vol_ratio < self.vol_ratio_low
         is_high_vol = vol_ratio > self.vol_ratio_high
         is_range_bound = bb_width_percentile < self.bb_squeeze_threshold
+
+        # FIX: Prioritize bearish detection - this should come FIRST
+        if is_downtrend and trend_strong:
+            if is_very_bearish:
+                regime, confidence = "BEARISH_DECLINING", 0.95
+            elif vol_ratio > 1.5:
+                regime, confidence = "BEARISH_SELLOFF", 0.90
+            else:
+                regime, confidence = "BEARISH_DECLINING", 0.85
+            self.current_regime = regime
+            self.regime_confidence = confidence
+            self.regime_history.append(regime)
+            return regime, confidence
+
+        # Also check for price below EMA200 as additional bearish signal
+        # This is called from the strategy, so we need to pass the data
+        if is_downtrend and adx < self.adx_threshold:
+            regime, confidence = "BEARISH_WEAK", 0.70
+            self.current_regime = regime
+            self.regime_confidence = confidence
+            self.regime_history.append(regime)
+            return regime, confidence
+
+        # Original bullish logic (now after bearish checks)
         if is_uptrend and trend_strong and is_low_vol:
             regime, confidence = "BULLISH_LOW_VOL", 0.95
         elif is_uptrend and trend_strong and is_high_vol:
@@ -521,24 +551,38 @@ class MacroRegimeDetector:
             regime, confidence = "BULLISH_NORMAL_VOL", 0.90
         elif is_uptrend and not trend_strong:
             regime, confidence = "BULLISH_WEAK", 0.70
-        elif not is_uptrend and trend_strong:
-            regime, confidence = "BEARISH_DECLINING", 0.90
         elif is_range_bound:
             regime, confidence = "RANGING_VOLATILE", 0.80
         else:
             regime, confidence = "UNDEFINED", 0.50
+
         self.current_regime = regime
         self.regime_confidence = confidence
         self.regime_history.append(regime)
         return regime, confidence
 
     def is_tradeable(self, regime: str) -> bool:
+        """FIX: Block trades in bearish regimes"""
+        # FIX: Do NOT trade in bear markets
+        blocked_regimes = ('BEARISH_DECLINING', 'BEARISH_SELLOFF', 'BEARISH_WEAK')
+        if regime in blocked_regimes:
+            return False
         return regime not in ('RANGING_VOLATILE', 'UNDEFINED')
 
     def get_position_multiplier(self, regime):
-        return {'BULLISH_LOW_VOL': 1.3, 'BULLISH_HIGH_VOL': 0.8, 'BULLISH_NORMAL_VOL': 1.0,
-                'BULLISH_WEAK': 0.7, 'BEARISH_DECLINING': 0.3,
-                'RANGING_VOLATILE': 0.5, 'UNDEFINED': 0.6}.get(regime, 0.6)
+        """Position size multiplier based on regime - CONSERVATIVE in bear markets"""
+        multipliers = {
+            'BULLISH_LOW_VOL': 1.3,
+            'BULLISH_NORMAL_VOL': 1.0,
+            'BULLISH_HIGH_VOL': 0.8,
+            'BULLISH_WEAK': 0.7,
+            'BEARISH_DECLINING': 0.2,  # FIX: drastically reduce size
+            'BEARISH_SELLOFF': 0.1,  # FIX: almost no size in selloffs
+            'BEARISH_WEAK': 0.3,
+            'RANGING_VOLATILE': 0.5,
+            'UNDEFINED': 0.6
+        }
+        return multipliers.get(regime, 0.6)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -872,6 +916,13 @@ MOMENTUM_PARAMS = {
     "macd_score_histogram_direction": 7,
     "macd_score_zero_cross": 4,
     "macd_score_histogram_value": 3,
+
+# Add to MOMENTUM_PARAMS dict:
+"ema200_filter_enabled": True,  # NEW: Block longs below EMA200
+"bearish_regime_block": True,   # NEW: Block all longs in bear regimes
+"short_only_bearish": True,     # NEW: Shorts only in bear regimes
+"bearish_risk_multiplier": 0.25,  # NEW: Reduce risk in bear markets
+"adx_bearish_min": 30,          # NEW: Require stronger ADX for bear entries
 
     # ADX
     "adx_min": 18,
@@ -1857,6 +1908,31 @@ class MomentumLogic:
         if above_daily is None or (isinstance(above_daily, float) and np.isnan(above_daily)):
             return True
         return not bool(above_daily)
+
+    def _price_above_ema200(self, data):
+        """Check if price is above EMA200 - critical trend filter"""
+        df = getattr(self, '_current_df', None)
+        if df is None:
+            return True  # Conservative: allow if unknown
+
+        try:
+            # Get EMA200 from current data
+            ema200 = data.get('EMA_200', None)
+            if ema200 is None and 'EMA_200' in df.columns and len(df) > 0:
+                ema200 = float(df['EMA_200'].iloc[-1])
+
+            if ema200 is None or np.isnan(ema200) or ema200 == 0:
+                return True  # Conservative: allow if data missing
+
+            close = data.get('Close', 0)
+            above = close > ema200
+
+            if not above:
+                self._log(f"🔴 PRICE BELOW EMA200: ${close:.2f} < ${ema200:.2f} — BLOCKING LONG", "red")
+
+            return above
+        except Exception:
+            return True  # Conservative: allow if error
 
     # ─── MACD SCORING ──────────────────────────────────────────────────────
     def _score_macd_momentum(self, data):
@@ -2852,10 +2928,32 @@ class MomentumLogic:
             return self._check_both_entry_conditions(data)
 
     def _check_long_entry_conditions(self, data):
-        # LAYER 1: DIRECTION GATE
+        # LAYER 0: TREND FILTER (NEW)
+        # FIX: Block longs when price is below EMA200
+        if not self._price_above_ema200(data):
+            return ("hold", 0, None, "price_below_ema200_no_long", {})
+
+        # LAYER 1: DIRECTION GATE - STRICTER
         direction_confirmed, direction_reason = self._confirm_direction(data, direction_hint='long')
         if not direction_confirmed:
             return "hold", 0, None, direction_reason, {}
+
+        # LAYER 1.5: Regime gate - STRICT
+        regime, confidence = self.regime_detector.detect_regime(
+            ema_fast=data.get('EMA_Fast', 0),
+            ema_slow=data.get('EMA_Slow', 0),
+            adx=data.get('ADX', 0),
+            vol_ratio=data.get('Vol_Regime_Ratio', 1.0),
+            bb_width_percentile=data.get('BB_Width_Percentile', 50))
+        self.current_regime = regime
+
+        # FIX: BLOCK all bearish regimes entirely
+        if regime.startswith('BEARISH'):
+            return ("hold", 0, None, f"BEARISH_REGIME_BLOCKED_{regime}", {})
+
+        if getattr(self, 'regime_filter_enabled', True):
+            if data.get('Ranging', False) or not self.regime_detector.is_tradeable(regime):
+                return "hold", 0, None, f"long_regime_blocked_{regime}", {}
 
         # Daily trend
         if not self._daily_trend_is_up(data):
@@ -2864,16 +2962,6 @@ class MomentumLogic:
         # Extended run
         if self._is_extended_run_long(data):
             return "hold", 0, None, "v94_extended_run_long_blocked", {}
-
-        # Regime
-        regime, confidence = self.regime_detector.detect_regime(
-            ema_fast=data.get('EMA_Fast', 0), ema_slow=data.get('EMA_Slow', 0),
-            adx=data.get('ADX', 0), vol_ratio=data.get('Vol_Regime_Ratio', 1.0),
-            bb_width_percentile=data.get('BB_Width_Percentile', 50))
-        self.current_regime = regime
-        if getattr(self, 'regime_filter_enabled', True):
-            if data.get('Ranging', False) or not self.regime_detector.is_tradeable(regime):
-                return "hold", 0, None, f"long_regime_blocked_{regime}", {}
 
         # LAYER 2: POWER SCORE
         self._suggested_action = 'buy'
@@ -2917,6 +3005,21 @@ class MomentumLogic:
                                            ml_prediction, ml_confidence)
 
     def _check_short_entry_conditions(self, data):
+        # LAYER 0: REGIME GATE - Allow shorts ONLY in bearish regimes
+        # FIX: Get regime from data (passed from backtest)
+        regime = data.get('_regime', getattr(self, 'current_regime', 'UNKNOWN'))
+        is_below_ema200 = data.get('_is_below_ema200', False)
+
+        # FIX: Allow shorts ONLY in bearish regimes or weak bullish
+        if not regime.startswith('BEARISH') and regime != 'BULLISH_WEAK':
+            return ("hold", 0, None, f"short_regime_not_bearish_{regime}", {})
+
+        # FIX: Additional validation - require price below EMA200 for shorts
+        if not is_below_ema200 and regime.startswith('BEARISH'):
+            # If price is above EMA200 but regime is bearish, may be a bounce
+            # Still allow but with caution
+            print(f"⚠️ SHORT in bearish regime but price above EMA200 - proceed with caution")
+
         # LAYER 1: DIRECTION GATE
         direction_confirmed, direction_reason = self._confirm_direction(data, direction_hint='short')
         if not direction_confirmed:
@@ -2926,15 +3029,9 @@ class MomentumLogic:
         if self._is_extended_run_short(data):
             return "hold", 0, None, "v94_extended_run_short_blocked", {}
 
-        # Regime
-        regime, confidence = self.regime_detector.detect_regime(
-            ema_fast=data.get('EMA_Fast', 0), ema_slow=data.get('EMA_Slow', 0),
-            adx=data.get('ADX', 0), vol_ratio=data.get('Vol_Regime_Ratio', 1.0),
-            bb_width_percentile=data.get('BB_Width_Percentile', 50))
-        self.current_regime = regime
-        if getattr(self, 'regime_filter_enabled', True):
-            if data.get('Ranging', False) or not self.regime_detector.is_tradeable(regime):
-                return "hold", 0, None, f"short_regime_blocked_{regime}", {}
+        # Daily trend down (strengthened)
+        if not self._daily_trend_is_down(data):
+            return "hold", 0, None, "short_daily_trend_not_down", {}
 
         # Bearish price structure
         if not self._has_bearish_price_structure(data):
@@ -2964,6 +3061,14 @@ class MomentumLogic:
 
         # Validate tier-specific conditions
         only_tier1 = getattr(self, 'only_tier1_entries', False)
+
+        # ─── FIX: Reduce tier requirements in bearish regimes ──────────────
+        # In strong bearish regimes, allow Tier 2 with lower threshold
+        if regime == 'BEARISH_DECLINING' or regime == 'BEARISH_SELLOFF':
+            # Allow Tier 2 even if slightly below threshold
+            if tier == 0 and adjusted_power >= 55:  # Lower threshold for bear markets
+                tier = 2
+                print(f"🐻 BEARISH REGIME: Allowing short with lower tier threshold (score={adjusted_power})")
 
         if only_tier1:
             if tier != 1:
@@ -3737,14 +3842,28 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
         MomentumLogic.__init__(self, config=config, trading_app=None)
 
+        # ── DIRECTION-SEPARATED COOLDOWN ────────────────────────────────────────────
+        self._exit_bar_long = -999
+        self._exit_bar_short = -999
+        self._last_exit_time_long = None
+        self._last_exit_time_short = None
+        self._exit_cooldown_bars_long = 3
+        self._exit_cooldown_bars_short = 3
+        self._pending_signal_long = None
+        self._pending_signal_short = None
+
         print(f"\n{'=' * 70}")
         print(f"BACKTEST v10.0.2 CONFIGURATION LOADED — TWO-TIER SYSTEM")
         print(f"{'=' * 70}")
         print(f"Direction: {self.trade_direction.upper()}")
-        print(f"Tier 1 (Low Risk):  Pass={getattr(self, 'quality_tier1_min_long', 75)} | Risk={getattr(self, 'risk_tier1', 0.025):.1%}")
-        print(f"Tier 2 (Medium Risk): Pass={getattr(self, 'quality_tier2_min_long', 65)} | Risk={getattr(self, 'risk_tier2', 0.015):.1%}")
+        print(
+            f"Tier 1 (Low Risk):  Pass={getattr(self, 'quality_tier1_min_long', 75)} | Risk={getattr(self, 'risk_tier1', 0.025):.1%}")
+        print(
+            f"Tier 2 (Medium Risk): Pass={getattr(self, 'quality_tier2_min_long', 65)} | Risk={getattr(self, 'risk_tier2', 0.015):.1%}")
         print(f"ML Weight: {getattr(self, 'ml_weight', 0.20):.0%}")
         print(f"Only Tier 1 Entries: {getattr(self, 'only_tier1_entries', False)}")
+        print(
+            f"LONG Cooldown: {self._exit_cooldown_bars_long} bars | SHORT Cooldown: {self._exit_cooldown_bars_short} bars")
         print(f"{'=' * 70}\n")
 
         self._entry_price = np.nan
@@ -4217,12 +4336,6 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
     def next(self):
         # ─── FINALIZE PENDING TRADE-RECORD ENTRY TIME ───────────────────────
-        # backtesting.py's broker fills an order placed during the previous
-        # next() call using THIS bar's data, before this next() call runs.
-        # So self.data.index[-1] right now is the authoritative fill
-        # timestamp for whatever was just opened — no need to guess it via
-        # bar-interval arithmetic, which breaks across irregular gaps
-        # (session boundaries, weekends, missing bars, etc.).
         if getattr(self, '_entry_time_pending', False):
             true_entry_time = self.data.index[-1]
             self._entry_time = true_entry_time
@@ -4245,10 +4358,69 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self._current_df = self.df_enhanced.iloc[:idx + 1]
         self.bar_count = idx
 
+        # ─── ENHANCED REGIME DETECTION ──────────────────────────────────────
+        # FIX: Proper regime detection with bearish state
+        ema_fast_val = current_data.get('EMA_Fast', 0)
+        ema_slow_val = current_data.get('EMA_Slow', 0)
+        adx_val = current_data.get('ADX', 0)
+        vol_ratio_val = current_data.get('Vol_Regime_Ratio', 1.0)
+        bb_width_pct = current_data.get('BB_Width_Percentile', 50)
+        close_val = current_data.get('Close', 0)
+
+        # Get EMA200 from indicators
+        ema200_val = float(self.ema_200[-1]) if len(self.ema_200) > 0 and not np.isnan(self.ema_200[-1]) else 0
+
+        # Detect regime using enhanced logic
+        regime, confidence = self.regime_detector.detect_regime(
+            ema_fast=ema_fast_val,
+            ema_slow=ema_slow_val,
+            adx=adx_val,
+            vol_ratio=vol_ratio_val,
+            bb_width_percentile=bb_width_pct
+        )
+        self.current_regime = regime
+
+        # ─── FIX: Log bearish regime detection ──────────────────────────────
+        if regime.startswith('BEARISH'):
+            print(f"🐻 BEARISH REGIME DETECTED: {regime} (conf={confidence:.2f}) | "
+                  f"Price=${close_val:.2f} EMA200=${ema200_val:.2f} ADX={adx_val:.1f}")
+
+        # ─── Check for price below EMA200 (additional bearish signal) ──────
+        is_below_ema200 = False
+        if ema200_val > 0 and close_val > 0:
+            is_below_ema200 = close_val < ema200_val
+            if is_below_ema200 and not regime.startswith('BEARISH'):
+                print(f"⚠️ PRICE BELOW EMA200: ${close_val:.2f} < ${ema200_val:.2f} — Bearish signal detected")
+
         # Check for pending signal from previous bar
         if self._pending_signal is not None and self.bar_count > self._signal_bar:
             signal = self._pending_signal
             execution_price = self.data.Open[-1]
+
+            # ─── FIX: Re-validate signal based on current regime ────────────
+            # If we're in a BEARISH regime and signal is LONG, block it
+            if regime.startswith('BEARISH') and signal['decision'] == "buy":
+                print(f"❌ BLOCKED: LONG signal in BEARISH regime ({regime})")
+                self._pending_signal = None
+                self._signal_bar = -999
+                self._signal_price = None
+                return
+
+            # If we're in a BULLISH regime and signal is SHORT, block it
+            if regime.startswith('BULLISH') and signal['decision'] == "sell":
+                print(f"❌ BLOCKED: SHORT signal in BULLISH regime ({regime})")
+                self._pending_signal = None
+                self._signal_bar = -999
+                self._signal_price = None
+                return
+
+            # If price is below EMA200 and signal is LONG, block it
+            if is_below_ema200 and signal['decision'] == "buy":
+                print(f"❌ BLOCKED: LONG signal with price below EMA200")
+                self._pending_signal = None
+                self._signal_bar = -999
+                self._signal_price = None
+                return
 
             self._position_direction = 'long' if signal['decision'] == "buy" else 'short'
             tier = signal['tier']
@@ -4258,9 +4430,15 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 tier_config = self._get_tier_config(1)
             stop_mult = tier_config.get('stop_mult', 2.5)
 
+            # ─── FIX: Reduce position size in bearish regimes ──────────────
+            position_mult = signal.get('position_mult', 1.0)
+            if regime.startswith('BEARISH'):
+                position_mult *= 0.25  # 75% reduction in bear markets
+                print(f"⚠️ BEARISH REGIME: Position size reduced to {position_mult:.2f}x")
+
             size = self.calculate_position_size(
                 self.equity, current_data['ATR'], execution_price,
-                signal['power_score'], tier, signal['position_mult'])
+                signal['power_score'], tier, position_mult)
 
             if size > 0:
                 if signal['decision'] == "buy":
@@ -4310,23 +4488,12 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
                 tier_names = {1: 'Low Risk', 2: 'Medium Risk'}
                 direction_icon = "⬆️" if self._position_direction == 'long' else "⬇️"
+                regime_icon = "🐻" if regime.startswith('BEARISH') else "🐂"
                 print(f"{direction_icon} ENTER T{tier} ({tier_names.get(tier, 'Unknown')}) "
-                      f"Q={signal['power_score']} @ ${execution_price:.2f} Size={size} Stop=${stop:.2f}")
+                      f"Q={signal['power_score']} @ ${execution_price:.2f} Size={size} Stop=${stop:.2f} "
+                      f"{regime_icon} {regime}")
 
                 # ─── LOG THE ACTUAL TRADE RECORD ───────────────────────────────
-                # This is the real fill, so this is where the TradeRecord that
-                # the Excel exporter enriches from (self.trade_records) needs
-                # to be created. (Previously only the never-called
-                # _bt_open_position() did this, so self.trade_records stayed
-                # empty for the whole backtest.)
-                #
-                # entry_time is a PLACEHOLDER here — backtesting.py actually
-                # fills this order using the NEXT bar's data (the broker
-                # processes it at the start of the following next() call,
-                # before any strategy code runs there). We finalize the real
-                # entry_time at the top of the next next() call, where
-                # self.data.index[-1] is authoritatively that fill bar. See
-                # the '_entry_time_pending' block at the top of next().
                 bar_entry_time = self.data.index[-1]
                 self._entry_time = bar_entry_time
                 self._entry_time_pending = True
@@ -4349,7 +4516,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                     signal_ml_prediction=self._signal_ml_prediction,
                     signal_ml_confidence=self._signal_ml_confidence,
                     confluence_score=self._entry_confluence_score,
-                    market_regime=getattr(self, 'current_regime', 'UNKNOWN'),
+                    market_regime=regime,  # Store actual regime
                     original_size=size,
                 )
                 if not hasattr(self, 'trade_records'):
@@ -4364,6 +4531,12 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
         # SEEKING ENTRY STATE
         if self.strategy_state == StrategyState.SEEKING_ENTRY:
+            # ─── FIX: Pass regime to entry check ────────────────────────────
+            # Add regime data to current_data for entry validation
+            current_data['_regime'] = regime
+            current_data['_is_below_ema200'] = is_below_ema200
+            current_data['_ema200'] = ema200_val
+
             result = self._check_entry_conditions(current_data)
             if hasattr(self, '_pending_signal') and self._pending_signal is not None:
                 return
