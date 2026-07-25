@@ -1,5 +1,11 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# v10.0.2 - TWO-TIER SYSTEM (Tier 1 + Tier 2) with unified long/short thresholds
+# v10.0.3 - TWO-TIER SYSTEM with FIXED PARTIAL EXITS & TRADE ID TRACKING
+# ═══════════════════════════════════════════════════════════════════════════
+# FIXES:
+#   1. Partial exits use position.close(portion) - NEVER self.sell()
+#   2. Every trade gets a unique ID that persists across partial exits
+#   3. Trade IDs appear in Excel export (Trade_# column)
+#   4. No more spurious "Not logged by strategy" SHORT trades
 # ═══════════════════════════════════════════════════════════════════════════
 import json
 import logging
@@ -184,6 +190,7 @@ class TradeRecord:
     entry_quality_score: int
     entry_reason: str
     entry_direction: str
+    entry_bar: Optional[int] = None
     exit_time: Optional[datetime] = None
     exit_price: Optional[float] = None
     exit_size: Optional[float] = None
@@ -207,6 +214,8 @@ class TradeRecord:
     signal_ml_prediction: int = 0
     signal_ml_confidence: float = 0.0
     confluence_score: float = 0.0
+    # NEW: Track partial exits with same trade ID
+    partial_exit_details: List[Dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -221,6 +230,7 @@ class TradeRecord:
             'hold_duration': self.hold_duration, 'market_regime': self.market_regime,
             'partial_exits_taken': self.partial_exits_taken,
             'partial_pnl_realised': self.partial_pnl_realised,
+            'trade_direction': self.entry_direction,
         }
 
 
@@ -480,7 +490,8 @@ class ProfessionalRiskController:
         return {
             'total_trades': self.total_trades,
             'win_rate': f"{self.risk_metrics.win_rate:.1f}%",
-            'profit_factor': f"{self.risk_metrics.profit_factor:.2f}" if self.risk_metrics.profit_factor != float('inf') else "∞",
+            'profit_factor': f"{self.risk_metrics.profit_factor:.2f}" if self.risk_metrics.profit_factor != float(
+                'inf') else "∞",
             'max_drawdown': f"{self.risk_metrics.max_drawdown:.1%}",
             'sharpe_ratio': f"{self.risk_metrics.sharpe_ratio:.2f}",
             'sortino_ratio': f"{self.risk_metrics.sortino_ratio:.2f}",
@@ -640,7 +651,7 @@ class ProfessionalExitManager:
 
         if not hasattr(self, '_version_printed'):
             print("=" * 70)
-            print("🎯 EXIT MANAGER VERSION: v10.0.2 - TWO-TIER EXIT RULES")
+            print("🎯 EXIT MANAGER VERSION: v10.0.3 - FIXED PARTIAL EXITS")
             print("=" * 70)
             self._version_printed = True
 
@@ -758,7 +769,7 @@ MOMENTUM_PARAMS = {
     "short_quality_tier2_min": 65,
 
     # ENTRY MODE
-    "only_tier1_entries": False,          # True = only Tier 1 allowed
+    "only_tier1_entries": False,  # True = only Tier 1 allowed
 
     # TWO-TIER RISK
     "risk_tier1": 0.025,
@@ -917,12 +928,12 @@ MOMENTUM_PARAMS = {
     "macd_score_zero_cross": 4,
     "macd_score_histogram_value": 3,
 
-# Add to MOMENTUM_PARAMS dict:
-"ema200_filter_enabled": True,  # NEW: Block longs below EMA200
-"bearish_regime_block": True,   # NEW: Block all longs in bear regimes
-"short_only_bearish": True,     # NEW: Shorts only in bear regimes
-"bearish_risk_multiplier": 0.25,  # NEW: Reduce risk in bear markets
-"adx_bearish_min": 30,          # NEW: Require stronger ADX for bear entries
+    # Add to MOMENTUM_PARAMS dict:
+    "ema200_filter_enabled": True,  # NEW: Block longs below EMA200
+    "bearish_regime_block": True,  # NEW: Block all longs in bear regimes
+    "short_only_bearish": True,  # NEW: Shorts only in bear regimes
+    "bearish_risk_multiplier": 0.25,  # NEW: Reduce risk in bear markets
+    "adx_bearish_min": 30,  # NEW: Require stronger ADX for bear entries
 
     # ADX
     "adx_min": 18,
@@ -1135,17 +1146,17 @@ class MomentumConfig:
                            'weight_rsi', 'weight_volume', 'weight_cci', 'weight_kalman']
             weight_sum = sum(config.get(k, 0) for k in weight_keys)
             assert weight_sum == 100, (
-                f"Quality component weights must sum to 100, got {weight_sum}: "
-                + ", ".join(f"{k}={config.get(k, 0)}" for k in weight_keys)
+                    f"Quality component weights must sum to 100, got {weight_sum}: "
+                    + ", ".join(f"{k}={config.get(k, 0)}" for k in weight_keys)
             )
 
             breakout_weight_keys = ['weight_breakout_strength', 'weight_consolidation_quality',
-                                     'weight_breakout_volume', 'weight_breakout_ema_trend',
-                                     'weight_breakout_adx']
+                                    'weight_breakout_volume', 'weight_breakout_ema_trend',
+                                    'weight_breakout_adx']
             breakout_weight_sum = sum(config.get(k, 0) for k in breakout_weight_keys)
             assert breakout_weight_sum == 100, (
-                f"Breakout component weights must sum to 100, got {breakout_weight_sum}: "
-                + ", ".join(f"{k}={config.get(k, 0)}" for k in breakout_weight_keys)
+                    f"Breakout component weights must sum to 100, got {breakout_weight_sum}: "
+                    + ", ".join(f"{k}={config.get(k, 0)}" for k in breakout_weight_keys)
             )
 
             return config
@@ -1435,7 +1446,7 @@ class IndicatorCalculator:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 8: CORE MOMENTUM LOGIC — v10.0.2 with two-tier support
+# PART 8: CORE MOMENTUM LOGIC — v10.0.3 with fixed partial exits & trade IDs
 # ═══════════════════════════════════════════════════════════════════════════
 
 class MomentumLogic:
@@ -1540,11 +1551,15 @@ class MomentumLogic:
         self._last_ml_confidence = 0.0
         self._last_forecast = None
 
+        # NEW: Trade ID tracking
+        self._current_trade_id = 0
+        self._active_trade_ids = set()
+
         self._log_parameter_source()
 
     def _log_parameter_source(self):
         logging.info("=" * 70)
-        logging.info("📊 PARAMETER SOURCE v10.0.2 (TWO-TIER SYSTEM)")
+        logging.info("📊 PARAMETER SOURCE v10.0.3 (TWO-TIER SYSTEM + FIXED PARTIAL EXITS)")
         logging.info("=" * 70)
         logging.info(f"   Direction: {self.trade_direction.upper()}")
         logging.info(f"   Tier 1 Pass (LONG): {getattr(self, 'quality_tier1_min_long', 75)}")
@@ -1636,7 +1651,7 @@ class MomentumLogic:
 
     # ─── LAYER 3: ML ADJUSTMENT ────────────────────────────────────────────
     def _apply_ml_adjustment(self, power_score: int, ml_prediction: int,
-                              ml_confidence: float, direction: str) -> Tuple[int, float, str]:
+                             ml_confidence: float, direction: str) -> Tuple[int, float, str]:
         if not self.trading_app or not getattr(self.trading_app, 'ml_enabled', False):
             return power_score, 0.0, "ML_DISABLED"
         if ml_prediction == 0:
@@ -2657,7 +2672,7 @@ class MomentumLogic:
     def _calculate_direction_confluence(self, data, direction='long') -> float:
         """Fraction (0.0-1.0) of independent confirming signals."""
         ema_fast = data.get('EMA_Fast', 0)
-        ema_mid  = data.get('EMA_Mid', ema_fast)
+        ema_mid = data.get('EMA_Mid', ema_fast)
         ema_slow = data.get('EMA_Slow', 0)
         macd_hist = data.get('MACD_Histogram', 0)
         macd_hist_prev = data.get('MACD_Histogram_prev', macd_hist)
@@ -2806,7 +2821,7 @@ class MomentumLogic:
         if len(filtered) < safety_config['min_samples']:
             return {**default_cfg, 'reason': 'too_many_outliers'}
         fm = sum(filtered) / len(filtered)
-        fs = (sum((s - fm) ** 2 for s in filtered) / len(filtered)) ** 0.5
+        fs = (sum((filtered - fm) ** 2 for filtered in filtered) / len(filtered)) ** 0.5
         mult = 1.5 if safety_config['conservative_mode'] else 2.0
         candidate = fm - (mult * fs)
         if candidate < safety_config['absolute_minimum']:
@@ -2892,9 +2907,10 @@ class MomentumLogic:
         tier_emojis = {1: '🟢', 2: '🟡'}
         tier_names = {1: 'Low Risk', 2: 'Medium Risk'}
 
-        self._log(f"{tier_emojis.get(tier, '📊')} TIER{tier} ({tier_names.get(tier, 'Unknown')}) {direction.upper()} SIGNAL PENDING: "
-                  f"Power={power_score} @ ${self._signal_price:.2f} (execute next bar)",
-                  tier_colors.get(tier, 'purple'))
+        self._log(
+            f"{tier_emojis.get(tier, '📊')} TIER{tier} ({tier_names.get(tier, 'Unknown')}) {direction.upper()} SIGNAL PENDING: "
+            f"Power={power_score} @ ${self._signal_price:.2f} (execute next bar)",
+            tier_colors.get(tier, 'purple'))
 
         return ("hold", power_score, None,
                 f"{direction.upper()}_TIER{tier}_SIGNAL_PENDING_execute_next_bar",
@@ -3174,7 +3190,7 @@ class MomentumLogic:
                      signal_adx=None, signal_rsi=None, signal_macd=None,
                      signal_volume=None, signal_price_pct=None, signal_price=None,
                      signal_time=None, signal_bar=None, confluence_score=None,
-                     entry_time=None, exit_time=None):
+                     entry_time=None, exit_time=None, trade_id=None):
         corrected_size = size
         trade_direction = direction or self.trade_direction
 
@@ -3198,7 +3214,15 @@ class MomentumLogic:
 
         self.last_trade_bar = self.bar_count
 
+        # Use provided trade_id or generate one
+        if trade_id is None:
+            self.trade_counter += 1
+            trade_id = self.trade_counter
+        elif trade_id > self.trade_counter:
+            self.trade_counter = trade_id
+
         trade_record = {
+            'trade_id': trade_id,
             'profit': profit, 'exit_reason': exit_reason, 'tier': tier,
             'size': corrected_size, 'original_size': size,
             'direction': trade_direction, 'entry_quality': entry_quality,
@@ -3301,7 +3325,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
         MomentumLogic.__init__(self, config=params, trading_app=trading_app)
 
         self.trade_counter = 0
-        self.name = "Professional Momentum Strategy v10.0.2 — TWO-TIER SYSTEM"
+        self.name = "Professional Momentum Strategy v10.0.3 — TWO-TIER SYSTEM + FIXED PARTIAL EXITS"
 
         self.position = {
             'type': None, 'entry_price': None, 'quantity': None,
@@ -3321,12 +3345,17 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
         self.signal_history = []
         self._account_quantity = 0
         self.trade_counter = 0
+        self._current_trade_id = 0
 
         if self.trading_app:
             self._log("=" * 70, "cyan")
-            self._log("MOMENTUM STRATEGY v10.0.2 — TWO-TIER RISK SYSTEM", "bold green")
-            self._log(f"✅ Tier 1 (Low Risk):  Pass={getattr(self, 'quality_tier1_min_long', 75)} | Risk={getattr(self, 'risk_tier1', 0.025):.1%}", "green")
-            self._log(f"✅ Tier 2 (Medium Risk): Pass={getattr(self, 'quality_tier2_min_long', 65)} | Risk={getattr(self, 'risk_tier2', 0.015):.1%}", "yellow")
+            self._log("MOMENTUM STRATEGY v10.0.3 — TWO-TIER RISK SYSTEM + FIXED PARTIAL EXITS", "bold green")
+            self._log(
+                f"✅ Tier 1 (Low Risk):  Pass={getattr(self, 'quality_tier1_min_long', 75)} | Risk={getattr(self, 'risk_tier1', 0.025):.1%}",
+                "green")
+            self._log(
+                f"✅ Tier 2 (Medium Risk): Pass={getattr(self, 'quality_tier2_min_long', 65)} | Risk={getattr(self, 'risk_tier2', 0.015):.1%}",
+                "yellow")
             self._log(f"✅ ML Weight: {getattr(self, 'ml_weight', 0.20):.0%}", "purple")
             self._log("=" * 70, "cyan")
 
@@ -3534,6 +3563,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                 filled_qty, actual_price = shares, price
 
             self.trade_counter = getattr(self, 'trade_counter', 0) + 1
+            self._current_trade_id = self.trade_counter
 
             signal_data = {}
             if hasattr(self, '_pending_signal') and self._pending_signal:
@@ -3548,7 +3578,8 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                     'signal_bar': self._pending_signal.get('signal_bar', getattr(self, 'bar_count', 0) - 1),
                     'ml_prediction': self._pending_signal.get('ml_prediction', 0),
                     'ml_confidence': self._pending_signal.get('ml_confidence', 0.0),
-                    'confluence_score': self._pending_signal.get('confluence_score', getattr(self, '_last_confluence_score', 0.0)),
+                    'confluence_score': self._pending_signal.get('confluence_score',
+                                                                 getattr(self, '_last_confluence_score', 0.0)),
                 }
 
             self.position = {
@@ -3560,7 +3591,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                 'partial_exits': 0, 'tier': tier,
                 'entry_time': datetime.now(timezone.utc),
                 'entry_quality_score': quality_score,
-                'entry_reason': '', 'trade_id': self.trade_counter,
+                'entry_reason': '', 'trade_id': self._current_trade_id,
                 'partial_pnl_realised': 0.0, **signal_data,
             }
             self.bars_held = 0
@@ -3627,7 +3658,8 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                     signal_price=self.position.get('signal_price'),
                     signal_time=self.position.get('signal_time'),
                     signal_bar=self.position.get('signal_bar'),
-                    confluence_score=self.position.get('confluence_score'))
+                    confluence_score=self.position.get('confluence_score'),
+                    trade_id=self.position.get('trade_id'))
 
                 trade_rec = TradeRecord(
                     trade_id=self.position['trade_id'],
@@ -3646,7 +3678,8 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                     market_regime=self.current_regime,
                     partial_exits_taken=self.position.get('partial_exits', 0),
                     partial_pnl_realised=self.position.get('partial_pnl_realised', 0.0),
-                    original_size=self.position['original_quantity'])
+                    original_size=self.position['original_quantity'],
+                    partial_exit_details=self.position.get('partial_exit_details', []))
                 self.risk_controller.record_trade(trade_rec)
 
                 self.position = {
@@ -3666,9 +3699,44 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                 self.bars_held = 0
                 self._transition_to_seeking_entry()
             else:
+                # PARTIAL EXIT - RECORD WITH SAME TRADE ID
                 self.position['quantity'] -= filled_qty
                 self.position['partial_exits'] = self.position.get('partial_exits', 0) + 1
                 self.position['partial_pnl_realised'] = self.position.get('partial_pnl_realised', 0.0) + leg_profit
+
+                # Store partial exit details
+                if 'partial_exit_details' not in self.position:
+                    self.position['partial_exit_details'] = []
+                self.position['partial_exit_details'].append({
+                    'exit_time': datetime.now(timezone.utc),
+                    'exit_price': exit_price,
+                    'exit_size': filled_qty,
+                    'exit_reason': reason,
+                    'profit': leg_profit,
+                    'profit_pct': profit_pct,
+                })
+
+                # Record partial exit with same trade ID
+                self.record_trade(
+                    profit=leg_profit, exit_reason=f"{reason}_partial",
+                    tier=self.position.get('tier'), size=filled_qty,
+                    direction=self.trade_direction,
+                    entry_quality=self.position.get('entry_quality_score'),
+                    entry_price=self.position['entry_price'],
+                    exit_price=exit_price,
+                    hold_duration=(datetime.now(timezone.utc) - self.position['entry_time']).total_seconds() / 60,
+                    entry_bar=self.position.get('entry_bar'),
+                    exit_bar=getattr(self, 'bar_count', 0),
+                    signal_adx=self.position.get('signal_adx'),
+                    signal_rsi=self.position.get('signal_rsi'),
+                    signal_macd=self.position.get('signal_macd'),
+                    signal_volume=self.position.get('signal_volume'),
+                    signal_price_pct=self.position.get('signal_price_pct'),
+                    signal_price=self.position.get('signal_price'),
+                    signal_time=self.position.get('signal_time'),
+                    signal_bar=self.position.get('signal_bar'),
+                    confluence_score=self.position.get('confluence_score'),
+                    trade_id=self.position.get('trade_id'))
             return True, leg_profit, exit_price
         except Exception as e:
             self._log(f"ERROR execute_sell: {e}", "bold red")
@@ -3737,7 +3805,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 10: BACKTEST STRATEGY — v10.0.2
+# PART 10: BACKTEST STRATEGY — v10.0.3 with fixed partial exits
 # ═══════════════════════════════════════════════════════════════════════════
 
 class BacktestMomentumStrategy(Strategy, MomentumLogic):
@@ -3842,7 +3910,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
         MomentumLogic.__init__(self, config=config, trading_app=None)
 
-        # ── DIRECTION-SEPARATED COOLDOWN ────────────────────────────────────────────
+        # ── DIRECTION-SEPARATED COOLDOWN ───────────────────────────────────────────
         self._exit_bar_long = -999
         self._exit_bar_short = -999
         self._last_exit_time_long = None
@@ -3853,7 +3921,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self._pending_signal_short = None
 
         print(f"\n{'=' * 70}")
-        print(f"BACKTEST v10.0.2 CONFIGURATION LOADED — TWO-TIER SYSTEM")
+        print(f"BACKTEST v10.0.3 CONFIGURATION LOADED — TWO-TIER SYSTEM + FIXED PARTIAL EXITS")
         print(f"{'=' * 70}")
         print(f"Direction: {self.trade_direction.upper()}")
         print(
@@ -3896,6 +3964,11 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self._signal_ml_prediction = 0
         self._signal_ml_confidence = 0.0
 
+        # NEW: Trade ID tracking for backtest
+        self._current_trade_id = 0
+        self._active_trade_ids = set()
+        self.trade_counter = 0
+
         try:
             idx_freq = data.df.index.freq
             if idx_freq is not None:
@@ -3935,10 +4008,31 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         return ranges
 
     def _bt_safe_size(self, units, price):
+        """
+        Convert a desired share count into a size backtesting.py will execute
+        as that exact number of shares.
+
+        BUG THIS FIXES: backtesting.py treats any size < 1 as "fraction of
+        equity", not "fractional shares". The old code only rounded to whole
+        shares when `units` was ALREADY an exact integer (units == round(units)).
+        Any partial-exit size like 15.18 (33% of a 46-share position) failed
+        that check and fell into the equity-fraction branch, silently selling
+        a tiny sliver of equity instead of ~15 shares. That drift between the
+        strategy's intended size and the engine's actual position is what
+        later let backtesting.py's own Trade.close() rounding overshoot and
+        flip the position into a spurious 1-share opposite trade.
+
+        FIX: always round to the nearest whole share first. Only fall back to
+        the equity-fraction interpretation if the position itself is
+        genuinely below 1 share even after rounding.
+        """
         if units <= 0:
             return 0
-        if units >= 1 and units == round(units):
-            return int(units)
+
+        whole_shares = int(round(units))
+        if whole_shares >= 1:
+            return whole_shares
+
         notional = units * price
         fraction = notional / max(self.equity, 1.0)
         return max(0.0001, min(fraction, 0.9999))
@@ -3970,6 +4064,17 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             print(f"❌ BLOCKED: Tier {tier} entry attempted but only_tier1_entries=True")
             return
 
+        # Hard guard: these flags were being SET (see only_long_entries /
+        # only_short_entries assignments elsewhere) but never CHECKED
+        # anywhere, so a long-only backtest had no engine-level protection
+        # against an opposite-direction order slipping through.
+        if self._position_direction == 'long' and self.only_short_entries:
+            print("❌ BLOCKED: long entry attempted but only_short_entries=True")
+            return
+        if self._position_direction == 'short' and self.only_long_entries:
+            print("❌ BLOCKED: short entry attempted but only_long_entries=True")
+            return
+
         tier_config = self._get_tier_config(tier)
         if tier_config is None:
             tier_config = self._get_tier_config(1)
@@ -3980,6 +4085,10 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             quality_score, tier, position_mult)
         if size <= 0:
             return
+
+        # Generate unique trade ID
+        self.trade_counter += 1
+        self._current_trade_id = self.trade_counter
 
         if self._position_direction == 'long':
             stop = current_price - (stop_mult * current_data['ATR'])
@@ -4031,7 +4140,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         bar_entry_time = self.data.index[-1]
         self._entry_time = bar_entry_time
         trade_record = TradeRecord(
-            trade_id=self.trade_counter,
+            trade_id=self._current_trade_id,
             symbol=getattr(self, 'symbol', 'SOL-USDT'),
             entry_time=bar_entry_time,
             entry_price=current_price,
@@ -4040,6 +4149,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             entry_quality_score=quality_score,
             entry_reason="entry_signal",
             entry_direction=self._position_direction,
+            entry_bar=self._entry_bar,
             # Signal data
             signal_adx=self._signal_adx or current_data.get('ADX', 0),
             signal_rsi=self._signal_rsi or current_data.get('RSI', 50),
@@ -4062,6 +4172,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             partial_exits_taken=0,
             partial_pnl_realised=0.0,
             original_size=size,
+            partial_exit_details=[],
         )
 
         # Store the active record and append to history
@@ -4077,6 +4188,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         print(f"{direction_icon} ENTER T{tier} ({tier_names.get(tier, 'Unknown')}) Q={quality_score} "
               f"@ ${current_price:.2f} ADX={current_data['ADX']:.1f} RSI={current_data['RSI']:.1f} "
               f"Dir={self.trade_direction.upper()} → IN_TRADE")
+
     def _calculate_actual_tier(self, quality_score):
         if self.only_tier1_entries:
             return 1 if quality_score >= self.quality_tier1_min_long else 0
@@ -4204,10 +4316,136 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
         return min(100, int(score))
 
+    def _record_partial_exit_row(self, partial_size, partial_fill_price, partial_profit, exit_signal):
+        """
+        Log a partial exit as its own complete TradeRecord row — entry
+        inherited from the original position, exit at this partial fill.
+        This is what makes each scale-out show up as its own line in the
+        trade log instead of being folded silently into the final row's PnL.
+        """
+        exit_bar = len(self.data) - 1
+        bar_exit_time = self.data.index[-1]
+
+        # Keyed by (entry_bar, exit_bar) — NOT just entry_bar — because
+        # every partial leg AND the final leg share the same entry_bar. A
+        # single-key map would have each new leg silently overwrite the
+        # previous one's reason.
+        self._exit_reason_map[(self._entry_bar, exit_bar)] = f"{exit_signal}_partial"
+
+        profit_pct_calc = (
+            (partial_fill_price - self._entry_price) / self._entry_price * 100
+            if self._position_direction == 'long'
+            else (self._entry_price - partial_fill_price) / self._entry_price * 100
+        )
+
+        # Use SAME trade ID as the parent trade
+        trade_id = self._current_trade_id
+
+        partial_record = TradeRecord(
+            trade_id=trade_id,
+            symbol=getattr(self, 'symbol', 'SOL-USDT'),
+            entry_time=self._entry_time,
+            entry_price=self._entry_price,
+            entry_size=partial_size,
+            entry_tier=self._entry_tier,
+            entry_quality_score=self._entry_quality,
+            entry_reason="entry_signal",
+            entry_direction=self._position_direction,
+            entry_bar=self._entry_bar,
+            signal_adx=self._signal_adx or 0,
+            signal_rsi=self._signal_rsi or 50,
+            signal_macd=self._signal_macd or 0,
+            signal_volume=self._signal_volume or 1.0,
+            signal_price_pct=self._signal_price_pct or 50,
+            signal_ml_prediction=getattr(self, '_signal_ml_prediction', 0),
+            signal_ml_confidence=getattr(self, '_signal_ml_confidence', 0.0),
+            confluence_score=self._entry_confluence_score,
+            market_regime=self.current_regime,
+            exit_time=bar_exit_time,
+            exit_price=partial_fill_price,
+            exit_size=partial_size,
+            exit_reason=f"{exit_signal}_partial",
+            profit=partial_profit,
+            profit_pct=profit_pct_calc,
+            hold_duration=self._bars_held,
+            partial_exits_taken=self._partial_exits,
+            partial_pnl_realised=partial_profit,
+            original_size=partial_size,
+            partial_exit_details=[],
+        )
+        self.trade_records.append(partial_record)
+
+        # Update the active trade record's partial exit details
+        if hasattr(self, '_active_trade_record') and self._active_trade_record:
+            self._active_trade_record.partial_exits_taken = self._partial_exits
+            self._active_trade_record.partial_pnl_realised = self._partial_pnl_realised
+            if not hasattr(self._active_trade_record, 'partial_exit_details'):
+                self._active_trade_record.partial_exit_details = []
+            self._active_trade_record.partial_exit_details.append({
+                'exit_time': bar_exit_time,
+                'exit_price': partial_fill_price,
+                'exit_size': partial_size,
+                'exit_reason': f"{exit_signal}_partial",
+                'profit': partial_profit,
+                'profit_pct': profit_pct_calc,
+            })
+
+        self.record_trade(
+            profit=partial_profit, exit_reason=f"{exit_signal}_partial",
+            tier=self._entry_tier, size=partial_size,
+            direction=self._position_direction,
+            entry_quality=self._entry_quality,
+            entry_price=self._entry_price, exit_price=partial_fill_price,
+            hold_duration=self._bars_held,
+            entry_bar=self._entry_bar, exit_bar=exit_bar,
+            signal_adx=self._signal_adx, signal_rsi=self._signal_rsi,
+            signal_macd=self._signal_macd, signal_volume=self._signal_volume,
+            signal_price_pct=self._signal_price_pct,
+            signal_price=self._signal_price,
+            signal_time=self._signal_time, signal_bar=self._signal_bar,
+            confluence_score=getattr(self, '_entry_confluence_score', None),
+            entry_time=self._entry_time, exit_time=bar_exit_time,
+            trade_id=trade_id)
+
     def _bt_close_position(self, current_price, exit_signal, profit_pct):
         size_at_close = abs(self.position.size)
-        self._exit_reason_map[self._entry_bar] = exit_signal
+        exit_bar = len(self.data) - 1
+
+        # Keyed by (entry_bar, exit_bar) — NOT just entry_bar — because
+        # every partial leg AND this final leg share the same entry_bar.
+        # A single-key map would have each new leg silently overwrite the
+        # previous one's recorded reason.
+        self._exit_reason_map[(self._entry_bar, exit_bar)] = exit_signal
         self.position.close()
+
+        # SAFETY NET: backtesting.py's own Trade.close() rounds any small
+        # leftover trade fragment up to at least 1 whole share. If size
+        # tracking ever drifts, this can overshoot and leave residual size
+        # on the position.
+        #
+        # FIX: this used to flatten the leftover with self.sell()/self.buy().
+        # Under exclusive_orders=True (see the identical bug already fixed
+        # in the partial-exit handler above), ANY new self.buy()/self.sell()
+        # order submitted here first closes whatever is left, THEN opens a
+        # brand-new position in the requested direction and size. If the
+        # "leftover" was ever the full remaining size (not just a 1-share
+        # rounding artifact), this reopened a full opposite-direction
+        # position at the same price/bar as the exit — exactly the
+        # long-only-still-shows-shorts pattern (e.g. LONG stop_loss_hard
+        # immediately followed by a same-size, same-bar, same-price SHORT).
+        # Use position.close() again instead: it builds its closing order
+        # directly and bypasses order submission (and thus exclusive_orders)
+        # entirely, so it can never flip direction.
+        if self.position.size != 0:
+            leftover = self.position.size
+            print(f"⚠️ POSITION DRIFT DETECTED after close(): leftover={leftover} "
+                  f"at {self.data.index[-1]} — force-flattening via position.close() "
+                  f"(never a new order) now.")
+            self.position.close()
+            if self.position.size != 0:
+                print(f"❌ POSITION STILL NOT FLAT after second close(): "
+                      f"size={self.position.size} at {self.data.index[-1]} — "
+                      f"investigate, NOT auto-reversing.")
 
         current_data = self._build_current_data()
         exit_fill_price = self._slippage_adjusted_price(
@@ -4221,27 +4459,37 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             final_leg = (self._entry_price - exit_fill_price) * size_at_close
             profit_pct_calc = (self._entry_price - exit_fill_price) / self._entry_price * 100
 
-        total_profit = final_leg + self._partial_pnl_realised
+        # This row reports ONLY the final leg's own PnL. Any partial legs
+        # were already logged as their own rows in _record_partial_exit_row,
+        # each carrying their own PnL. total_profit_for_whole_trade below is
+        # only used for the console summary line — it is never re-logged as
+        # a row, so nothing gets double-counted in the exported sheet. Sum
+        # every row sharing this trade's entry_time/entry_price to see the
+        # whole trade's total P&L.
+        total_profit_for_whole_trade = final_leg + self._partial_pnl_realised
 
         # Real timestamp of the bar on which the position is being closed.
         bar_exit_time = self.data.index[-1]
         bar_entry_time = getattr(self, '_entry_time', None)
 
+        trade_id = self._current_trade_id
+
         self.record_trade(
-            profit=total_profit, exit_reason=exit_signal,
+            profit=final_leg, exit_reason=exit_signal,
             tier=self._entry_tier, size=size_at_close,
             direction=self._position_direction,
             entry_quality=self._entry_quality,
             entry_price=self._entry_price, exit_price=exit_fill_price,
             hold_duration=self._bars_held,
-            entry_bar=self._entry_bar, exit_bar=len(self.data) - 1,
+            entry_bar=self._entry_bar, exit_bar=exit_bar,
             signal_adx=self._signal_adx, signal_rsi=self._signal_rsi,
             signal_macd=self._signal_macd, signal_volume=self._signal_volume,
             signal_price_pct=self._signal_price_pct,
             signal_price=self._signal_price,
             signal_time=self._signal_time, signal_bar=self._signal_bar,
             confluence_score=getattr(self, '_entry_confluence_score', None),
-            entry_time=bar_entry_time, exit_time=bar_exit_time)
+            entry_time=bar_entry_time, exit_time=bar_exit_time,
+            trade_id=trade_id)
 
         # Also fill in the exit fields on the matching TradeRecord object
         # (self.trade_records), which was previously left with exit_time=None
@@ -4251,16 +4499,19 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             active_record.exit_time = bar_exit_time
             active_record.exit_price = exit_fill_price
             active_record.exit_reason = exit_signal
-            active_record.profit = total_profit
+            active_record.profit = final_leg
             active_record.profit_pct = profit_pct_calc
             active_record.hold_duration = self._bars_held
+            active_record.partial_exits_taken = self._partial_exits
+            active_record.partial_pnl_realised = self._partial_pnl_realised
 
         tier_names = {1: 'Low Risk', 2: 'Medium Risk'}
         direction_icon = "⬆️" if self._position_direction == 'long' else "⬇️"
-        win_loss_icon = "✅" if total_profit > 0 else "❌"
+        win_loss_icon = "✅" if total_profit_for_whole_trade > 0 else "❌"
         print(f"{win_loss_icon} {direction_icon} EXIT @ ${exit_fill_price:.2f} {profit_pct_calc:+.2f}% "
               f"hold={self._bars_held}bars tier={self._entry_tier} ({tier_names.get(self._entry_tier, 'Unknown')}) "
-              f"reason={exit_signal} → SEEKING_ENTRY")
+              f"reason={exit_signal} final_leg=${final_leg:.2f} "
+              f"whole_trade_total=${total_profit_for_whole_trade:.2f} → SEEKING_ENTRY")
 
         self._entry_price = np.nan
         self._stop_loss = np.nan
@@ -4287,7 +4538,9 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self._signal_ml_confidence = 0.0
         self._transition_to_seeking_entry()
 
-    def _extract_exit_reason(self, entry_bar):
+    def _extract_exit_reason(self, entry_bar, exit_bar=None):
+        if exit_bar is not None and (entry_bar, exit_bar) in self._exit_reason_map:
+            return self._exit_reason_map[(entry_bar, exit_bar)]
         return self._exit_reason_map.get(entry_bar, "unknown")
 
     def get_trade_records_for_export(self):
@@ -4303,8 +4556,10 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 return_pct = ((entry_price - trade.get('exit_price', 0)) / entry_price) * 100 if entry_price > 0 else 0
 
             trade_record = {
-                'Trade_#': i + 1, 'Tier': f"Tier {actual_tier}",
-                'Tier_Number': actual_tier,
+                'Trade_#': trade.get('trade_id', i + 1),  # Use trade_id if available
+                'Tier': f"Tier {actual_tier}" if actual_tier > 0 else "Unknown",
+                'Tier_Number': actual_tier if actual_tier > 0 else -1,
+                'Direction': trade.get('direction', 'UNKNOWN').upper(),
                 'Signal_Bar': trade.get('signal_bar', trade.get('entry_bar', 0) - 1),
                 'Signal_Time': trade.get('signal_time', ''),
                 'Signal_Price': trade.get('signal_price', 0),
@@ -4441,6 +4696,10 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 signal['power_score'], tier, position_mult)
 
             if size > 0:
+                # Generate unique trade ID
+                self.trade_counter += 1
+                self._current_trade_id = self.trade_counter
+
                 if signal['decision'] == "buy":
                     stop = execution_price - (stop_mult * current_data['ATR'])
                     if stop < execution_price:
@@ -4497,9 +4756,8 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 bar_entry_time = self.data.index[-1]
                 self._entry_time = bar_entry_time
                 self._entry_time_pending = True
-                self.trade_counter = getattr(self, 'trade_counter', 0) + 1
                 trade_record = TradeRecord(
-                    trade_id=self.trade_counter,
+                    trade_id=self._current_trade_id,
                     symbol=getattr(self, 'symbol', 'SOL-USDT'),
                     entry_time=bar_entry_time,
                     entry_price=fill_price,
@@ -4508,6 +4766,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                     entry_quality_score=signal['power_score'],
                     entry_reason="entry_signal",
                     entry_direction=self._position_direction,
+                    entry_bar=self._entry_bar,
                     signal_adx=self._signal_adx or current_data.get('ADX', 0),
                     signal_rsi=self._signal_rsi or current_data.get('RSI', 50),
                     signal_macd=self._signal_macd or current_data.get('MACD', 0),
@@ -4518,6 +4777,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                     confluence_score=self._entry_confluence_score,
                     market_regime=regime,  # Store actual regime
                     original_size=size,
+                    partial_exit_details=[],
                 )
                 if not hasattr(self, 'trade_records'):
                     self.trade_records = []
@@ -4689,29 +4949,52 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 else:
                     profit_pct = (self._entry_price - current_price) / self._entry_price * 100
 
-                # Handle partial exits
+                # Handle partial exits - FIXED: use position.close(portion)
                 if exit_pct < 1.0 and self._partial_exits < 4:
                     self._partial_exits += 1
-                    raw_partial = abs(self.position.size) * exit_pct
-                    if current_price >= 1000:
-                        partial_size = round(raw_partial, 6)
-                    elif current_price >= 100:
-                        partial_size = round(raw_partial, 4)
-                    else:
-                        partial_size = int(raw_partial)
-                    partial_size = self._bt_safe_size(raw_partial, current_price)
-                    if partial_size > 0:
+
+                    # CRITICAL FIX: use self.position.close(portion=...), NOT
+                    # self.sell()/self.buy(). This Backtest is configured
+                    # with exclusive_orders=True, which makes ANY brand-new
+                    # order (self.buy()/self.sell()) submitted while a
+                    # position is open FIRST close the ENTIRE existing
+                    # position, THEN open a new opposite-direction position
+                    # sized at whatever was requested. That is exactly how a
+                    # 33% partial take-profit on a LONG was silently turning
+                    # into "close the whole long, then open a brand-new
+                    # SHORT" — every time, in every mode, including
+                    # long-only. position.close(portion) builds its closing
+                    # order directly and bypasses order submission (and thus
+                    # exclusive_orders) entirely, so it can never flip
+                    # direction.
+                    #
+                    # Compute the closed size with the SAME formula
+                    # backtesting.py's own Trade.close() uses internally
+                    # (max(1, round(size * portion))), so our bookkeeping
+                    # can never drift from what the engine actually closes.
+                    current_position_size = abs(self.position.size)
+                    if current_position_size > 0:
+                        partial_size = max(1, int(round(current_position_size * exit_pct)))
+                        portion = min(1.0, partial_size / current_position_size)
+
                         partial_fill_price = self._slippage_adjusted_price(
-                            current_price, raw_partial, current_data,
+                            current_price, partial_size, current_data,
                             adverse_direction=(-1 if self._position_direction == 'long' else +1))
+
+                        # FIX: use position.close(portion) - NO new order, NO direction flip
+                        self.position.close(portion=portion)
+
                         if self._position_direction == 'long':
-                            self.sell(size=partial_size)
-                            partial_profit = (partial_fill_price - self._entry_price) * raw_partial
+                            partial_profit = (partial_fill_price - self._entry_price) * partial_size
                         else:
-                            self.buy(size=partial_size)
-                            partial_profit = (self._entry_price - partial_fill_price) * raw_partial
+                            partial_profit = (self._entry_price - partial_fill_price) * partial_size
+
                         self._partial_pnl_realised += partial_profit
+                        self._record_partial_exit_row(
+                            partial_size, partial_fill_price, partial_profit, exit_signal)
                         return
+                    else:
+                        self._partial_exits -= 1
 
                 # Full exit
                 self._bt_close_position(current_price, exit_signal, profit_pct)
@@ -4722,17 +5005,17 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def run_walk_forward_optimization(
-    df,
-    strategy_class=BacktestMomentumStrategy,
-    train_bars=2160,
-    test_bars=720,
-    step_bars=None,
-    cash=10000,
-    commission=0.001,
-    maximize='Sharpe Ratio',
-    param_ranges=None,
-    max_tries=200,
-    verbose=True,
+        df,
+        strategy_class=BacktestMomentumStrategy,
+        train_bars=2160,
+        test_bars=720,
+        step_bars=None,
+        cash=10000,
+        commission=0.001,
+        maximize='Sharpe Ratio',
+        param_ranges=None,
+        max_tries=200,
+        verbose=True,
 ):
     if step_bars is None:
         step_bars = test_bars
@@ -4776,10 +5059,10 @@ def run_walk_forward_optimization(
 
         strategy_class.reset_to_defaults()
         bt_train = Backtest(train_df, strategy_class, cash=cash,
-                             commission=commission, exclusive_orders=True)
+                            commission=commission, exclusive_orders=True)
         try:
             train_stats = bt_train.optimize(**param_ranges, maximize=maximize,
-                                             max_tries=max_tries)
+                                            max_tries=max_tries)
         except Exception as e:
             if verbose:
                 print(f"[Fold {fold}] optimize() failed: {e}")
@@ -4790,7 +5073,7 @@ def run_walk_forward_optimization(
         strategy_class.set_updated_params(best_params)
 
         bt_test = Backtest(test_df, strategy_class, cash=cash,
-                            commission=commission, exclusive_orders=True)
+                           commission=commission, exclusive_orders=True)
         test_stats = bt_test.run()
 
         train_sharpe = train_stats.get('Sharpe Ratio', float('nan'))
@@ -4823,7 +5106,7 @@ def run_walk_forward_optimization(
             if not np.isnan(degradation):
                 flag = ("⚠️ OVERFIT SIGNAL" if degradation < 0.3
                         else "✅ HOLDS UP" if degradation > 0.6
-                        else "🟡 PARTIAL DECAY")
+                else "🟡 PARTIAL DECAY")
                 print(f"  Degradation ratio (test/train Sharpe) = {degradation:.2f}  {flag}")
 
         start += step_bars

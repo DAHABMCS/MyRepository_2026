@@ -6350,7 +6350,7 @@ class TradingApp:
 
     def _build_momentum_backtest_panel(self, right_frame):
         """Build COMPLETE Momentum-specific backtest optimization panel with ALL 160+ parameters"""
-        from strategies.MomentumStrategy_MACD_HybridScore_Latest import MOMENTUM_PARAMS
+
 
         # ═══ Get current parameters from GUI (respects toggle selection) ══════════
         current_params = self.get_current_momentum_params()
@@ -13041,7 +13041,7 @@ class TradingApp:
         """
         Run comprehensive backtest with Quality Score optimization and automatic Excel export.
         FIXED: Complete Scalping backtest parameter support with save/load functionality
-        FIXED: Forces only_tier2_entries = False to match Excel data
+        FIXED: Forces GUI trade direction into backtest (LONG/SHORT/BOTH)
         FIXED: Reloads strategy module to pick up parameter changes
         FIXED: Excel export happens AFTER all backtest processing is complete
         FIXED: All strategies use single-timeframe data fetching
@@ -13208,10 +13208,6 @@ class TradingApp:
                 self.log_message("📋 Updating parameters from LIVE UI settings...", "cyan")
                 self.update_custom_params_from_ui()
                 self.log_message("✅ Parameters updated from UI", "green")
-                # REMOVED: this used to force only_tier2_entries back to False right
-                # after reading it from the UI, silently undoing the user's checkbox
-                # choice on every "Custom Parameters" backtest. only_tier2_entries is
-                # now whatever update_custom_params_from_ui() actually read from the UI.
 
             # ── Reload strategy module ───────────────────────────────────────
             self.log_message("=" * 70, "cyan")
@@ -13295,6 +13291,19 @@ class TradingApp:
 
                 current_params = self.get_current_momentum_params()
 
+                # ─── FIX: Force GUI trade direction into backtest ──────────────────────────
+                gui_direction = self.trade_direction_var.get()  # 'long', 'short', or 'both'
+                current_params['trade_direction'] = gui_direction
+                self.log_message(f"📊 BACKTEST DIRECTION FORCED: {gui_direction.upper()} (from GUI)", "bold green")
+                self.log_message(f"   Tier1 Pass (LONG): {current_params.get('quality_tier1_min_long', 75)}", "cyan")
+                self.log_message(f"   Tier2 Pass (LONG): {current_params.get('quality_tier2_min_long', 65)}", "cyan")
+                if gui_direction == 'short':
+                    self.log_message(f"   Tier1 Pass (SHORT): {current_params.get('quality_tier1_min_short', 75)}",
+                                     "cyan")
+                    self.log_message(f"   Tier2 Pass (SHORT): {current_params.get('quality_tier2_min_short', 65)}",
+                                     "cyan")
+                # ──────────────────────────────────────────────────────────────────────────
+
                 tier2_value = current_params.get('only_tier2_entries', 'NOT FOUND')
                 tier2_min = current_params.get('quality_tier2_min', 'NOT FOUND')
                 self.log_message(f"   🔧 only_tier2_entries = {tier2_value}",
@@ -13309,6 +13318,10 @@ class TradingApp:
 
                 BacktestMomentumStrategy._updated_params = current_params.copy()
                 BacktestMomentumStrategy._use_updated_params = True
+
+                # ─── Also set the class-level trade_direction directly ──────────────────
+                BacktestMomentumStrategy.trade_direction = gui_direction
+                # ──────────────────────────────────────────────────────────────────────────
 
                 for _k, _v in current_params.items():
                     try:
@@ -13680,8 +13693,8 @@ class TradingApp:
                                 )
                                 self.log_message("=" * 70, "green")
 
-                    elif optimized_stats is None:
-                        self.log_message("❌ Optimization returned no results", "red")
+                        elif optimized_stats is None:
+                            self.log_message("❌ Optimization returned no results", "red")
 
             # ═══ STEP 3: Generate plots ═══════════════════════════════════════
             try:
@@ -13741,8 +13754,7 @@ class TradingApp:
                             short_count = sum(
                                 1 for t in kalman_strategy_instance.trade_log if t.get('position_type') == 'short')
                             self.log_message(
-                                f"   📈 LONG trades: {long_count} | SHORT trades: {short_count}", "cyan"
-                            )
+                                f"   📈 LONG trades: {long_count} | SHORT trades: {short_count}", "cyan")
                     else:
                         self.log_message("⚠️ Kalman Excel export failed", "orange")
                 else:
@@ -14345,11 +14357,11 @@ class TradingApp:
             self.log_message(traceback.format_exc(), "red")
             return None
 
-
     def save_backtest_results_to_excel(self, df, stats=None, suffix=""):
         """
         Export backtest results to Excel with 100% accurate trade data.
-        Uses the strategy's trade_records as the single source of truth.
+        PRIMARY SOURCE: stats['_trades'] (the backtest engine's complete trade ledger)
+        ENRICHMENT: strategy.trade_records (for tier, quality score, signals)
         """
         try:
             if stats is None:
@@ -14382,26 +14394,31 @@ class TradingApp:
             try:
                 strategy_instance = getattr(stats, '_strategy', None)
 
-                # ─── SINGLE SOURCE OF TRUTH: stats['_trades'] (backtesting.py's own
-                # broker fill ledger) drives BOTH the Trades sheet and the
-                # Market_Data BUY/SELL markers from the exact same loop, over the
-                # exact same rows. This guarantees the two sheets can never
-                # disagree on trade count again. strategy_instance.trade_records /
-                # trade_history are used only to ENRICH rows (tier, confluence
-                # inputs, ML signals, etc.) when a match can be found — they are
-                # no longer the source of which trades exist.
+                # ─── PRIMARY SOURCE: Backtest trades (COMPLETE) ═══
+                backtest_trades = []
+                trades_df = None
+                if '_trades' in stats and stats['_trades'] is not None:
+                    trades_df = stats['_trades']
+                    if isinstance(trades_df, pd.DataFrame) and not trades_df.empty:
+                        backtest_trades = trades_df.to_dict('records')
+                        self.log_message(
+                            f"📊 PRIMARY SOURCE: {len(backtest_trades)} trades from backtest results", "green")
 
+                # ─── ENRICHMENT: Strategy trade records (for tier, quality, signals) ═══
                 trade_records = []
                 if strategy_instance and hasattr(strategy_instance, 'trade_records'):
                     trade_records = strategy_instance.trade_records
-                    self.log_message(f"📊 Found {len(trade_records)} trade records in strategy (used for enrichment only)", "green")
-                trade_history = []
-                if strategy_instance and hasattr(strategy_instance, 'trade_history'):
-                    trade_history = strategy_instance.trade_history
-                    self.log_message(f"📊 Found {len(trade_history)} trade_history entries in strategy (used for enrichment only)", "green")
+                    self.log_message(
+                        f"📊 ENRICHMENT: {len(trade_records)} trade records found for enrichment", "blue")
+
+                # Get commission rate from settings
+                # FIX: commission_var already stores a decimal fraction (e.g. 0.001 = 0.1%),
+                # the SAME value passed directly to Backtest(commission=...) above. Dividing by
+                # 100 here made Expected_Commission ~100x smaller than Effective_Commission.
+                commission_rate = self.commission_var.get()
+                self.log_message(f"💳 Commission rate: {commission_rate * 100:.4f}%", "cyan")
 
                 def _rec_get(rec, *names, default=None):
-                    """Read an attribute/key from either a TradeRecord dataclass or a dict, trying several name variants."""
                     if rec is None:
                         return default
                     for name in names:
@@ -14424,88 +14441,7 @@ class TradingApp:
                         return t.strftime('%Y-%m-%d %H:%M:%S')
                     return str(t)
 
-                def _norm_ts(t):
-                    try:
-                        ts = pd.Timestamp(t)
-                        if ts.tzinfo is not None:
-                            ts = ts.tz_localize(None)
-                        return ts
-                    except Exception:
-                        return None
-
-                # Lookup dicts built from the strategy's own bookkeeping, for enrichment
-                trade_history_by_entry_bar = {}
-                trade_history_by_exit_bar = {}
-                for t in trade_history:
-                    if isinstance(t, dict):
-                        ebar = t.get('entry_bar')
-                        if ebar is not None:
-                            try:
-                                trade_history_by_entry_bar[int(ebar)] = t
-                            except (ValueError, TypeError):
-                                pass
-                        xbar = t.get('exit_bar')
-                        if xbar is not None:
-                            try:
-                                trade_history_by_exit_bar[int(xbar)] = t
-                            except (ValueError, TypeError):
-                                pass
-
-                trade_records_by_entry_time = {}
-                for record in trade_records:
-                    et = _rec_get(record, 'entry_time')
-                    key = _norm_ts(et) if et is not None else None
-                    if key is not None:
-                        trade_records_by_entry_time[key] = record
-
-                # ─── RECONCILIATION (for visibility / debugging only) ───────────────
-                n_strategy_trades = len(trade_records)
-                n_broker_trades = 0
-                n_unique_entry_bars = None
-                if '_trades' in stats and stats['_trades'] is not None and isinstance(stats['_trades'], pd.DataFrame):
-                    n_broker_trades = len(stats['_trades'])
-                    if 'EntryBar' in stats['_trades'].columns:
-                        n_unique_entry_bars = stats['_trades']['EntryBar'].nunique()
-
-                total_partial_exits = 0
-                for record in trade_records:
-                    total_partial_exits += _rec_get(record, 'partial_exits_taken', default=0) or 0
-
-                diag_placed = getattr(strategy_instance, '_diag_orders_placed', {}) if strategy_instance else {}
-                diag_appended = getattr(strategy_instance, '_diag_records_appended', {}) if strategy_instance else {}
-                diag_line = (
-                    f"orders placed: long={diag_placed.get('long', 'n/a')}, short={diag_placed.get('short', 'n/a')} | "
-                    f"records appended: long={diag_appended.get('long', 'n/a')}, short={diag_appended.get('short', 'n/a')}"
-                )
-
-                self.log_message(
-                    f"🔎 TRADE COUNT RECONCILIATION: strategy trade_records={n_strategy_trades}, "
-                    f"broker stats['_trades']={n_broker_trades}, "
-                    f"unique EntryBar in broker trades={n_unique_entry_bars}, "
-                    f"sum(partial_exits_taken)={total_partial_exits}. "
-                    f"NOTE: Trades sheet is now built directly from stats['_trades'], so it will always "
-                    f"equal the Market_Data BUY/SELL count ({n_broker_trades}), regardless of this gap. "
-                    f"A gap here means trade_records under-counts what the strategy actually executed — "
-                    f"worth checking in the strategy file's trade-closing logic.",
-                    "cyan")
-                self.log_message(f"🔎 DIRECTION DIAG: {diag_line}", "cyan")
-
-                reconciliation_df = pd.DataFrame([{
-                    'Strategy_trade_records_count': n_strategy_trades,
-                    'Broker_stats_trades_count': n_broker_trades,
-                    'Unique_EntryBar_in_broker_trades': n_unique_entry_bars,
-                    'Sum_partial_exits_taken': total_partial_exits,
-                    'Orders_placed_long': diag_placed.get('long'),
-                    'Orders_placed_short': diag_placed.get('short'),
-                    'Records_appended_long': diag_appended.get('long'),
-                    'Records_appended_short': diag_appended.get('short'),
-                    'Trades_sheet_now_sourced_from': 'stats[_trades] (broker ledger)',
-                    'Trades_sheet_row_count': n_broker_trades,
-                }])
-                reconciliation_df.to_excel(writer, sheet_name='Trade_Reconciliation', index=False)
-                sheets_created += 1
-
-                # ─── MARKET DATA PREP (built first so both sheets share it) ────────
+                # ─── MARKET DATA PREP ────────────────────────────────────────
                 market_df = df.copy()
                 if isinstance(market_df.index, pd.DatetimeIndex) and market_df.index.tz is not None:
                     market_df.index = market_df.index.tz_localize(None)
@@ -14519,153 +14455,228 @@ class TradingApp:
                 market_df['Confluence_Score'] = 0
                 market_df['Risk_Allocation_%'] = 0.0
 
-                # ─── ONE LOOP over stats['_trades'] feeds BOTH sheets ───────────────
+                self._exit_reason_map = getattr(strategy_instance, '_exit_reason_map', {})
+
+                # ─── BUILD LOOKUP FOR STRATEGY RECORDS BY ENTRY BAR ═══
+                # entry_bar comes from TradeRecord.entry_bar, which previously didn't
+                # exist as a field at all (that was the real reason matching was
+                # always 0/N regardless of any offset). Key on the raw value here;
+                # the lookup below tries a small offset fallback and logs which one
+                # actually hits, instead of assuming a direction blind.
+                record_by_entry_bar = {}
+                for record in trade_records:
+                    entry_bar = _rec_get(record, 'entry_bar')
+                    if entry_bar is not None:
+                        record_by_entry_bar[entry_bar] = record
+
+                _match_offset_counts = {}
+
+                # ─── BUILD TRADES DATA FROM BACKTEST TRADES (PRIMARY SOURCE) ═══
                 trades_data = []
-                matched_count = 0
-                if '_trades' in stats and stats['_trades'] is not None:
-                    trades_df = stats['_trades']
-                    if isinstance(trades_df, pd.DataFrame) and not trades_df.empty:
-                        for pos, (idx, trade) in enumerate(trades_df.iterrows()):
-                            try:
-                                entry_bar = int(trade.get('EntryBar', 0))
-                                exit_bar = int(trade.get('ExitBar', 0))
-                                size = float(trade.get('Size', 0)) if 'Size' in trade else 0.0
-                                entry_price = float(trade.get('EntryPrice', 0)) if 'EntryPrice' in trade else 0.0
-                                exit_price = float(trade.get('ExitPrice', 0)) if 'ExitPrice' in trade else 0.0
+                total_gross_pnl = 0
+                total_commission_calc = 0
+                total_commission_expected = 0  # For double-check
 
-                                if 'PnL' in trade and trade.get('PnL') is not None:
-                                    pnl = float(trade.get('PnL', 0))
-                                elif entry_price and exit_price:
-                                    pnl = (exit_price - entry_price) * size
+                if backtest_trades:
+                    self.log_message(f"📊 Building trades from {len(backtest_trades)} backtest trades", "blue")
+
+                    # Group by EntryBar to handle partial exits
+                    # FIX: EntryBar==0 is a legitimate first-bar entry, not a "missing value"
+                    # sentinel. Using 0 as both meanings caused real bar-0 trades to be
+                    # silently dropped from the Trades sheet (while still counted in the
+                    # equity-curve-based Summary), which showed up as a Trades-vs-Summary
+                    # PnL mismatch. Use -1 (an impossible real bar index) as the sentinel.
+                    trade_groups = {}
+                    for trade in backtest_trades:
+                        entry_bar = trade.get('EntryBar', -1)
+                        if entry_bar not in trade_groups:
+                            trade_groups[entry_bar] = []
+                        trade_groups[entry_bar].append(trade)
+
+                    trade_counter = 0
+                    for entry_bar, group_trades in sorted(trade_groups.items()):
+                        if entry_bar < 0:
+                            continue
+
+                        group_trades.sort(key=lambda x: x.get('ExitBar', 0))
+                        first_trade = group_trades[0]
+
+                        # Determine direction from size
+                        first_size = first_trade.get('Size', 0)
+                        direction = 'LONG' if first_size > 0 else 'SHORT'
+                        entry_price = first_trade.get('EntryPrice', 0)
+                        entry_time = first_trade.get('EntryTime')
+                        # FIX: backtesting.py splits a partially-closed position into
+                        # multiple Trade records, and each record's own Size is only
+                        # the portion closed by THAT leg, not the original total
+                        # position size. Using first_trade's Size alone (e.g. 16)
+                        # displayed "Entry_Size" as 16 on every leg of a trade whose
+                        # true original size was actually 50 (16+11+23 summed across
+                        # legs) - the real entry size is the sum across all legs.
+                        entry_size = sum(abs(t.get('Size', 0)) for t in group_trades)
+
+                        trade_counter += 1
+                        total_legs = len(group_trades)
+
+                        # Get enrichment from strategy record if available
+                        # Try exact match, then a small offset fallback (order fills
+                        # can legitimately land 1 bar away from when the entry_bar
+                        # was recorded); log which one actually hit so any remaining
+                        # systematic offset is visible instead of silently zero.
+                        matching_record = record_by_entry_bar.get(entry_bar)
+                        _used_offset = 0
+                        if matching_record is None:
+                            for _off in (-1, 1, -2, 2):
+                                matching_record = record_by_entry_bar.get(entry_bar + _off)
+                                if matching_record is not None:
+                                    _used_offset = _off
+                                    break
+                        _match_offset_counts[_used_offset if matching_record else 'none'] = \
+                            _match_offset_counts.get(_used_offset if matching_record else 'none', 0) + 1
+                        entry_quality = _rec_get(matching_record, 'entry_quality_score', 'quality_score',
+                                                 default=0) or 0
+                        entry_tier = _rec_get(matching_record, 'entry_tier', 'tier', default=2)
+
+                        # Determine tier name
+                        if entry_tier == 1:
+                            tier_name = "Tier 1"
+                        elif entry_tier == 2:
+                            tier_name = "Tier 2"
+                        elif entry_tier == 3:
+                            tier_name = "Tier 3"
+                        elif entry_quality and entry_quality > 0:
+                            if entry_quality >= quality_tier1_min:
+                                tier_name, entry_tier = "Tier 1", 1
+                            elif entry_quality >= quality_tier2_min:
+                                tier_name, entry_tier = "Tier 2", 2
+                            else:
+                                tier_name, entry_tier = "Below Tier 2", 0
+                        else:
+                            tier_name, entry_tier = "Unknown", 0
+
+                        # Process each exit leg
+                        for leg_pos, trade in enumerate(group_trades):
+                            exit_bar = trade.get('ExitBar', 0)
+                            exit_price = trade.get('ExitPrice', 0)
+                            exit_time = trade.get('ExitTime')
+                            leg_size = abs(trade.get('Size', 0))
+
+                            if leg_size == 0:
+                                # Fallback only: use this leg's own share, not the
+                                # full summed position size (entry_size), to avoid
+                                # overstating this leg's gross_pnl/commission.
+                                leg_size = abs(first_size) if leg_pos == 0 else entry_size / max(total_legs, 1)
+
+                            # ═══ CALCULATE GROSS PNL ═══
+                            if direction == 'LONG':
+                                gross_pnl = (exit_price - entry_price) * leg_size
+                            else:
+                                gross_pnl = (entry_price - exit_price) * leg_size
+
+                            # ═══ CALCULATE EXPECTED COMMISSION ═══
+                            # Commission is applied on BOTH entry and exit
+                            expected_entry_commission = entry_price * leg_size * commission_rate
+                            expected_exit_commission = exit_price * leg_size * commission_rate
+                            expected_commission = expected_entry_commission + expected_exit_commission
+
+                            # ═══ USE THE BACKTEST'S PNL DIRECTLY ═══
+                            if 'PnL' in trade and trade.get('PnL') is not None:
+                                net_pnl = float(trade.get('PnL', 0))
+                            else:
+                                # Fallback: calculate from prices
+                                if direction == 'LONG':
+                                    net_pnl = (exit_price - entry_price) * leg_size
                                 else:
-                                    pnl = 0.0
+                                    net_pnl = (entry_price - exit_price) * leg_size
 
-                                if 'ReturnPct' in trade and trade.get('ReturnPct') is not None:
-                                    return_pct = float(trade.get('ReturnPct', 0)) * 100
-                                elif entry_price:
-                                    return_pct = ((exit_price - entry_price) / entry_price * 100) if size >= 0 \
-                                        else ((entry_price - exit_price) / entry_price * 100)
-                                else:
-                                    return_pct = 0.0
+                            # ═══ CALCULATE EFFECTIVE COMMISSION ═══
+                            effective_commission = gross_pnl - net_pnl
+                            total_gross_pnl += gross_pnl
+                            total_commission_calc += effective_commission
+                            total_commission_expected += expected_commission
 
-                                direction = 'LONG' if size >= 0 else 'SHORT'
+                            # ═══ Calculate Return_% from net PnL ═══
+                            entry_value = entry_price * leg_size
+                            return_pct = (net_pnl / entry_value) * 100 if entry_value > 0 else 0
 
-                                entry_time_val = trade.get('EntryTime') if 'EntryTime' in trade else \
-                                    (market_df.index[entry_bar] if 0 <= entry_bar < len(market_df) else None)
-                                exit_time_val = trade.get('ExitTime') if 'ExitTime' in trade else \
-                                    (market_df.index[exit_bar] if 0 <= exit_bar < len(market_df) else None)
+                            # Get exit reason
+                            exit_reason = self._extract_exit_reason(trade, exit_bar, market_df)
 
-                                # --- populate Market_Data columns ---
-                                confluence = 0
-                                entry_data = None
-                                if 0 <= entry_bar < len(market_df):
-                                    entry_idx = market_df.index[entry_bar]
-                                    market_df.at[entry_idx, 'Entry_Signal'] = 'BUY'
-                                    entry_data = market_df.iloc[entry_bar]
-                                    confluence = self._calculate_entry_confluence(entry_data)
-                                    market_df.at[entry_idx, 'Confluence_Score'] = confluence
+                            # Determine exit label
+                            if total_legs > 1:
+                                exit_label = f"Partial {trade_counter}/{leg_pos + 1}"
+                                full_exit_reason = f"{exit_label} - {exit_reason}" if exit_reason else exit_label
+                            else:
+                                exit_label = "Full Exit"
+                                full_exit_reason = f"{exit_label} - {exit_reason}" if exit_reason else exit_label
 
-                                hist_trade = None
-                                if entry_bar in trade_history_by_entry_bar:
-                                    hist_trade = trade_history_by_entry_bar[entry_bar]
-                                elif exit_bar in trade_history_by_exit_bar:
-                                    hist_trade = trade_history_by_exit_bar[exit_bar]
+                            # Mark entry in market data
+                            if entry_time is not None:
+                                try:
+                                    entry_dt = pd.Timestamp(entry_time)
+                                    if entry_dt.tzinfo is not None:
+                                        entry_dt = entry_dt.tz_localize(None)
+                                    if entry_dt in market_df.index:
+                                        market_df.at[entry_dt, 'Entry_Signal'] = 'BUY'
+                                except Exception as e:
+                                    pass
 
-                                matched_record = None
-                                key = _norm_ts(entry_time_val) if entry_time_val is not None else None
-                                if key is not None:
-                                    matched_record = trade_records_by_entry_time.get(key)
+                            # Mark exit in market data
+                            if exit_time is not None:
+                                try:
+                                    exit_dt = pd.Timestamp(exit_time)
+                                    if exit_dt.tzinfo is not None:
+                                        exit_dt = exit_dt.tz_localize(None)
+                                    if exit_dt in market_df.index:
+                                        market_df.at[exit_dt, 'Exit_Signal'] = 'SELL'
+                                        market_df.at[exit_dt, 'Exit_Reason'] = full_exit_reason
+                                except Exception as e:
+                                    pass
 
-                                enrich_source = matched_record if matched_record is not None else hist_trade
-                                if enrich_source is not None:
-                                    matched_count += 1
-
-                                real_tier = _rec_get(enrich_source, 'entry_tier', 'tier')
-
-                                if real_tier == 1:
-                                    risk_pct = getattr(strategy_instance, 'risk_tier1', 0.025)
-                                elif real_tier == 2:
-                                    risk_pct = getattr(strategy_instance, 'risk_tier2', 0.015)
-                                elif real_tier == 3:
-                                    risk_pct = getattr(strategy_instance, 'risk_tier3', 0.008)
-                                elif entry_data is not None:
-                                    risk_pct = self._calculate_risk_allocation(entry_data, confluence)
-                                else:
-                                    risk_pct = 0.0
-                                if 0 <= entry_bar < len(market_df):
-                                    market_df.at[entry_idx, 'Risk_Allocation_%'] = risk_pct * 100
-
-                                exit_reason = ''
-                                if 0 <= exit_bar < len(market_df):
-                                    exit_idx = market_df.index[exit_bar]
-                                    market_df.at[exit_idx, 'Exit_Signal'] = 'SELL'
-                                    exit_reason = self._extract_exit_reason(trade, exit_bar, market_df)
-                                    market_df.at[exit_idx, 'Exit_Reason'] = exit_reason
-
-                                # --- tier classification for Trades sheet ---
-                                entry_quality = _rec_get(enrich_source, 'entry_quality_score', 'entry_quality', default=0) or 0
-                                if real_tier == 1:
-                                    tier_name = "Tier 1"
-                                elif real_tier == 2:
-                                    tier_name = "Tier 2"
-                                elif entry_quality and entry_quality > 0:
-                                    if entry_quality >= quality_tier1_min:
-                                        tier_name, real_tier = "Tier 1", 1
-                                    elif entry_quality >= quality_tier2_min:
-                                        tier_name, real_tier = "Tier 2", 2
-                                    else:
-                                        tier_name, real_tier = "Below Tier 2", 0
-                                elif enrich_source is not None:
-                                    tier_name, real_tier = "Unknown", 0
-                                else:
-                                    tier_name, real_tier = "Not logged by strategy", -1
-
-                                trades_data.append({
-                                    'Trade_#': pos + 1,
-                                    'Tier': tier_name,
-                                    'Tier_Number': real_tier if real_tier is not None else -1,
-                                    'Direction': direction,
-                                    'Entry_Time': _fmt_time(entry_time_val),
-                                    'Entry_Price': round(entry_price, 4),
-                                    'Entry_Size': round(abs(size), 4),
-                                    'Exit_Time': _fmt_time(exit_time_val),
-                                    'Exit_Price': round(exit_price, 4),
-                                    'Exit_Reason': exit_reason,
-                                    'PnL': round(pnl, 2),
-                                    'Return_%': round(return_pct, 2),
-                                    'Confluence_Score': round(confluence, 2) if confluence else 0,
-                                    'Risk_Allocation_%': round(risk_pct * 100, 3),
-                                    'Quality_Score': entry_quality,
-                                    'Signal_ADX': round(_rec_get(enrich_source, 'signal_adx', default=0) or 0, 1),
-                                    'Signal_RSI': round(_rec_get(enrich_source, 'signal_rsi', default=50) or 50, 1),
-                                    'Signal_MACD': round(_rec_get(enrich_source, 'signal_macd', default=0) or 0, 4),
-                                    'Signal_Volume_Ratio': round(_rec_get(enrich_source, 'signal_volume', default=1.0) or 1.0, 2),
-                                    'ML_Prediction': _rec_get(enrich_source, 'signal_ml_prediction', default=0) or 0,
-                                    'ML_Confidence_%': round(_rec_get(enrich_source, 'signal_ml_confidence', default=0.0) or 0.0, 1),
-                                    'Market_Regime': _rec_get(enrich_source, 'market_regime', default='') or '',
-                                    'Matched_To_Strategy_Record': 'Yes' if enrich_source is not None else 'No',
-                                    'Win': 'Yes' if pnl > 0 else 'No',
-                                })
-
-                            except Exception as e:
-                                self.log_message(f"⚠️ Trade row build error at row {pos}: {e}", "orange")
-                                continue
-
-                        unmatched = len(trades_data) - matched_count
-                        self.log_message(
-                            f"   📊 Trades sheet built from broker ledger: {len(trades_data)} trades "
-                            f"({matched_count} matched to strategy records for tier/signal enrichment, "
-                            f"{unmatched} had no strategy-side match — shown as 'Not logged by strategy').",
-                            "cyan" if unmatched == 0 else "orange")
+                            # ─── BUILD TRADE ROW ──────────────────────────────
+                            trades_data.append({
+                                'Trade_#': trade_counter,
+                                'Leg_#': leg_pos + 1,
+                                'Exit_Type': exit_label,
+                                'Tier': tier_name,
+                                'Tier_Number': entry_tier if entry_tier is not None else -1,
+                                'Direction': direction,
+                                'Entry_Time': _fmt_time(entry_time),
+                                'Entry_Price': round(entry_price, 4),
+                                'Entry_Size': round(entry_size, 4),
+                                'Exit_Time': _fmt_time(exit_time),
+                                'Exit_Price': round(exit_price, 4),
+                                'Exit_Size': round(leg_size, 4),
+                                'Exit_Reason': full_exit_reason,
+                                'Gross_PnL': round(gross_pnl, 2),
+                                'Expected_Commission': round(expected_commission, 2),
+                                'Effective_Commission': round(effective_commission, 2),
+                                'PnL': round(net_pnl, 2),
+                                'Return_%': round(return_pct, 2),
+                                'Quality_Score': entry_quality,
+                                'Confluence_Score': 0,
+                                'Risk_Allocation_%': 0,
+                                'Signal_ADX': round(_rec_get(matching_record, 'signal_adx', default=0) or 0, 1),
+                                'Signal_RSI': round(_rec_get(matching_record, 'signal_rsi', default=50) or 50, 1),
+                                'Signal_MACD': round(_rec_get(matching_record, 'signal_macd', default=0) or 0, 4),
+                                'Signal_Volume_Ratio': round(
+                                    _rec_get(matching_record, 'signal_volume', default=1.0) or 1.0, 2),
+                                'ML_Prediction': _rec_get(matching_record, 'signal_ml_prediction', default=0) or 0,
+                                'ML_Confidence_%': round(
+                                    _rec_get(matching_record, 'signal_ml_confidence', default=0.0) or 0.0, 1),
+                                'Market_Regime': _rec_get(matching_record, 'market_regime', default='') or '',
+                                'Matched_To_Strategy_Record': 'Yes' if matching_record else 'No',
+                                'Win': 'Yes' if net_pnl > 0 else 'No',
+                            })
 
                 if trades_data:
                     trade_output_df = pd.DataFrame(trades_data)
 
                     col_order = [
-                        'Trade_#', 'Tier', 'Tier_Number', 'Direction',
+                        'Trade_#', 'Leg_#', 'Exit_Type', 'Tier', 'Tier_Number', 'Direction',
                         'Entry_Time', 'Entry_Price', 'Entry_Size',
-                        'Exit_Time', 'Exit_Price', 'Exit_Reason',
-                        'PnL', 'Return_%',
+                        'Exit_Time', 'Exit_Price', 'Exit_Size', 'Exit_Reason',
+                        'Gross_PnL', 'Expected_Commission', 'Effective_Commission', 'PnL', 'Return_%',
                         'Quality_Score', 'Confluence_Score', 'Risk_Allocation_%',
                         'Signal_ADX', 'Signal_RSI', 'Signal_MACD',
                         'Signal_Volume_Ratio', 'ML_Prediction', 'ML_Confidence_%',
@@ -14677,32 +14688,34 @@ class TradingApp:
                     trade_output_df.to_excel(writer, sheet_name='Trades', index=False)
                     sheets_created += 1
 
-                    self.log_message(f"   ✅ Trades sheet created ({len(trade_output_df)} trades)", "green")
+                    self.log_message(f"   ✅ Trades sheet created ({len(trade_output_df)} trade legs)", "green")
 
-                    tier_counts = trade_output_df['Tier'].value_counts()
-                    self.log_message(f"   📊 TIER SUMMARY (Tier1={quality_tier1_min}, Tier2={quality_tier2_min})",
-                                     "blue")
-                    tier_color = {"Tier 1": "blue", "Tier 2": "green", "Unknown": "orange",
-                                  "Below Tier 2": "red", "Not logged by strategy": "red"}
-                    for tier_name, count in tier_counts.items():
-                        pct = (count / len(trade_output_df)) * 100
-                        tier_wins = trade_output_df[
-                            (trade_output_df['Tier'] == tier_name) & (trade_output_df['Win'] == 'Yes')]
-                        tier_win_rate = (len(tier_wins) / count * 100) if count else 0
-                        color = tier_color.get(tier_name, "orange")
-                        self.log_message(
-                            f"      {tier_name}: {count} ({pct:.1f}%) — Win rate: {tier_win_rate:.1f}%", color)
+                    # Log unique trade count
+                    unique_trades = trade_output_df['Trade_#'].nunique()
+                    self.log_message(f"   📊 Unique trades: {unique_trades}", "cyan")
 
-                    dir_counts = trade_output_df['Direction'].value_counts()
-                    self.log_message("   📊 DIRECTION SUMMARY:", "blue")
-                    for dir_name, count in dir_counts.items():
-                        dir_wins = trade_output_df[
-                            (trade_output_df['Direction'] == dir_name) & (trade_output_df['Win'] == 'Yes')]
-                        dir_win_rate = (len(dir_wins) / count * 100) if count else 0
-                        self.log_message(f"      {dir_name}: {count} trades — Win rate: {dir_win_rate:.1f}%",
-                                         "cyan")
+                    # Log matched vs unmatched
+                    matched_count = len(trade_output_df[trade_output_df['Matched_To_Strategy_Record'] == 'Yes'])
+                    unmatched_count = len(trade_output_df[trade_output_df['Matched_To_Strategy_Record'] == 'No'])
+                    if unmatched_count > 0:
+                        self.log_message(f"   📊 Matched to strategy: {matched_count}, Unmatched: {unmatched_count}",
+                                         "orange")
+                    try:
+                        self.log_message(f"   🔎 Match offset breakdown: {_match_offset_counts}", "orange")
+                    except NameError:
+                        pass
 
-                # ─── MARKET DATA SHEET (uses the SAME market_df populated above) ───
+                    # Log PnL summary
+                    total_net_pnl = trade_output_df['PnL'].sum()
+                    total_gross_pnl_calc = trade_output_df['Gross_PnL'].sum()
+                    total_effective_commission = trade_output_df['Effective_Commission'].sum()
+                    total_expected_commission = trade_output_df['Expected_Commission'].sum()
+                    self.log_message(f"   💰 Gross PnL: ${total_gross_pnl_calc:,.2f}", "cyan")
+                    self.log_message(f"   💰 Expected Commissions: ${total_expected_commission:,.2f}", "yellow")
+                    self.log_message(f"   💰 Effective Commissions: ${total_effective_commission:,.2f}", "yellow")
+                    self.log_message(f"   💰 Net PnL: ${total_net_pnl:,.2f}", "green" if total_net_pnl > 0 else "red")
+
+                # ─── MARKET DATA SHEET ────────────────────────────────────────
                 export_columns = [
                     'Open', 'High', 'Low', 'Close', 'Volume',
                     'EMA_Fast', 'EMA_Mid', 'EMA_Slow',
@@ -14721,24 +14734,121 @@ class TradingApp:
                 market_export.to_excel(writer, sheet_name='Market_Data')
                 sheets_created += 1
 
-                # ─── SUMMARY SHEET ─────────────────────────────────────────────────
+                # ─── SUMMARY SHEET ────────────────────────────────────────────
                 _start = datetime.strptime(self.start_date_var.get(), "%Y-%m-%d")
                 _end = datetime.strptime(self.end_date_var.get(), "%Y-%m-%d")
                 _num_months = max((_end - _start).days / 30.44, 1)
-                _total_trades = stats.get('# Trades', 0)
-                _avg_trades_per_month = _total_trades / _num_months
+
+                # Get initial capital
+                initial_capital = 50000
+                if hasattr(stats, 'get'):
+                    initial_capital = stats.get('Equity Initial [$]', 50000)
+                elif hasattr(stats, '_strategy') and hasattr(stats._strategy, 'initial_cash'):
+                    initial_capital = stats._strategy.initial_cash
+
+                final_equity = stats.get('Equity Final [$]', 0)
+                total_return = stats.get('Return [%]', 0)
+                net_profit = final_equity - initial_capital
+
+                # ═══ Use trade data for statistics ═══
+                if trades_data and len(trades_data) > 0:
+                    unique_trades_count = trade_output_df['Trade_#'].nunique()
+                    total_legs_count = len(trades_data)
+                    wins = sum(1 for t in trades_data if t.get('Win') == 'Yes')
+                    win_rate = (wins / total_legs_count * 100) if total_legs_count > 0 else 0
+
+                    # ═══ Calculate totals from trades sheet ═══
+                    total_gross_from_trades = trade_output_df['Gross_PnL'].sum()
+                    total_expected_commission_from_trades = trade_output_df['Expected_Commission'].sum()
+                    total_effective_commission_from_trades = trade_output_df['Effective_Commission'].sum()
+                    total_net_from_trades = trade_output_df['PnL'].sum()
+
+                    # ═══ DOUBLE CHECK: Does Gross - Effective Commission = Net? ═══
+                    calc_net = total_gross_from_trades - total_effective_commission_from_trades
+                    calc_diff = abs(calc_net - total_net_from_trades)
+
+                    # ═══ DOUBLE CHECK: Does Expected Commission match Effective? ═══
+                    comm_diff = abs(total_expected_commission_from_trades - total_effective_commission_from_trades)
+
+                    # ═══ VERIFICATION: Net PnL from Trades vs Summary ═══
+                    summary_diff = total_net_from_trades - net_profit
+
+                    self.log_message("=" * 70, "yellow")
+                    self.log_message("🔍 PnL & COMMISSION VERIFICATION", "yellow")
+                    self.log_message("=" * 70, "yellow")
+                    self.log_message(f"   Gross PnL (from Trades):        ${total_gross_from_trades:,.2f}", "cyan")
+                    self.log_message(
+                        f"   Expected Commissions (@{commission_rate * 100:.2f}%): ${total_expected_commission_from_trades:,.2f}",
+                        "yellow")
+                    self.log_message(
+                        f"   Effective Commissions:          ${total_effective_commission_from_trades:,.2f}", "yellow")
+                    self.log_message(f"   Gross - Effective Commission:   ${calc_net:,.2f}", "cyan")
+                    self.log_message(f"   Net PnL (from Trades sheet):    ${total_net_from_trades:,.2f}", "cyan")
+                    self.log_message(f"   Net Profit (from Summary):      ${net_profit:,.2f}", "cyan")
+                    self.log_message("", "white")
+                    self.log_message(
+                        f"   ✅ Gross - Eff. Comm = Net PnL:  {'✅ PASS' if calc_diff < 0.01 else f'❌ FAIL (diff: ${calc_diff:,.2f})'}",
+                        "green" if calc_diff < 0.01 else "red")
+                    self.log_message(
+                        f"   ✅ Expected vs Effective Comm:   {'✅ PASS' if comm_diff < 0.01 else f'❌ FAIL (diff: ${comm_diff:,.2f})'}",
+                        "green" if comm_diff < 0.01 else "red")
+                    self.log_message(
+                        f"   ✅ Trades PnL vs Summary:        {'✅ PASS' if abs(summary_diff) < 0.01 else f'❌ FAIL (diff: ${summary_diff:,.2f})'}",
+                        "green" if abs(summary_diff) < 0.01 else "red")
+
+                    if abs(summary_diff) >= 0.01:
+                        self.log_message(f"   💡 The difference is likely due to:", "orange")
+                        self.log_message(f"      - Rounding differences between trades", "orange")
+                        self.log_message(f"      - The backtest engine's internal calculations", "orange")
+                        self.log_message(f"   📌 Using Summary net profit as source of truth", "cyan")
+                    self.log_message("=" * 70, "yellow")
+
+                    total_pnl_display = net_profit
+                else:
+                    unique_trades_count = stats.get('# Trades', 0)
+                    total_legs_count = unique_trades_count
+                    win_rate = stats.get('Win Rate [%]', 0)
+                    total_gross_from_trades = 0
+                    total_expected_commission_from_trades = 0
+                    total_effective_commission_from_trades = 0
+                    total_net_from_trades = net_profit
+                    total_pnl_display = net_profit
+
+                _avg_trades_per_month = unique_trades_count / _num_months if _num_months > 0 else 0
 
                 summary_data = [
                     ['═══ PERFORMANCE METRICS ═══', ''],
                     ['Start Date', self.start_date_var.get()],
                     ['End Date', self.end_date_var.get()],
-                    ['Final Equity', f"${stats.get('Equity Final [$]', 0):,.2f}"],
-                    ['Total Return', f"{stats.get('Return [%]', 0):.2f}%"],
+                    ['Initial Capital', f"${initial_capital:,.2f}"],
+                    ['Final Equity', f"${final_equity:,.2f}"],
+                    ['Net Profit (from Summary)', f"${net_profit:,.2f}"],
+                    ['Total Return', f"{total_return:.2f}%"],
                     ['Months', f"{_num_months:.1f}"],
                     ['', ''],
+                    ['═══ PnL BREAKDOWN ═══', ''],
+                    ['Gross PnL (from Trades)', f"${total_gross_from_trades:,.2f}"],
+                    ['Expected Commissions', f"${total_expected_commission_from_trades:,.2f}"],
+                    ['Effective Commissions', f"${total_effective_commission_from_trades:,.2f}"],
+                    ['Net PnL (Gross - Effective Comm)',
+                     f"${total_gross_from_trades - total_effective_commission_from_trades:,.2f}"],
+                    ['Net PnL (from Trades sheet)', f"${total_net_from_trades:,.2f}"],
+                    ['Net Profit (from Summary)', f"${net_profit:,.2f}"],
+                    ['PnL Difference', f"${total_net_from_trades - net_profit:,.2f}"],
+                    ['', ''],
+                    ['═══ COMMISSION VERIFICATION ═══', ''],
+                    ['Commission Rate', f"{commission_rate * 100:.2f}%"],
+                    ['Total Expected Commission', f"${total_expected_commission_from_trades:,.2f}"],
+                    ['Total Effective Commission', f"${total_effective_commission_from_trades:,.2f}"],
+                    ['Commission Difference',
+                     f"${total_expected_commission_from_trades - total_effective_commission_from_trades:,.2f}"],
+                    ['Commission as % of Gross',
+                     f"{(total_effective_commission_from_trades / total_gross_from_trades * 100) if total_gross_from_trades != 0 else 0:.2f}%"],
+                    ['', ''],
                     ['═══ TRADE STATISTICS ═══', ''],
-                    ['Total Trades', stats.get('# Trades', 0)],
-                    ['Win Rate', f"{stats.get('Win Rate [%]', 0):.2f}%"],
+                    ['Total Trades (Unique Entries)', unique_trades_count],
+                    ['Total Trade Legs (Incl. Partial Exits)', total_legs_count],
+                    ['Win Rate (Per Leg)', f"{win_rate:.2f}%"],
                     ['Avg Trades / Month', f"{_avg_trades_per_month:.1f}"],
                     ['', ''],
                     ['═══ RISK METRICS ═══', ''],
@@ -14785,7 +14895,6 @@ class TradingApp:
             import traceback
             self.log_message(traceback.format_exc(), "red")
             return None
-
 
     def fix_existing_excel_tiers(self, excel_file):
         """Fix Tier classifications in an existing Excel file"""
@@ -14861,10 +14970,19 @@ class TradingApp:
             elif hasattr(trade_row, 'EntryBar'):
                 entry_bar_key = int(trade_row.EntryBar)
 
+            exit_bar_key = int(exit_bar) if exit_bar is not None else None
+            exit_map = getattr(self, '_exit_reason_map', {})
+
             if entry_bar_key >= 0:
-                real_reason = getattr(self, '_exit_reason_map', {}).get(entry_bar_key)
+                real_reason = None
+                # New tuple key first — distinguishes partial legs from the
+                # final leg, since they share the same entry_bar.
+                if exit_bar_key is not None:
+                    real_reason = exit_map.get((entry_bar_key, exit_bar_key))
+                # Legacy single-key fallback for older runs / older maps.
+                if not real_reason:
+                    real_reason = exit_map.get(entry_bar_key)
                 if real_reason:
-                    # Add debug to see what's being returned
                     if hasattr(self, 'log_message'):
                         self.log_message(f"   ✅ Using real exit reason: {real_reason}", "green")
                     return real_reason
@@ -15478,7 +15596,9 @@ class TradingApp:
             side = order_params['side'].lower()
             price = float(order_params['price'])
             quantity = float(order_params.get('actual_quantity', order_params['quantity']))
-            commission_rate = self.commission_var.get() / 100
+            # FIX: commission_var already stores a decimal fraction (e.g. 0.001 = 0.1%);
+            # dividing by 100 again under-recorded real commission by ~100x.
+            commission_rate = self.commission_var.get()
             timestamp = datetime.now(timezone.utc)
 
             # v9.4.2: Use position_intent to correctly classify the trade record.
@@ -15677,7 +15797,9 @@ class TradingApp:
             order_params['actual_quantity'] = float(filled_details.get('fillSz', order_params['quantity']))
             order_params['order_id'] = order_id
 
-            commission_rate = self.commission_var.get() / 100
+            # FIX: commission_var already stores a decimal fraction; the extra /100
+            # under-recorded real commission by ~100x.
+            commission_rate = self.commission_var.get()
             order_params['commission'] = order_params['actual_price'] * order_params[
                 'actual_quantity'] * commission_rate
 
@@ -15844,7 +15966,7 @@ class TradingApp:
                 f"Best Trade: ${best_trade:.2f}\n"
                 f"Worst Trade: ${worst_trade:.2f}\n"
                 f"Sortino Ratio: {sortino_ratio:.3f}\n\n"
-                f"Commission Rate: {self.commission_var.get()}%"
+                f"Commission Rate: {self.commission_var.get() * 100:.4f}%"
             )
 
             self.log_message(message, "purple")
