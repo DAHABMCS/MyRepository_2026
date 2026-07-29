@@ -1,11 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# v10.0.3 - TWO-TIER SYSTEM with FIXED PARTIAL EXITS & TRADE ID TRACKING
-# ═══════════════════════════════════════════════════════════════════════════
-# FIXES:
-#   1. Partial exits use position.close(portion) - NEVER self.sell()
-#   2. Every trade gets a unique ID that persists across partial exits
-#   3. Trade IDs appear in Excel export (Trade_# column)
-#   4. No more spurious "Not logged by strategy" SHORT trades
+# v10.0.2 - TWO-TIER SYSTEM (Tier 1 + Tier 2) with unified long/short thresholds
 # ═══════════════════════════════════════════════════════════════════════════
 import json
 import logging
@@ -190,7 +184,6 @@ class TradeRecord:
     entry_quality_score: int
     entry_reason: str
     entry_direction: str
-    entry_bar: Optional[int] = None
     exit_time: Optional[datetime] = None
     exit_price: Optional[float] = None
     exit_size: Optional[float] = None
@@ -214,8 +207,6 @@ class TradeRecord:
     signal_ml_prediction: int = 0
     signal_ml_confidence: float = 0.0
     confluence_score: float = 0.0
-    # NEW: Track partial exits with same trade ID
-    partial_exit_details: List[Dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -230,7 +221,6 @@ class TradeRecord:
             'hold_duration': self.hold_duration, 'market_regime': self.market_regime,
             'partial_exits_taken': self.partial_exits_taken,
             'partial_pnl_realised': self.partial_pnl_realised,
-            'trade_direction': self.entry_direction,
         }
 
 
@@ -361,27 +351,7 @@ class ProfessionalRiskController:
 
     def calculate_position_size(self, entry_price, stop_loss_price, win_rate=0.50,
                                 profit_factor=1.0, quality_score=75, tier=1, adx=25,
-                                tier1_risk_pct=None, tier2_risk_pct=None,
-                                gui_order_size_pct: float = None) -> float:
-        """
-        Calculate position size with GUI Order Size % as a hard ceiling.
-
-        Args:
-            entry_price: Entry price for the trade
-            stop_loss_price: Stop loss price
-            win_rate: Historical win rate (0-1)
-            profit_factor: Historical profit factor
-            quality_score: Entry quality score (0-100)
-            tier: Tier number (1 or 2)
-            adx: Current ADX value
-            tier1_risk_pct: Override risk % for Tier 1
-            tier2_risk_pct: Override risk % for Tier 2
-            gui_order_size_pct: GUI Order Size % (e.g., 30.0 for 30%)
-                                If None or <= 0, no GUI cap is applied.
-
-        Returns:
-            float: Final position size in units
-        """
+                                tier1_risk_pct=None, tier2_risk_pct=None):
         if entry_price <= 0:
             return 0
 
@@ -432,27 +402,9 @@ class ProfessionalRiskController:
 
         risk_amount = self.current_equity * risk_pct
         position_size = (risk_amount / (entry_price * risk_per_trade))
-
-        # ═══════════════════════════════════════════════════════════════════════════
-        # PROFESSIONAL APPROACH: GUI Order Size % acts as a HARD CEILING
-        # ═══════════════════════════════════════════════════════════════════════════
-        if gui_order_size_pct is not None and gui_order_size_pct > 0:
-            max_allocation = self.current_equity * (gui_order_size_pct / 100.0)
-            gui_max_units = max_allocation / entry_price if entry_price > 0 else float('inf')
-
-            # Log the cap application for debugging
-            if position_size > gui_max_units:
-                print(f"🔒 GUI CAP APPLIED: {position_size:.2f} → {gui_max_units:.2f} "
-                      f"({gui_order_size_pct:.0f}% of equity = ${max_allocation:,.2f})")
-
-            position_size = min(position_size, gui_max_units)
-        # ═══════════════════════════════════════════════════════════════════════════
-
-        # Apply max position % cap (18% of equity)
         max_position_amount = self.current_equity * self.max_position_size_pct
         position_size = min(position_size, max_position_amount / entry_price)
 
-        # Round based on price
         if entry_price >= 1000:
             position_size = max(0.0, round(position_size, 6))
         elif entry_price >= 100:
@@ -528,8 +480,7 @@ class ProfessionalRiskController:
         return {
             'total_trades': self.total_trades,
             'win_rate': f"{self.risk_metrics.win_rate:.1f}%",
-            'profit_factor': f"{self.risk_metrics.profit_factor:.2f}" if self.risk_metrics.profit_factor != float(
-                'inf') else "∞",
+            'profit_factor': f"{self.risk_metrics.profit_factor:.2f}" if self.risk_metrics.profit_factor != float('inf') else "∞",
             'max_drawdown': f"{self.risk_metrics.max_drawdown:.1%}",
             'sharpe_ratio': f"{self.risk_metrics.sharpe_ratio:.2f}",
             'sortino_ratio': f"{self.risk_metrics.sortino_ratio:.2f}",
@@ -557,41 +508,11 @@ class MacroRegimeDetector:
         self.bb_squeeze_threshold = 25
 
     def detect_regime(self, ema_fast, ema_slow, adx, vol_ratio=1.0, bb_width_percentile=50):
-        """Enhanced regime detection with proper bear market identification"""
         is_uptrend = ema_fast > ema_slow
         trend_strong = adx > self.adx_threshold
-
-        # CRITICAL FIX: Proper downtrend detection
-        is_downtrend = ema_fast < ema_slow
-        is_very_bearish = ema_fast < ema_slow and (ema_slow - ema_fast) / ema_slow > 0.02  # 2% spread
-
         is_low_vol = vol_ratio < self.vol_ratio_low
         is_high_vol = vol_ratio > self.vol_ratio_high
         is_range_bound = bb_width_percentile < self.bb_squeeze_threshold
-
-        # FIX: Prioritize bearish detection - this should come FIRST
-        if is_downtrend and trend_strong:
-            if is_very_bearish:
-                regime, confidence = "BEARISH_DECLINING", 0.95
-            elif vol_ratio > 1.5:
-                regime, confidence = "BEARISH_SELLOFF", 0.90
-            else:
-                regime, confidence = "BEARISH_DECLINING", 0.85
-            self.current_regime = regime
-            self.regime_confidence = confidence
-            self.regime_history.append(regime)
-            return regime, confidence
-
-        # Also check for price below EMA200 as additional bearish signal
-        # This is called from the strategy, so we need to pass the data
-        if is_downtrend and adx < self.adx_threshold:
-            regime, confidence = "BEARISH_WEAK", 0.70
-            self.current_regime = regime
-            self.regime_confidence = confidence
-            self.regime_history.append(regime)
-            return regime, confidence
-
-        # Original bullish logic (now after bearish checks)
         if is_uptrend and trend_strong and is_low_vol:
             regime, confidence = "BULLISH_LOW_VOL", 0.95
         elif is_uptrend and trend_strong and is_high_vol:
@@ -600,80 +521,55 @@ class MacroRegimeDetector:
             regime, confidence = "BULLISH_NORMAL_VOL", 0.90
         elif is_uptrend and not trend_strong:
             regime, confidence = "BULLISH_WEAK", 0.70
+        elif not is_uptrend and trend_strong:
+            regime, confidence = "BEARISH_DECLINING", 0.90
         elif is_range_bound:
             regime, confidence = "RANGING_VOLATILE", 0.80
         else:
             regime, confidence = "UNDEFINED", 0.50
-
         self.current_regime = regime
         self.regime_confidence = confidence
         self.regime_history.append(regime)
         return regime, confidence
 
     def is_tradeable(self, regime: str) -> bool:
-        """FIX: Block trades in bearish regimes"""
-        # FIX: Do NOT trade in bear markets
-        blocked_regimes = ('BEARISH_DECLINING', 'BEARISH_SELLOFF', 'BEARISH_WEAK')
-        if regime in blocked_regimes:
-            return False
         return regime not in ('RANGING_VOLATILE', 'UNDEFINED')
 
     def get_position_multiplier(self, regime):
-        """Position size multiplier based on regime - CONSERVATIVE in bear markets"""
-        multipliers = {
-            'BULLISH_LOW_VOL': 1.3,
-            'BULLISH_NORMAL_VOL': 1.0,
-            'BULLISH_HIGH_VOL': 0.8,
-            'BULLISH_WEAK': 0.7,
-            'BEARISH_DECLINING': 0.2,  # FIX: drastically reduce size
-            'BEARISH_SELLOFF': 0.1,  # FIX: almost no size in selloffs
-            'BEARISH_WEAK': 0.3,
-            'RANGING_VOLATILE': 0.5,
-            'UNDEFINED': 0.6
-        }
-        return multipliers.get(regime, 0.6)
+        return {'BULLISH_LOW_VOL': 1.3, 'BULLISH_HIGH_VOL': 0.8, 'BULLISH_NORMAL_VOL': 1.0,
+                'BULLISH_WEAK': 0.7, 'BEARISH_DECLINING': 0.3,
+                'RANGING_VOLATILE': 0.5, 'UNDEFINED': 0.6}.get(regime, 0.6)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PART 4: EXIT MANAGER — TWO-TIER EXIT RULES
 # ═══════════════════════════════════════════════════════════════════════════
 
-# ═══════════════════════════════════════════════════════════════════════════
-# PART 4: EXIT MANAGER — TWO-TIER EXIT RULES (UPDATED v10.1.0)
-# ═══════════════════════════════════════════════════════════════════════════
-
 class ProfessionalExitManager:
     def __init__(self, config: dict):
         self.config = config
-
-        # ─── NEW ATR-BASED STOP PARAMETERS ──────────────────────────────
-        self.stop_loss_atr_mult = config.get('stop_loss_atr_mult', 2.5)  # CHANGED: was 2.5 → 2.0
-        self.trailing_activation_pct = config.get('trailing_activation_pct', 0.03)
-        self.trailing_distance_pct = config.get('trailing_distance_pct', 0.025)  # CHANGED: was 0.035 → 0.025
-
-        # ─── PROFIT TARGETS (UPDATED) ──────────────────────────────────
-        self.take_profit_r1 = config.get('take_profit_r1', 1.5)  # CHANGED: was 3.0 → 1.5
-        self.take_profit_r2 = config.get('take_profit_r2', 3.0)  # CHANGED: was 5.0 → 3.0
-        self.take_profit_r3 = config.get('take_profit_r3', 5.0)  # CHANGED: was 8.0 → 5.0
-        self.partial_exit_pct = config.get('partial_exit_pct', 0.33)
-
-        # ─── EXIT CONFIRMATION RULES ──────────────────────────────────
+        self.stop_loss_atr_mult = config.get('stop_loss_atr_mult', 2.5)
+        self.profit_targets = {}
         self.macd_bearish_cross_enabled = config.get('macd_bearish_cross_exit', True)
-        self.macd_cross_profit_min = config.get('macd_bearish_cross_profit_min', 2.0)  # CHANGED: was 1.0 → 2.0
+        self.macd_cross_profit_min = config.get('macd_bearish_cross_profit_min', 1.0)
         self.ema_cross_exit_enabled = config.get('ema_cross_exit', True)
         self.ema_cross_profit_min = 2.0
-
-        # ─── TIME STOPS ──────────────────────────────────────────────────
+        self.trailing_activation_pct = config.get('trailing_activation_pct', 0.03)
+        self.trailing_distance_pct = config.get('trailing_distance_pct', 0.035)
+        self.trailing_activation_r = config.get('trailing_activation_r', 2.5)
+        self.initial_trailing_atr_mult = config.get('initial_trailing_atr_mult', 4.0)
         self.max_hold_bars = config.get('max_hold_bars', 500)
-        self.min_hold_bars_before_stop = config.get('min_hold_bars_before_stop', 6)  # FIX: fallback was stale at 4, real default is 6
-        self.emergency_stop_multiplier = config.get('emergency_stop_multiplier', 2.0)  # CHANGED: 1.5 -> 2.0 (per Priority 1 report)
+        self.min_hold_bars_before_stop = config.get('min_hold_bars_before_stop', 4)
+        self.emergency_stop_multiplier = config.get('emergency_stop_multiplier', 1.5)
 
-        # ─── TWO-TIER EXIT THRESHOLDS ──────────────────────────────────
+        self.take_profit_r1 = config.get('take_profit_r1', 3.0)
+        self.take_profit_r2 = config.get('take_profit_r2', 5.0)
+        self.take_profit_r3 = config.get('take_profit_r3', 8.0)
+        self.partial_exit_pct = config.get('partial_exit_pct', 0.33)
+
+        # TWO-TIER EXIT THRESHOLDS
         self.exit_threshold_tier1 = 60
         self.exit_threshold_tier2 = 50
-
-        # ─── NEW: REMOVED HEURISTIC SMALL LOSS ────────────────────────
-        # heuristic_small_loss is now DISABLED - replaced by ATR stops
 
     def get_exit_threshold(self, tier: int) -> int:
         if tier == 1:
@@ -684,10 +580,10 @@ class ProfessionalExitManager:
 
     def get_trailing_config(self, tier: int) -> dict:
         if tier == 1:
-            return {'activation': 0.025, 'distance': 0.020}  # CHANGED: tighter for Tier 1
+            return {'activation': 0.03, 'distance': 0.025}
         elif tier == 2:
-            return {'activation': 0.035, 'distance': 0.030}  # CHANGED: wider for Tier 2
-        return {'activation': 0.035, 'distance': 0.030}
+            return {'activation': 0.04, 'distance': 0.035}
+        return {'activation': 0.04, 'distance': 0.035}
 
     def get_initial_trailing_stop(self, entry_price, atr=None, position_type='long'):
         return entry_price
@@ -700,13 +596,7 @@ class ProfessionalExitManager:
 
         if not hasattr(self, '_version_printed'):
             print("=" * 70)
-            print("🎯 EXIT MANAGER VERSION: v10.1.0 - ATR-BASED STOPS + CONFIRMATION RULES")
-            print("=" * 70)
-            print("   ✅ Stop Loss: 2.0× ATR (was 2.5×)")
-            print("   ✅ Trailing: 2.5% activation, 2.0% distance (was 3.5%)")
-            print("   ✅ Profit Targets: R1=1.5, R2=3.0, R3=5.0 (was 3/5/8)")
-            print("   ✅ MACD Cross Min Profit: 2.0R (was 1.0R)")
-            print("   ✅ heuristic_small_loss: REMOVED")
+            print("🎯 EXIT MANAGER VERSION: v10.0.2 - TWO-TIER EXIT RULES")
             print("=" * 70)
             self._version_printed = True
 
@@ -727,7 +617,7 @@ class ProfessionalExitManager:
         trailing_distance_pct = max(atr_pct * 0.5, trail_config['distance'])
         exit_threshold = self.get_exit_threshold(tier)
 
-        # ─── 1. HARD STOP (ATR-BASED) ──────────────────────────────────────
+        # 1. HARD STOP
         if position_type == 'long':
             if current_price <= stop_loss:
                 if bars_held < self.min_hold_bars_before_stop:
@@ -745,15 +635,14 @@ class ProfessionalExitManager:
                 else:
                     return "stop_loss_hard", 1.0
 
-        # ─── 2. TRAILING STOP HIT ──────────────────────────────────────────
+        # 2. TRAILING STOP HIT
         if trailing_activated and trailing_stop is not None:
             if position_type == 'long' and current_price <= trailing_stop:
                 return "trailing_stop_hit", 1.0
             elif position_type == 'short' and current_price >= trailing_stop:
                 return "trailing_stop_hit", 1.0
 
-        # ─── 3. PARTIAL TAKE-PROFIT LADDER (UPDATED) ───────────────────────
-        # NEW: Exit 33% at each target, with larger remaining position
+        # 3. PARTIAL TAKE-PROFIT LADDER
         if profit_r >= self.take_profit_r3 and partial_exits < 3:
             return "take_profit_r3", self.partial_exit_pct
         if profit_r >= self.take_profit_r2 and partial_exits < 2:
@@ -761,36 +650,31 @@ class ProfessionalExitManager:
         if profit_r >= self.take_profit_r1 and partial_exits < 1:
             return "take_profit_r1", self.partial_exit_pct
 
-        # ─── 4. MACD CROSS EXIT (WITH CONFIRMATION) ────────────────────────
+        # 4. MACD CROSS EXIT
         if self.macd_bearish_cross_enabled and profit_r >= self.macd_cross_profit_min:
             if position_type == 'long':
                 if macd_prev >= signal_prev and macd < macd_signal:
-                    # NEW: Require RSI < 50 or ADX < 25 for confirmation
-                    rsi = self.config.get('rsi_value', 50)
-                    if rsi < 50 or adx < 25:
-                        return "macd_bearish_cross_confirmed", 1.0
-                    # If strong trend, just take partial
-                    if partial_exits < 1:
-                        return "macd_bearish_cross_partial", self.partial_exit_pct
+                    if ema_fast > ema_slow and adx >= 30:
+                        pass
+                    else:
+                        return "macd_bearish_cross", 1.0
             else:
                 if macd_prev <= signal_prev and macd > macd_signal:
-                    rsi = self.config.get('rsi_value', 50)
-                    if rsi > 50 or adx < 25:
-                        return "macd_bullish_cross_confirmed", 1.0
-                    if partial_exits < 1:
-                        return "macd_bullish_cross_partial", self.partial_exit_pct
+                    if ema_fast < ema_slow and adx >= 30:
+                        pass
+                    else:
+                        return "macd_bullish_cross", 1.0
 
-        # ─── 5. EMA FULL REVERSAL (WITH RSI CONFIRMATION) ──────────────────
+        # 5. EMA FULL REVERSAL
         if self.ema_cross_exit_enabled and profit_r >= 2.0:
-            rsi = self.config.get('rsi_value', 50)
             if position_type == 'long':
-                if ema_fast < ema_mid < ema_slow and rsi < 50:
-                    return "ema_full_reversal_confirmed", 1.0
+                if ema_fast < ema_mid < ema_slow:
+                    return "ema_full_reversal", 1.0
             else:
-                if ema_fast > ema_mid > ema_slow and rsi > 50:
-                    return "ema_full_reversal_confirmed", 1.0
+                if ema_fast > ema_mid > ema_slow:
+                    return "ema_full_reversal", 1.0
 
-        # ─── 6. ADX COLLAPSE (BEST PERFORMER) ──────────────────────────────
+        # 6. ADX COLLAPSE
         if adx < 25 and profit_r >= 1.5:
             if position_type == 'long':
                 if macd < macd_signal and not (current_price > ema_mid and ema_fast > ema_slow):
@@ -799,18 +683,13 @@ class ProfessionalExitManager:
                 if macd > macd_signal and not (current_price < ema_mid and ema_fast < ema_slow):
                     return "adx_collapse_trend_weak", 1.0
 
-        # ─── 7. REVERSAL POWER EXIT (Tier-based) ───────────────────────────
+        # 7. REVERSAL POWER EXIT (Tier-based)
         if exit_power >= exit_threshold and profit_r >= 0.5:
             return "reversal_power_exit", 1.0
 
-        # ─── 8. MAX HOLD TIME (EXTENDED) ──────────────────────────────────
+        # 8. MAX HOLD TIME
         if bars_held >= self.max_hold_bars:
-            if profit_r > 0:
-                return "max_hold_time_profitable", 1.0
             return "max_hold_time", 1.0
-
-        # ─── 9. REMOVED: heuristic_small_loss ─────────────────────────────
-        # This exit type has been REMOVED. Use ATR stops instead.
 
         return None, 0.0
 
@@ -822,26 +701,22 @@ class ProfessionalExitManager:
 MOMENTUM_PARAMS = {
     "trade_direction": "both",
 
-    # ═══════════════════════════════════════════════════════════════════════
     # TWO-TIER PASS MARKS (LONG / SHORT)
-    # ═══════════════════════════════════════════════════════════════════════
-    "quality_tier1_min_long": 75,
-    "quality_tier2_min_long": 60,
-    "quality_tier1_min_short": 75,
-    "quality_tier2_min_short": 65,
+    "quality_tier1_min_long": 78,
+    "quality_tier2_min_long": 73,
+    "quality_tier1_min_short": 78,
+    "quality_tier2_min_short": 73,
 
     # LEGACY (mapped to _long/_short in get_current_momentum_params)
-    "quality_tier1_min": 75,
-    "quality_tier2_min": 65,
-    "short_quality_tier1_min": 75,
-    "short_quality_tier2_min": 65,
+    # "quality_tier1_min": 75,
+    # "quality_tier2_min": 65,
+    # "short_quality_tier1_min": 75,
+    # "short_quality_tier2_min": 65,
 
     # ENTRY MODE
-    "only_tier1_entries": False,  # True = only Tier 1 allowed
+    "only_tier1_entries": False,          # True = only Tier 1 allowed
 
-    # ═══════════════════════════════════════════════════════════════════════
     # TWO-TIER RISK
-    # ═══════════════════════════════════════════════════════════════════════
     "risk_tier1": 0.025,
     "risk_tier2": 0.015,
 
@@ -854,16 +729,14 @@ MOMENTUM_PARAMS = {
     "exit_threshold_tier1": 60,
     "exit_threshold_tier2": 50,
 
-    "trailing_activation_tier1": 0.025,  # CHANGED: was 0.03
-    "trailing_activation_tier2": 0.035,  # CHANGED: was 0.04
-    "trailing_distance_tier1": 0.020,    # CHANGED: was 0.025
-    "trailing_distance_tier2": 0.030,    # CHANGED: was 0.035
+    "trailing_activation_tier1": 0.03,
+    "trailing_activation_tier2": 0.04,
+    "trailing_distance_tier1": 0.025,
+    "trailing_distance_tier2": 0.035,
 
     "ml_weight": 0.20,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # FUZZY LEARNING
-    # ═══════════════════════════════════════════════════════════════════════
+    # Fuzzy Learning
     "fuzzy_mode_enabled": False,
     "fuzzy_learning_enabled": True,
     "fuzzy_safety_cutoffs": True,
@@ -876,16 +749,12 @@ MOMENTUM_PARAMS = {
     "fuzzy_learning_rate": 0.3,
     "fuzzy_conservative_start": True,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # EMA SETTINGS
-    # ═══════════════════════════════════════════════════════════════════════
+    # EMA Settings
     "ema_fast_period": 10,
     "ema_mid_period": 18,
     "ema_slow_period": 45,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # REGIME DETECTION
-    # ═══════════════════════════════════════════════════════════════════════
+    # Regime Detection
     "regime_filter_enabled": True,
     "ranging_min_checks": 4,
     "bb_period": 20,
@@ -895,9 +764,7 @@ MOMENTUM_PARAMS = {
     "chop_period": 14,
     "chop_threshold": 58,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # QUALITY WEIGHTS
-    # ═══════════════════════════════════════════════════════════════════════
+    # Quality Weights
     "weight_ema": 22,
     "weight_adx": 13,
     "weight_macd": 24,
@@ -906,9 +773,7 @@ MOMENTUM_PARAMS = {
     "weight_cci": 5,
     "weight_kalman": 5,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # SLIPPAGE
-    # ═══════════════════════════════════════════════════════════════════════
+    # Slippage
     "slippage_enabled": True,
     "slippage_base_bps": 2.0,
     "slippage_impact_coef": 0.5,
@@ -917,18 +782,14 @@ MOMENTUM_PARAMS = {
     "ema_near_tolerance": 0.005,
     "rsi_dynamic_enabled": True,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # PRICE PERCENTILE
-    # ═══════════════════════════════════════════════════════════════════════
+    # Price Percentile
     "price_percentile_bonus_early": 12,
     "price_percentile_penalty_late": 12,
     "price_percentile_early_threshold": 25,
     "price_percentile_late_threshold": 80,
     "price_percentile_lookback": 20,
 
-    # ═══════════════════════════════════════════════════════════════════════
     # LONG FILTERS
-    # ═══════════════════════════════════════════════════════════════════════
     "tier1_adx_hard_min": 22,
     "tier1_adx_min": 20,
     "tier1_rsi_min": 42,
@@ -958,9 +819,7 @@ MOMENTUM_PARAMS = {
     "consecutive_loss_threshold": 3,
     "consecutive_loss_cooldown_bars": 12,
 
-    # ═══════════════════════════════════════════════════════════════════════
     # PRECISION FILTERS
-    # ═══════════════════════════════════════════════════════════════════════
     "dmi_spread_min_long": 0.0,
     "dmi_spread_min_short": 0.0,
     "ema_trending_bars": 3,
@@ -974,16 +833,12 @@ MOMENTUM_PARAMS = {
     "time_filter_start_utc": 6,
     "time_filter_end_utc": 23,
 
-    # ═══════════════════════════════════════════════════════════════════════
     # BREAKEVEN STOP
-    # ═══════════════════════════════════════════════════════════════════════
     "be_stop_enabled": True,
     "be_stop_r_trigger": 2.0,
     "be_stop_no_progress_bars": 50,
 
-    # ═══════════════════════════════════════════════════════════════════════
     # SHORT FILTERS
-    # ═══════════════════════════════════════════════════════════════════════
     "short_tier1_adx_hard_min": 25,
     "short_tier1_rsi_max": 48,
     "short_tier1_rsi_min": 32,
@@ -994,18 +849,14 @@ MOMENTUM_PARAMS = {
     "short_require_lower_highs_bars": 2,
     "short_require_lower_lows_bars": 2,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # ADX SCORING
-    # ═══════════════════════════════════════════════════════════════════════
+    # ADX Scoring
     "adx_score_trend_forming": 15,
     "adx_score_good_trend": 20,
     "adx_score_strong_trend": 25,
     "adx_score_very_strong": 32,
     "adx_score_extended": 38,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # TIER 2 FILTERS
-    # ═══════════════════════════════════════════════════════════════════════
+    # Tier 2 Filters
     "tier2_adx_min": 18,
     "tier2_volume_min": 0.5,
     "tier2_volume_min_ratio": 1.1,
@@ -1013,9 +864,7 @@ MOMENTUM_PARAMS = {
     "tier2_macd_histogram_min": 0.001,
     "tier2_require_macd_histogram": True,
 
-    # ═══════════════════════════════════════════════════════════════════════
     # MACD
-    # ═══════════════════════════════════════════════════════════════════════
     "macd_fast": 12,
     "macd_slow": 26,
     "macd_signal": 9,
@@ -1024,112 +873,86 @@ MOMENTUM_PARAMS = {
     "macd_score_zero_cross": 4,
     "macd_score_histogram_value": 3,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # BEARISH REGIME CONTROLS (NEW)
-    # ═══════════════════════════════════════════════════════════════════════
-    "ema200_filter_enabled": True,
-    "bearish_regime_block": True,
-    "short_only_bearish": True,
-    "bearish_risk_multiplier": 0.25,
-    "adx_bearish_min": 30,
-
-    # ═══════════════════════════════════════════════════════════════════════
     # ADX
-    # ═══════════════════════════════════════════════════════════════════════
     "adx_min": 18,
     "adx_min_trend": 25,
     "adx_period": 14,
 
-    # ═══════════════════════════════════════════════════════════════════════
     # RSI
-    # ═══════════════════════════════════════════════════════════════════════
     "rsi_entry_min": 40,
     "rsi_entry_max": 68,
     "rsi_period": 14,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # VOLUME
-    # ═══════════════════════════════════════════════════════════════════════
+    # Volume
     "volume_min_ratio": 1.1,
     "volume_period": 20,
     "volume_ma_period": 20,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # MOMENTUM
-    # ═══════════════════════════════════════════════════════════════════════
+    # Momentum
     "momentum_min": 0.05,
     "kalman_min_strength": 0.0,
     "cci_period": 20,
     "cci_filter_enabled": False,
     "vix_max_threshold": 40,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # LEGACY RISK
-    # ═══════════════════════════════════════════════════════════════════════
+    # Legacy Risk
     "risk_per_trade": 0.025,
     "risk_full_position": 0.025,
     "risk_reduced_position": 0.016,
     "risk_aggressive_position": 0.03,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # STOP LOSS & TRAILING (UPDATED)
-    # ═══════════════════════════════════════════════════════════════════════
-    "stop_loss_atr_mult": 2.5,           # CHANGED: was 2.5
-    "trailing_stop_atr_mult": 4.5,       # CHANGED: was 6.5
-    "trailing_activation_pct": 0.025,    # CHANGED: was 0.03
-    "trailing_distance_pct": 0.020,      # CHANGED: was 0.035
-    "trailing_stop_pct": 0.06,           # CHANGED: was 0.1
-    "trailing_activation_r": 2.0,        # CHANGED: was 2.5
-    "initial_trailing_atr_mult": 3.5,    # CHANGED: was 5.5
+    # STOP LOSS & TRAILING (legacy)
+    "stop_loss_atr_mult": 2.5,
+    "trailing_stop_atr_mult": 6.5,
     "atr_period": 14,
+    "supertrend_atr_period": 10,
+    "supertrend_multiplier": 3.0,
+    "kalman_q_param": 0.05,
+    "kalman_r_param": 0.8,
+    "vix_atr_period": 14,
+    "vix_rolling_period": 20,
+    "bb_width_percentile_lookback": 100,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # ATR-BASED PROFIT TARGETS (UPDATED)
-    # ═══════════════════════════════════════════════════════════════════════
-    "take_profit_r1": 2.0,               # CHANGED: was 3.0
-    "take_profit_r2": 4.0,               # CHANGED: was 5.0
-    "take_profit_r3": 6.0,               # CHANGED: was 8.0
+    # Volatility-Breakout
+    "alpha_mode": "indicator",
+    "breakout_atr_percentile_lookback": 100,
+    "breakout_box_lookback": 20,
+    "breakout_consolidation_atr_pct_max": 30,
+    "breakout_min_coil_bars": 10,
+    "weight_breakout_strength": 30,
+    "weight_consolidation_quality": 20,
+    "weight_breakout_volume": 25,
+    "weight_breakout_ema_trend": 15,
+    "weight_breakout_adx": 10,
+
+    # Profit Targets
+    "take_profit_r1": 3.0,
+    "take_profit_r2": 5.0,
+    "take_profit_r3": 8.0,
     "profit_target_r1": 9999.0,
     "profit_target_r2": 9999.0,
     "profit_target_r3": 9999.0,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # NEW ATR-BASED CONFIGURATION
-    # ═══════════════════════════════════════════════════════════════════════
-    "atr_stop_mult": 2.0,
-    "atr_trail_mult": 1.5,
-    "atr_target_mult_1": 1.5,
-    "atr_target_mult_2": 3.0,
-    "atr_target_mult_3": 5.0,
+    "trailing_activation_pct": 0.03,
+    "trailing_distance_pct": 0.035,
+    "trailing_stop_pct": 0.1,
+    "trailing_activation_r": 2.5,
+    "initial_trailing_atr_mult": 5.5,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # EXIT CONFIRMATION RULES (NEW)
-    # ═══════════════════════════════════════════════════════════════════════
-    "exit_confirmation_enabled": True,
-    "exit_confirmation_rsi_threshold": 50,
-    "exit_confirmation_adx_threshold": 25,
-    "exit_min_profit_r_for_confirmation": 2.0,
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # TIMING
-    # ═══════════════════════════════════════════════════════════════════════
-    "min_hold_bars_before_stop": 6,
-    "emergency_stop_multiplier": 2.0,   # CHANGED: 1.5 -> 2.0 (per Priority 1 report; this default was never actually updated before)
+    "min_hold_bars_before_stop": 4,
+    "emergency_stop_multiplier": 1.5,
     "max_hold_bars": 500,
     "cooldown_after_profit_target_bars": 2,
 
-    # ── TIER-AWARE COOLDOWN ──────────────────────────────────────────────
+    # ── TIER-AWARE COOLDOWN (bars since last trade before a NEW entry of this tier)
     "min_bars_between_trades": 4,
     "min_bars_between_trades_tier1": 4,
     "min_bars_between_trades_tier2": 3,
     "cooldown_tier2_enabled": True,
     "cooldown_after_loss_bars": 12,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # EXIT CONDITIONS (UPDATED)
-    # ═══════════════════════════════════════════════════════════════════════
     "macd_bearish_cross_exit": True,
-    "macd_bearish_cross_profit_min": 2.0,   # CHANGED: was 2.5
+    "macd_bearish_cross_profit_min": 2.5,
     "ema_cross_exit": True,
     "momentum_reversal_exit": True,
     "momentum_reversal_threshold": -0.3,
@@ -1140,11 +963,6 @@ MOMENTUM_PARAMS = {
     "profit_min_time_exit": 0.5,
     "profit_min_ma_crossover": 0.5,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # REMOVED - heuristic_small_loss has been DISABLED
-    # ═══════════════════════════════════════════════════════════════════════
-    # "heuristic_small_loss_enabled": False,   # REMOVED
-
     "volatility_scaling": False,
     "trade_high_vol": False,
     "trade_ranging": False,
@@ -1152,17 +970,15 @@ MOMENTUM_PARAMS = {
 
     "max_position_units": 50,
 
-    "pullback_zone_lower_pct": -3.5,
+    "pullback_zone_lower_pct": -2.5,
     "pullback_zone_upper_pct": 1.5,
     "adx_slope_min": 0.1,
 
-    # TIER-AWARE DIRECTIONAL CONFLUENCE
+    # TIER-AWARE DIRECTIONAL CONFLUENCE (fraction, 0.0-1.0)
     "tier1_confluence_min": 0.65,
     "tier2_confluence_min": 0.70,
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # KALMAN PARAMS (unchanged)
-    # ═══════════════════════════════════════════════════════════════════════
+    # Kalman params
     "trading_direction": "both",
     "process_noise_1": 0.001,
     "process_noise_2": 0.001,
@@ -1194,28 +1010,6 @@ MOMENTUM_PARAMS = {
     "min_volatility": 0.001,
     "max_spread_pct": 0.001,
     "cooldown_bars": 10,
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # BREAKOUT (unchanged)
-    # ═══════════════════════════════════════════════════════════════════════
-    "supertrend_atr_period": 10,
-    "supertrend_multiplier": 3.0,
-    "kalman_q_param": 0.05,
-    "kalman_r_param": 0.8,
-    "vix_atr_period": 14,
-    "vix_rolling_period": 20,
-    "bb_width_percentile_lookback": 100,
-
-    "alpha_mode": "indicator",
-    "breakout_atr_percentile_lookback": 100,
-    "breakout_box_lookback": 20,
-    "breakout_consolidation_atr_pct_max": 30,
-    "breakout_min_coil_bars": 10,
-    "weight_breakout_strength": 30,
-    "weight_consolidation_quality": 20,
-    "weight_breakout_volume": 25,
-    "weight_breakout_ema_trend": 15,
-    "weight_breakout_adx": 10,
 }
 
 
@@ -1290,17 +1084,17 @@ class MomentumConfig:
                            'weight_rsi', 'weight_volume', 'weight_cci', 'weight_kalman']
             weight_sum = sum(config.get(k, 0) for k in weight_keys)
             assert weight_sum == 100, (
-                    f"Quality component weights must sum to 100, got {weight_sum}: "
-                    + ", ".join(f"{k}={config.get(k, 0)}" for k in weight_keys)
+                f"Quality component weights must sum to 100, got {weight_sum}: "
+                + ", ".join(f"{k}={config.get(k, 0)}" for k in weight_keys)
             )
 
             breakout_weight_keys = ['weight_breakout_strength', 'weight_consolidation_quality',
-                                    'weight_breakout_volume', 'weight_breakout_ema_trend',
-                                    'weight_breakout_adx']
+                                     'weight_breakout_volume', 'weight_breakout_ema_trend',
+                                     'weight_breakout_adx']
             breakout_weight_sum = sum(config.get(k, 0) for k in breakout_weight_keys)
             assert breakout_weight_sum == 100, (
-                    f"Breakout component weights must sum to 100, got {breakout_weight_sum}: "
-                    + ", ".join(f"{k}={config.get(k, 0)}" for k in breakout_weight_keys)
+                f"Breakout component weights must sum to 100, got {breakout_weight_sum}: "
+                + ", ".join(f"{k}={config.get(k, 0)}" for k in breakout_weight_keys)
             )
 
             return config
@@ -1590,7 +1384,7 @@ class IndicatorCalculator:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 8: CORE MOMENTUM LOGIC — v10.0.3 with fixed partial exits & trade IDs
+# PART 8: CORE MOMENTUM LOGIC — v10.0.2 with two-tier support
 # ═══════════════════════════════════════════════════════════════════════════
 
 class MomentumLogic:
@@ -1618,9 +1412,9 @@ class MomentumLogic:
             'trade_direction': 'both',
             'quality_tier1_min_long': 75, 'quality_tier2_min_long': 65,
             'quality_tier1_min_short': 75, 'quality_tier2_min_short': 65,
-            'quality_tier1_min': 75, 'quality_tier2_min': 65,
-            'short_quality_tier1_min': 75, 'short_quality_tier2_min': 65,
-            'tier1_adx_hard_min': 22, 'short_tier1_adx_hard_min': 30,
+            # 'quality_tier1_min': 75, 'quality_tier2_min': 65,
+            # 'short_quality_tier1_min': 75, 'short_quality_tier2_min': 65,
+            'tier1_adx_hard_min': 25, 'short_tier1_adx_hard_min': 30,
             'tier1_volume_min': 0.8, 'stop_loss_atr_mult': 2.5,
             'max_position_units': 50, 'ml_weight': 0.20,
             'risk_tier1': 0.025, 'risk_tier2': 0.015,
@@ -1695,15 +1489,11 @@ class MomentumLogic:
         self._last_ml_confidence = 0.0
         self._last_forecast = None
 
-        # NEW: Trade ID tracking
-        self._current_trade_id = 0
-        self._active_trade_ids = set()
-
         self._log_parameter_source()
 
     def _log_parameter_source(self):
         logging.info("=" * 70)
-        logging.info("📊 PARAMETER SOURCE v10.0.3 (TWO-TIER SYSTEM + FIXED PARTIAL EXITS)")
+        logging.info("📊 PARAMETER SOURCE v10.0.2 (TWO-TIER SYSTEM)")
         logging.info("=" * 70)
         logging.info(f"   Direction: {self.trade_direction.upper()}")
         logging.info(f"   Tier 1 Pass (LONG): {getattr(self, 'quality_tier1_min_long', 75)}")
@@ -1795,7 +1585,7 @@ class MomentumLogic:
 
     # ─── LAYER 3: ML ADJUSTMENT ────────────────────────────────────────────
     def _apply_ml_adjustment(self, power_score: int, ml_prediction: int,
-                             ml_confidence: float, direction: str) -> Tuple[int, float, str]:
+                              ml_confidence: float, direction: str) -> Tuple[int, float, str]:
         if not self.trading_app or not getattr(self.trading_app, 'ml_enabled', False):
             return power_score, 0.0, "ML_DISABLED"
         if ml_prediction == 0:
@@ -2067,31 +1857,6 @@ class MomentumLogic:
         if above_daily is None or (isinstance(above_daily, float) and np.isnan(above_daily)):
             return True
         return not bool(above_daily)
-
-    def _price_above_ema200(self, data):
-        """Check if price is above EMA200 - critical trend filter"""
-        df = getattr(self, '_current_df', None)
-        if df is None:
-            return True  # Conservative: allow if unknown
-
-        try:
-            # Get EMA200 from current data
-            ema200 = data.get('EMA_200', None)
-            if ema200 is None and 'EMA_200' in df.columns and len(df) > 0:
-                ema200 = float(df['EMA_200'].iloc[-1])
-
-            if ema200 is None or np.isnan(ema200) or ema200 == 0:
-                return True  # Conservative: allow if data missing
-
-            close = data.get('Close', 0)
-            above = close > ema200
-
-            if not above:
-                self._log(f"🔴 PRICE BELOW EMA200: ${close:.2f} < ${ema200:.2f} — BLOCKING LONG", "red")
-
-            return above
-        except Exception:
-            return True  # Conservative: allow if error
 
     # ─── MACD SCORING ──────────────────────────────────────────────────────
     def _score_macd_momentum(self, data):
@@ -2816,7 +2581,7 @@ class MomentumLogic:
     def _calculate_direction_confluence(self, data, direction='long') -> float:
         """Fraction (0.0-1.0) of independent confirming signals."""
         ema_fast = data.get('EMA_Fast', 0)
-        ema_mid = data.get('EMA_Mid', ema_fast)
+        ema_mid  = data.get('EMA_Mid', ema_fast)
         ema_slow = data.get('EMA_Slow', 0)
         macd_hist = data.get('MACD_Histogram', 0)
         macd_hist_prev = data.get('MACD_Histogram_prev', macd_hist)
@@ -2872,39 +2637,6 @@ class MomentumLogic:
     def _validate_tier1_conditions(self, data) -> bool:
         if not self._tier_cooldown_ok(1):
             return False
-
-        # ─── FIX: these hard filters were previously declared/optimized but
-        # never actually read anywhere in the gating path (only confluence
-        # and cooldown were checked below). Wired in so quality_tier1_* /
-        # tier1_* optimization parameters have a real effect on LONG entries.
-        adx = data.get('ADX', 0)
-        if adx < getattr(self, 'tier1_adx_hard_min', 25):
-            return False
-
-        rsi = data.get('RSI', 50)
-        rsi_min = getattr(self, 'tier1_rsi_min', 35)
-        rsi_max = getattr(self, 'tier1_rsi_max', 75)
-        if not (rsi_min <= rsi <= rsi_max):
-            return False
-
-        volume_ratio = data.get('Volume_Ratio', 1.0)
-        if volume_ratio < getattr(self, 'tier1_volume_min', 1.0):
-            return False
-
-        momentum = data.get('Momentum', 0)
-        if momentum < getattr(self, 'tier1_momentum_min', 0.0):
-            return False
-
-        if getattr(self, 'tier1_macd_gate', True):
-            if data.get('MACD_Histogram', 0) <= 0:
-                return False
-
-        # NOTE: 'tier1_kalman_min' and 'tier1_price_ema_max_pct' have no
-        # corresponding data column in this strategy (no Kalman filter output
-        # is computed here) — left un-wired rather than guessed at. Flag for
-        # removal from the optimizable-parameter list if truly unused, or
-        # supply the missing indicator if they're meant to be live.
-
         confluence_min = getattr(self, 'tier1_confluence_min', 0.65)
         confluence = self._calculate_direction_confluence(data, 'long')
         self._last_confluence_score = confluence
@@ -2915,29 +2647,6 @@ class MomentumLogic:
     def _validate_tier1_conditions_short(self, data) -> bool:
         if not self._tier_cooldown_ok(1):
             return False
-
-        adx = data.get('ADX', 0)
-        if adx < getattr(self, 'short_tier1_adx_hard_min', 25):
-            return False
-
-        rsi = data.get('RSI', 50)
-        rsi_min = getattr(self, 'short_tier1_rsi_min', 25)
-        rsi_max = getattr(self, 'short_tier1_rsi_max', 65)
-        if not (rsi_min <= rsi <= rsi_max):
-            return False
-
-        volume_ratio = data.get('Volume_Ratio', 1.0)
-        if volume_ratio < getattr(self, 'short_tier1_volume_min', 1.0):
-            return False
-
-        momentum = data.get('Momentum', 0)
-        if momentum > -getattr(self, 'short_tier1_momentum_min', 0.0):
-            return False
-
-        if getattr(self, 'short_tier1_macd_gate', True):
-            if data.get('MACD_Histogram', 0) >= 0:
-                return False
-
         confluence_min = getattr(self, 'tier1_confluence_min', 0.65)
         confluence = self._calculate_direction_confluence(data, 'short')
         self._last_confluence_score = confluence
@@ -2954,26 +2663,6 @@ class MomentumLogic:
         macd_hist = data.get('MACD_Histogram', 0)
         if macd_hist <= 0:
             return False
-
-        # ─── FIX: wire previously-dead Tier 2 hard filters ─────────────────
-        adx = data.get('ADX', 0)
-        if adx < getattr(self, 'tier2_adx_min', 18):
-            return False
-
-        volume_ratio = data.get('Volume_Ratio', 1.0)
-        vol_min = getattr(self, 'tier2_volume_min', 0.5)
-        vol_min_ratio = getattr(self, 'tier2_volume_min_ratio', vol_min)
-        if volume_ratio < max(vol_min, vol_min_ratio):
-            return False
-
-        momentum = data.get('Momentum', 0)
-        if momentum < getattr(self, 'tier2_momentum_min', 0.0):
-            return False
-
-        if getattr(self, 'tier2_require_macd_histogram', False):
-            if macd_hist < getattr(self, 'tier2_macd_histogram_min', 0.0):
-                return False
-
         bars_since = self.bar_count - self.last_trade_bar
         cooldown_bars = getattr(self, 'cooldown_after_loss_bars', 12)
         if (bars_since < cooldown_bars and self.trade_history and self.trade_history[-1]['profit'] < 0):
@@ -2996,26 +2685,6 @@ class MomentumLogic:
         macd_hist = data.get('MACD_Histogram', 0)
         if macd_hist >= 0:
             return False
-
-        # ─── FIX: wire previously-dead Tier 2 hard filters (short side) ────
-        adx = data.get('ADX', 0)
-        if adx < getattr(self, 'tier2_adx_min', 18):
-            return False
-
-        volume_ratio = data.get('Volume_Ratio', 1.0)
-        vol_min = getattr(self, 'tier2_volume_min', 0.5)
-        vol_min_ratio = getattr(self, 'tier2_volume_min_ratio', vol_min)
-        if volume_ratio < max(vol_min, vol_min_ratio):
-            return False
-
-        momentum = data.get('Momentum', 0)
-        if momentum > -getattr(self, 'tier2_momentum_min', 0.0):
-            return False
-
-        if getattr(self, 'tier2_require_macd_histogram', False):
-            if macd_hist > -getattr(self, 'tier2_macd_histogram_min', 0.0):
-                return False
-
         bars_since = self.bar_count - self.last_trade_bar
         cooldown_bars = getattr(self, 'cooldown_after_loss_bars', 12)
         if (bars_since < cooldown_bars and self.trade_history and self.trade_history[-1]['profit'] < 0):
@@ -3061,7 +2730,7 @@ class MomentumLogic:
         if len(filtered) < safety_config['min_samples']:
             return {**default_cfg, 'reason': 'too_many_outliers'}
         fm = sum(filtered) / len(filtered)
-        fs = (sum((filtered - fm) ** 2 for filtered in filtered) / len(filtered)) ** 0.5
+        fs = (sum((s - fm) ** 2 for s in filtered) / len(filtered)) ** 0.5
         mult = 1.5 if safety_config['conservative_mode'] else 2.0
         candidate = fm - (mult * fs)
         if candidate < safety_config['absolute_minimum']:
@@ -3147,10 +2816,9 @@ class MomentumLogic:
         tier_emojis = {1: '🟢', 2: '🟡'}
         tier_names = {1: 'Low Risk', 2: 'Medium Risk'}
 
-        self._log(
-            f"{tier_emojis.get(tier, '📊')} TIER{tier} ({tier_names.get(tier, 'Unknown')}) {direction.upper()} SIGNAL PENDING: "
-            f"Power={power_score} @ ${self._signal_price:.2f} (execute next bar)",
-            tier_colors.get(tier, 'purple'))
+        self._log(f"{tier_emojis.get(tier, '📊')} TIER{tier} ({tier_names.get(tier, 'Unknown')}) {direction.upper()} SIGNAL PENDING: "
+                  f"Power={power_score} @ ${self._signal_price:.2f} (execute next bar)",
+                  tier_colors.get(tier, 'purple'))
 
         return ("hold", power_score, None,
                 f"{direction.upper()}_TIER{tier}_SIGNAL_PENDING_execute_next_bar",
@@ -3184,32 +2852,10 @@ class MomentumLogic:
             return self._check_both_entry_conditions(data)
 
     def _check_long_entry_conditions(self, data):
-        # LAYER 0: TREND FILTER (NEW)
-        # FIX: Block longs when price is below EMA200
-        if not self._price_above_ema200(data):
-            return ("hold", 0, None, "price_below_ema200_no_long", {})
-
-        # LAYER 1: DIRECTION GATE - STRICTER
+        # LAYER 1: DIRECTION GATE
         direction_confirmed, direction_reason = self._confirm_direction(data, direction_hint='long')
         if not direction_confirmed:
             return "hold", 0, None, direction_reason, {}
-
-        # LAYER 1.5: Regime gate - STRICT
-        regime, confidence = self.regime_detector.detect_regime(
-            ema_fast=data.get('EMA_Fast', 0),
-            ema_slow=data.get('EMA_Slow', 0),
-            adx=data.get('ADX', 0),
-            vol_ratio=data.get('Vol_Regime_Ratio', 1.0),
-            bb_width_percentile=data.get('BB_Width_Percentile', 50))
-        self.current_regime = regime
-
-        # FIX: BLOCK all bearish regimes entirely
-        if regime.startswith('BEARISH'):
-            return ("hold", 0, None, f"BEARISH_REGIME_BLOCKED_{regime}", {})
-
-        if getattr(self, 'regime_filter_enabled', True):
-            if data.get('Ranging', False) or not self.regime_detector.is_tradeable(regime):
-                return "hold", 0, None, f"long_regime_blocked_{regime}", {}
 
         # Daily trend
         if not self._daily_trend_is_up(data):
@@ -3218,6 +2864,16 @@ class MomentumLogic:
         # Extended run
         if self._is_extended_run_long(data):
             return "hold", 0, None, "v94_extended_run_long_blocked", {}
+
+        # Regime
+        regime, confidence = self.regime_detector.detect_regime(
+            ema_fast=data.get('EMA_Fast', 0), ema_slow=data.get('EMA_Slow', 0),
+            adx=data.get('ADX', 0), vol_ratio=data.get('Vol_Regime_Ratio', 1.0),
+            bb_width_percentile=data.get('BB_Width_Percentile', 50))
+        self.current_regime = regime
+        if getattr(self, 'regime_filter_enabled', True):
+            if data.get('Ranging', False) or not self.regime_detector.is_tradeable(regime):
+                return "hold", 0, None, f"long_regime_blocked_{regime}", {}
 
         # LAYER 2: POWER SCORE
         self._suggested_action = 'buy'
@@ -3261,21 +2917,6 @@ class MomentumLogic:
                                            ml_prediction, ml_confidence)
 
     def _check_short_entry_conditions(self, data):
-        # LAYER 0: REGIME GATE - Allow shorts ONLY in bearish regimes
-        # FIX: Get regime from data (passed from backtest)
-        regime = data.get('_regime', getattr(self, 'current_regime', 'UNKNOWN'))
-        is_below_ema200 = data.get('_is_below_ema200', False)
-
-        # FIX: Allow shorts ONLY in bearish regimes or weak bullish
-        if not regime.startswith('BEARISH') and regime != 'BULLISH_WEAK':
-            return ("hold", 0, None, f"short_regime_not_bearish_{regime}", {})
-
-        # FIX: Additional validation - require price below EMA200 for shorts
-        if not is_below_ema200 and regime.startswith('BEARISH'):
-            # If price is above EMA200 but regime is bearish, may be a bounce
-            # Still allow but with caution
-            print(f"⚠️ SHORT in bearish regime but price above EMA200 - proceed with caution")
-
         # LAYER 1: DIRECTION GATE
         direction_confirmed, direction_reason = self._confirm_direction(data, direction_hint='short')
         if not direction_confirmed:
@@ -3285,9 +2926,15 @@ class MomentumLogic:
         if self._is_extended_run_short(data):
             return "hold", 0, None, "v94_extended_run_short_blocked", {}
 
-        # Daily trend down (strengthened)
-        if not self._daily_trend_is_down(data):
-            return "hold", 0, None, "short_daily_trend_not_down", {}
+        # Regime
+        regime, confidence = self.regime_detector.detect_regime(
+            ema_fast=data.get('EMA_Fast', 0), ema_slow=data.get('EMA_Slow', 0),
+            adx=data.get('ADX', 0), vol_ratio=data.get('Vol_Regime_Ratio', 1.0),
+            bb_width_percentile=data.get('BB_Width_Percentile', 50))
+        self.current_regime = regime
+        if getattr(self, 'regime_filter_enabled', True):
+            if data.get('Ranging', False) or not self.regime_detector.is_tradeable(regime):
+                return "hold", 0, None, f"short_regime_blocked_{regime}", {}
 
         # Bearish price structure
         if not self._has_bearish_price_structure(data):
@@ -3317,14 +2964,6 @@ class MomentumLogic:
 
         # Validate tier-specific conditions
         only_tier1 = getattr(self, 'only_tier1_entries', False)
-
-        # ─── FIX: Reduce tier requirements in bearish regimes ──────────────
-        # In strong bearish regimes, allow Tier 2 with lower threshold
-        if regime == 'BEARISH_DECLINING' or regime == 'BEARISH_SELLOFF':
-            # Allow Tier 2 even if slightly below threshold
-            if tier == 0 and adjusted_power >= 55:  # Lower threshold for bear markets
-                tier = 2
-                print(f"🐻 BEARISH REGIME: Allowing short with lower tier threshold (score={adjusted_power})")
 
         if only_tier1:
             if tier != 1:
@@ -3380,20 +3019,7 @@ class MomentumLogic:
 
     # ─── POSITION SIZING ───────────────────────────────────────────────────
     def calculate_position_size(self, equity, atr, price,
-                                quality_score=75, tier=1, position_mult=1.0,
-                                gui_order_size_pct: float = None) -> float:
-        """
-        Calculate position size with GUI Order Size % as a hard ceiling.
-
-        Args:
-            equity: Current account equity
-            atr: Current ATR value
-            price: Entry price
-            quality_score: Entry quality score (0-100)
-            tier: Tier number (1 or 2)
-            position_mult: Additional position multiplier
-            gui_order_size_pct: GUI Order Size % (e.g., 30.0 for 30%)
-        """
+                                quality_score=75, tier=1, position_mult=1.0):
         tier_config = self._get_tier_config(tier)
         if tier_config is None:
             tier_config = self._get_tier_config(1)
@@ -3413,22 +3039,12 @@ class MomentumLogic:
             except:
                 pass
 
-        # ═══════════════════════════════════════════════════════════════════════════
-        # Pass GUI cap through to risk controller
-        # ═══════════════════════════════════════════════════════════════════════════
         base_size = self.risk_controller.calculate_position_size(
-            entry_price=price,
-            stop_loss_price=stop_loss,
-            win_rate=win_rate / 100,
-            profit_factor=pf,
-            quality_score=quality_score,
-            tier=tier,
-            adx=adx,
+            entry_price=price, stop_loss_price=stop_loss,
+            win_rate=win_rate / 100, profit_factor=pf,
+            quality_score=quality_score, tier=tier, adx=adx,
             tier1_risk_pct=getattr(self, 'risk_tier1', None),
-            tier2_risk_pct=getattr(self, 'risk_tier2', None),
-            gui_order_size_pct=gui_order_size_pct  # <-- PASS GUI CAP
-        )
-        # ═══════════════════════════════════════════════════════════════════════════
+            tier2_risk_pct=getattr(self, 'risk_tier2', None))
 
         regime_mult = self.regime_detector.get_position_multiplier(self.current_regime)
         raw_size = base_size * regime_mult * position_mult
@@ -3453,7 +3069,7 @@ class MomentumLogic:
                      signal_adx=None, signal_rsi=None, signal_macd=None,
                      signal_volume=None, signal_price_pct=None, signal_price=None,
                      signal_time=None, signal_bar=None, confluence_score=None,
-                     entry_time=None, exit_time=None, trade_id=None):
+                     entry_time=None, exit_time=None):
         corrected_size = size
         trade_direction = direction or self.trade_direction
 
@@ -3477,15 +3093,7 @@ class MomentumLogic:
 
         self.last_trade_bar = self.bar_count
 
-        # Use provided trade_id or generate one
-        if trade_id is None:
-            self.trade_counter += 1
-            trade_id = self.trade_counter
-        elif trade_id > self.trade_counter:
-            self.trade_counter = trade_id
-
         trade_record = {
-            'trade_id': trade_id,
             'profit': profit, 'exit_reason': exit_reason, 'tier': tier,
             'size': corrected_size, 'original_size': size,
             'direction': trade_direction, 'entry_quality': entry_quality,
@@ -3588,7 +3196,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
         MomentumLogic.__init__(self, config=params, trading_app=trading_app)
 
         self.trade_counter = 0
-        self.name = "Professional Momentum Strategy v10.0.3 — TWO-TIER SYSTEM + FIXED PARTIAL EXITS"
+        self.name = "Professional Momentum Strategy v10.0.2 — TWO-TIER SYSTEM"
 
         self.position = {
             'type': None, 'entry_price': None, 'quantity': None,
@@ -3608,17 +3216,12 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
         self.signal_history = []
         self._account_quantity = 0
         self.trade_counter = 0
-        self._current_trade_id = 0
 
         if self.trading_app:
             self._log("=" * 70, "cyan")
-            self._log("MOMENTUM STRATEGY v10.0.3 — TWO-TIER RISK SYSTEM + FIXED PARTIAL EXITS", "bold green")
-            self._log(
-                f"✅ Tier 1 (Low Risk):  Pass={getattr(self, 'quality_tier1_min_long', 75)} | Risk={getattr(self, 'risk_tier1', 0.025):.1%}",
-                "green")
-            self._log(
-                f"✅ Tier 2 (Medium Risk): Pass={getattr(self, 'quality_tier2_min_long', 65)} | Risk={getattr(self, 'risk_tier2', 0.015):.1%}",
-                "yellow")
+            self._log("MOMENTUM STRATEGY v10.0.2 — TWO-TIER RISK SYSTEM", "bold green")
+            self._log(f"✅ Tier 1 (Low Risk):  Pass={getattr(self, 'quality_tier1_min_long', 75)} | Risk={getattr(self, 'risk_tier1', 0.025):.1%}", "green")
+            self._log(f"✅ Tier 2 (Medium Risk): Pass={getattr(self, 'quality_tier2_min_long', 65)} | Risk={getattr(self, 'risk_tier2', 0.015):.1%}", "yellow")
             self._log(f"✅ ML Weight: {getattr(self, 'ml_weight', 0.20):.0%}", "purple")
             self._log("=" * 70, "cyan")
 
@@ -3782,9 +3385,6 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
             return None
 
     def execute_buy(self, shares, price, atr, quality_score, tier):
-        """
-        Execute a buy order with GUI Order Size % as a hard ceiling.
-        """
         try:
             if self.trade_direction == 'short':
                 return False, 0, None
@@ -3809,49 +3409,8 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
             if stop_loss_price >= price:
                 return False, 0, None
 
-            # ═══════════════════════════════════════════════════════════════════════
-            # GET GUI ORDER SIZE % FROM TRADING APP
-            # ═══════════════════════════════════════════════════════════════════════
-            gui_pct = None
-            if self.trading_app and hasattr(self.trading_app, 'order_size_var'):
-                try:
-                    gui_pct = float(self.trading_app.order_size_var.get())
-                except (ValueError, TypeError):
-                    gui_pct = 30.0  # fallback
-
-            # Log the GUI cap being applied
-            if gui_pct is not None and gui_pct > 0:
-                self._log(f"📊 GUI Order Size Cap: {gui_pct:.0f}% of equity", "blue")
-            # ═══════════════════════════════════════════════════════════════════════
-
-            # Calculate position size with GUI cap
-            size = self.calculate_position_size(
-                equity=self.risk_controller.current_equity,
-                atr=atr,
-                price=price,
-                quality_score=quality_score,
-                tier=tier,
-                position_mult=1.0,
-                gui_order_size_pct=gui_pct  # <-- PASS GUI CAP
-            )
-
             max_units = getattr(self, 'max_position_units', 50)
             shares = min(shares, max_units)
-
-            # Also apply to the shares parameter
-            shares = min(shares, size)
-
-            # Log position sizing details
-            if gui_pct is not None and gui_pct > 0:
-                equity = self.risk_controller.current_equity
-                max_allocation = equity * (gui_pct / 100.0)
-                position_value = shares * price
-                pct_of_account = (position_value / equity) * 100 if equity > 0 else 0
-                self._log(
-                    f"📊 Position: {shares:.4f} units @ ${price:.2f} = ${position_value:,.2f} "
-                    f"({pct_of_account:.1f}% of account, max {gui_pct:.0f}%)",
-                    "cyan"
-                )
 
             if self.trading_app and hasattr(self.trading_app, 'place_order'):
                 order_result = self.trading_app.place_order(
@@ -3870,7 +3429,6 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                 filled_qty, actual_price = shares, price
 
             self.trade_counter = getattr(self, 'trade_counter', 0) + 1
-            self._current_trade_id = self.trade_counter
 
             signal_data = {}
             if hasattr(self, '_pending_signal') and self._pending_signal:
@@ -3885,8 +3443,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                     'signal_bar': self._pending_signal.get('signal_bar', getattr(self, 'bar_count', 0) - 1),
                     'ml_prediction': self._pending_signal.get('ml_prediction', 0),
                     'ml_confidence': self._pending_signal.get('ml_confidence', 0.0),
-                    'confluence_score': self._pending_signal.get('confluence_score',
-                                                                 getattr(self, '_last_confluence_score', 0.0)),
+                    'confluence_score': self._pending_signal.get('confluence_score', getattr(self, '_last_confluence_score', 0.0)),
                 }
 
             self.position = {
@@ -3898,13 +3455,12 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                 'partial_exits': 0, 'tier': tier,
                 'entry_time': datetime.now(timezone.utc),
                 'entry_quality_score': quality_score,
-                'entry_reason': '', 'trade_id': self._current_trade_id,
+                'entry_reason': '', 'trade_id': self.trade_counter,
                 'partial_pnl_realised': 0.0, **signal_data,
             }
             self.bars_held = 0
             self._transition_to_in_trade()
             return True, filled_qty, None
-
         except Exception as e:
             self._log(f"ERROR execute_buy: {e}", "bold red")
             return False, 0, None
@@ -3966,8 +3522,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                     signal_price=self.position.get('signal_price'),
                     signal_time=self.position.get('signal_time'),
                     signal_bar=self.position.get('signal_bar'),
-                    confluence_score=self.position.get('confluence_score'),
-                    trade_id=self.position.get('trade_id'))
+                    confluence_score=self.position.get('confluence_score'))
 
                 trade_rec = TradeRecord(
                     trade_id=self.position['trade_id'],
@@ -3986,8 +3541,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                     market_regime=self.current_regime,
                     partial_exits_taken=self.position.get('partial_exits', 0),
                     partial_pnl_realised=self.position.get('partial_pnl_realised', 0.0),
-                    original_size=self.position['original_quantity'],
-                    partial_exit_details=self.position.get('partial_exit_details', []))
+                    original_size=self.position['original_quantity'])
                 self.risk_controller.record_trade(trade_rec)
 
                 self.position = {
@@ -4007,44 +3561,9 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                 self.bars_held = 0
                 self._transition_to_seeking_entry()
             else:
-                # PARTIAL EXIT - RECORD WITH SAME TRADE ID
                 self.position['quantity'] -= filled_qty
                 self.position['partial_exits'] = self.position.get('partial_exits', 0) + 1
                 self.position['partial_pnl_realised'] = self.position.get('partial_pnl_realised', 0.0) + leg_profit
-
-                # Store partial exit details
-                if 'partial_exit_details' not in self.position:
-                    self.position['partial_exit_details'] = []
-                self.position['partial_exit_details'].append({
-                    'exit_time': datetime.now(timezone.utc),
-                    'exit_price': exit_price,
-                    'exit_size': filled_qty,
-                    'exit_reason': reason,
-                    'profit': leg_profit,
-                    'profit_pct': profit_pct,
-                })
-
-                # Record partial exit with same trade ID
-                self.record_trade(
-                    profit=leg_profit, exit_reason=f"{reason}_partial",
-                    tier=self.position.get('tier'), size=filled_qty,
-                    direction=self.trade_direction,
-                    entry_quality=self.position.get('entry_quality_score'),
-                    entry_price=self.position['entry_price'],
-                    exit_price=exit_price,
-                    hold_duration=(datetime.now(timezone.utc) - self.position['entry_time']).total_seconds() / 60,
-                    entry_bar=self.position.get('entry_bar'),
-                    exit_bar=getattr(self, 'bar_count', 0),
-                    signal_adx=self.position.get('signal_adx'),
-                    signal_rsi=self.position.get('signal_rsi'),
-                    signal_macd=self.position.get('signal_macd'),
-                    signal_volume=self.position.get('signal_volume'),
-                    signal_price_pct=self.position.get('signal_price_pct'),
-                    signal_price=self.position.get('signal_price'),
-                    signal_time=self.position.get('signal_time'),
-                    signal_bar=self.position.get('signal_bar'),
-                    confluence_score=self.position.get('confluence_score'),
-                    trade_id=self.position.get('trade_id'))
             return True, leg_profit, exit_price
         except Exception as e:
             self._log(f"ERROR execute_sell: {e}", "bold red")
@@ -4113,26 +3632,12 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 10: BACKTEST STRATEGY — v10.0.3 with fixed partial exits
+# PART 10: BACKTEST STRATEGY — v10.0.2
 # ═══════════════════════════════════════════════════════════════════════════
 
 class BacktestMomentumStrategy(Strategy, MomentumLogic):
     _use_updated_params = False
     _updated_params = {}
-
-    # ─── OPTIMIZATION TRACKING ──────────────────────────────────────────────
-    _optimization_run_count = 0
-    _optimization_total_combinations = 0
-
-    @classmethod
-    def set_optimization_context(cls, total_combinations):
-        cls._optimization_total_combinations = total_combinations
-        cls._optimization_run_count = 0
-
-    @classmethod
-    def increment_run_count(cls):
-        cls._optimization_run_count += 1
-        return cls._optimization_run_count
 
     @classmethod
     def set_updated_params(cls, params):
@@ -4157,11 +3662,6 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
     locals().update(_create_param_attributes.__func__())
 
-    # ─── BACKTEST OPTIMIZATION PARAMETERS ──────────────────────────────────
-    # THESE MUST BE CLASS VARIABLES for backtesting.py's _check_params()
-    # ─────────────────────────────────────────────────────────────────────────
-
-    # Quality thresholds
     backtest_quality_active = True
     backtest_quality_values = [70, 75, 80]
     backtest_adx_active = True
@@ -4195,51 +3695,8 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
     backtest_stop_loss_mult_active = True
     backtest_stop_loss_mult_values = [2.0, 2.5, 3.0, 3.5, 4.0]
 
-    # ─── FIX: ADD MISSING TRADE MANAGEMENT PARAMETERS ──────────────────────
-    # These MUST be declared as class variables for backtesting.py's
-    # _check_params() to succeed during optimization.
-    # ─────────────────────────────────────────────────────────────────────────
-
-    # Trade Management
-    max_daily_trades = 15
-    min_bars_between_trades = 4
-    cooldown_after_profit_target_bars = 2
-    cooldown_after_loss_bars = 12
-    max_hold_bars = 500
-
-    # Tier cooldown
-    min_bars_between_trades_tier1 = 4
-    min_bars_between_trades_tier2 = 3
-    cooldown_tier2_enabled = True
-
-    # Confluence
-    tier1_confluence_min = 0.65
-    tier2_confluence_min = 0.70
-
-    # Size multipliers
-    tier1_size_multiplier = 1.0
-    tier2_size_multiplier = 0.70
-
-    # Stop multipliers
-    tier1_stop_multiplier = 2.0
-    tier2_stop_multiplier = 2.5
-
-    # Exit thresholds
-    exit_threshold_tier1 = 60
-    exit_threshold_tier2 = 50
-
-    # Trailing config
-    trailing_activation_tier1 = 0.025
-    trailing_activation_tier2 = 0.035
-    trailing_distance_tier1 = 0.020
-    trailing_distance_tier2 = 0.030
-
     def __init__(self, broker, data, params):
         Strategy.__init__(self, broker, data, params)
-
-        # ─── INCREMENT RUN COUNTER ──────────────────────────────────────────────
-        run_num = self.__class__.increment_run_count()
-        total = self.__class__._optimization_total_combinations
 
         if self.__class__._use_updated_params and self.__class__._updated_params:
             config = MomentumConfig.get_config(momentum_params_override=self.__class__._updated_params)
@@ -4251,91 +3708,43 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 if key in config:
                     config[key] = value
 
-                if 'quality_tier1_min' in params:
-                    config['quality_tier1_min_long'] = params['quality_tier1_min']
-                if 'quality_tier2_min' in params:
-                    config['quality_tier2_min_long'] = params['quality_tier2_min']
-                if 'short_quality_tier1_min' in params:
-                    config['quality_tier1_min_short'] = params['short_quality_tier1_min']
-                if 'short_quality_tier2_min' in params:
-                    config['quality_tier2_min_short'] = params['short_quality_tier2_min']
-
         for key, value in config.items():
             setattr(self, key, value)
 
         critical_defaults = {
-            'trailing_activation_pct': 0.03,
-            'trailing_distance_pct': 0.035,
-            'trade_direction': 'both',
-            'stop_loss_atr_mult': 2.5,
-            'quality_tier1_min_long': 75,
-            'quality_tier2_min_long': 65,
-            'quality_tier1_min_short': 75,
-            'quality_tier2_min_short': 65,
-            'quality_tier1_min': 75,
-            'quality_tier2_min': 65,
-            'short_quality_tier1_min': 75,
-            'short_quality_tier2_min': 65,
-            'tier1_adx_hard_min': 25,
-            'short_tier1_adx_hard_min': 30,
-            'tier1_volume_min': 0.8,
-            'max_position_units': 50,
-            'risk_tier1': 0.025,
-            'risk_tier2': 0.015,
-            'tier1_size_multiplier': 1.0,
-            'tier2_size_multiplier': 0.70,
-            'tier1_stop_multiplier': 2.0,
-            'tier2_stop_multiplier': 2.5,
-            'exit_threshold_tier1': 60,
-            'exit_threshold_tier2': 50,
+            'trailing_activation_pct': 0.03, 'trailing_distance_pct': 0.035,
+            'trade_direction': 'both', 'stop_loss_atr_mult': 2.5,
+            'quality_tier1_min_long': 75, 'quality_tier2_min_long': 65,
+            'quality_tier1_min_short': 75, 'quality_tier2_min_short': 65,
+            # 'quality_tier1_min': 75, 'quality_tier2_min': 65,
+            # 'short_quality_tier1_min': 75, 'short_quality_tier2_min': 65,
+            'tier1_adx_hard_min': 25, 'short_tier1_adx_hard_min': 30,
+            'tier1_volume_min': 0.8, 'max_position_units': 50,
+            'risk_tier1': 0.025, 'risk_tier2': 0.015,
+            'tier1_size_multiplier': 1.0, 'tier2_size_multiplier': 0.70,
+            'tier1_stop_multiplier': 2.0, 'tier2_stop_multiplier': 2.5,
+            'exit_threshold_tier1': 60, 'exit_threshold_tier2': 50,
             'ml_weight': 0.20,
             'min_bars_between_trades': 4,
-            'min_bars_between_trades_tier1': 4,
-            'min_bars_between_trades_tier2': 3,
+            'min_bars_between_trades_tier1': 4, 'min_bars_between_trades_tier2': 3,
             'cooldown_tier2_enabled': True,
-            'tier1_confluence_min': 0.65,
-            'tier2_confluence_min': 0.70,
+            'tier1_confluence_min': 0.65, 'tier2_confluence_min': 0.70,
             'only_tier1_entries': False,
-            'max_daily_trades': 15,
-            'cooldown_after_profit_target_bars': 2,
-            'cooldown_after_loss_bars': 12,
-            'max_hold_bars': 500,
-            'gui_order_size_pct': 30.0,
         }
         for attr, default_val in critical_defaults.items():
             if not hasattr(self, attr) or getattr(self, attr) is None:
                 setattr(self, attr, default_val)
 
-        if params and 'gui_order_size_pct' in params:
-            self.gui_order_size_pct = params['gui_order_size_pct']
-            print(f"📊 BACKTEST GUI CAP SET: {self.gui_order_size_pct:.0f}% of equity")
-
         MomentumLogic.__init__(self, config=config, trading_app=None)
 
-        # Direction-separated cooldown
-        self._exit_bar_long = -999
-        self._exit_bar_short = -999
-        self._last_exit_time_long = None
-        self._last_exit_time_short = None
-        self._exit_cooldown_bars_long = 3
-        self._exit_cooldown_bars_short = 3
-        self._pending_signal_long = None
-        self._pending_signal_short = None
-
-        # ─── DISPLAY HEADER WITH RUN COUNTER ───────────────────────────────────
         print(f"\n{'=' * 70}")
-        print(f"🔢 RUN {run_num}/{total} — BACKTEST v10.0.3 TWO-TIER SYSTEM + FIXED PARTIAL EXITS")
+        print(f"BACKTEST v10.0.2 CONFIGURATION LOADED — TWO-TIER SYSTEM")
         print(f"{'=' * 70}")
         print(f"Direction: {self.trade_direction.upper()}")
-        print(
-            f"Tier 1 (Low Risk):  Pass LONG={getattr(self, 'quality_tier1_min_long', 75)} | Pass SHORT={getattr(self, 'quality_tier1_min_short', 75)} | Risk={getattr(self, 'risk_tier1', 0.025):.1%}")
-        print(
-            f"Tier 2 (Medium Risk): Pass LONG={getattr(self, 'quality_tier2_min_long', 65)} | Pass SHORT={getattr(self, 'quality_tier2_min_short', 65)} | Risk={getattr(self, 'risk_tier2', 0.015):.1%}")
+        print(f"Tier 1 (Low Risk):  Pass={getattr(self, 'quality_tier1_min_long', 75)} | Risk={getattr(self, 'risk_tier1', 0.025):.1%}")
+        print(f"Tier 2 (Medium Risk): Pass={getattr(self, 'quality_tier2_min_long', 65)} | Risk={getattr(self, 'risk_tier2', 0.015):.1%}")
         print(f"ML Weight: {getattr(self, 'ml_weight', 0.20):.0%}")
         print(f"Only Tier 1 Entries: {getattr(self, 'only_tier1_entries', False)}")
-        print(f"GUI Order Size Cap: {getattr(self, 'gui_order_size_pct', 30.0):.0f}% of equity (hard ceiling)")
-        print(
-            f"LONG Cooldown: {self._exit_cooldown_bars_long} bars | SHORT Cooldown: {self._exit_cooldown_bars_short} bars")
         print(f"{'=' * 70}\n")
 
         self._entry_price = np.nan
@@ -4367,11 +3776,6 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self._signal_time = None
         self._signal_ml_prediction = 0
         self._signal_ml_confidence = 0.0
-
-        # Trade ID tracking for backtest
-        self._current_trade_id = 0
-        self._active_trade_ids = set()
-        self.trade_counter = 0
 
         try:
             idx_freq = data.df.index.freq
@@ -4412,31 +3816,10 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         return ranges
 
     def _bt_safe_size(self, units, price):
-        """
-        Convert a desired share count into a size backtesting.py will execute
-        as that exact number of shares.
-
-        BUG THIS FIXES: backtesting.py treats any size < 1 as "fraction of
-        equity", not "fractional shares". The old code only rounded to whole
-        shares when `units` was ALREADY an exact integer (units == round(units)).
-        Any partial-exit size like 15.18 (33% of a 46-share position) failed
-        that check and fell into the equity-fraction branch, silently selling
-        a tiny sliver of equity instead of ~15 shares. That drift between the
-        strategy's intended size and the engine's actual position is what
-        later let backtesting.py's own Trade.close() rounding overshoot and
-        flip the position into a spurious 1-share opposite trade.
-
-        FIX: always round to the nearest whole share first. Only fall back to
-        the equity-fraction interpretation if the position itself is
-        genuinely below 1 share even after rounding.
-        """
         if units <= 0:
             return 0
-
-        whole_shares = int(round(units))
-        if whole_shares >= 1:
-            return whole_shares
-
+        if units >= 1 and units == round(units):
+            return int(units)
         notional = units * price
         fraction = notional / max(self.equity, 1.0)
         return max(0.0001, min(fraction, 0.9999))
@@ -4463,16 +3846,9 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         return price * (1 + adverse_direction * slip_pct)
 
     def _bt_open_position(self, current_data, quality_score, tier, position_mult, current_price):
-        """Open a position in backtest mode with complete TradeRecord capture and GUI cap."""
+        """Open a position in backtest mode with complete TradeRecord capture."""
         if self.only_tier1_entries and tier != 1:
             print(f"❌ BLOCKED: Tier {tier} entry attempted but only_tier1_entries=True")
-            return
-
-        if self._position_direction == 'long' and self.only_short_entries:
-            print("❌ BLOCKED: long entry attempted but only_short_entries=True")
-            return
-        if self._position_direction == 'short' and self.only_long_entries:
-            print("❌ BLOCKED: short entry attempted but only_long_entries=True")
             return
 
         tier_config = self._get_tier_config(tier)
@@ -4480,36 +3856,11 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             tier_config = self._get_tier_config(1)
         stop_mult = tier_config.get('stop_mult', 2.5)
 
-        # ═══════════════════════════════════════════════════════════════════════════
-        # GET GUI ORDER SIZE % FOR BACKTEST
-        # ═══════════════════════════════════════════════════════════════════════════
-        gui_pct = getattr(self, 'gui_order_size_pct', None)
-        if gui_pct is None:
-            # Try to get from trading_app if available
-            if hasattr(self, 'trading_app') and hasattr(self.trading_app, 'order_size_var'):
-                try:
-                    gui_pct = float(self.trading_app.order_size_var.get())
-                except (ValueError, TypeError):
-                    gui_pct = 30.0
-            else:
-                gui_pct = 30.0  # fallback
-
-        # Log GUI cap being applied in backtest
-        if gui_pct is not None and gui_pct > 0:
-            print(f"📊 BACKTEST GUI CAP: {gui_pct:.0f}% of equity")
-        # ═══════════════════════════════════════════════════════════════════════════
-
         size = self.calculate_position_size(
             self.equity, current_data['ATR'], current_price,
-            quality_score, tier, position_mult,
-            gui_order_size_pct=gui_pct  # <-- PASS GUI CAP
-        )
+            quality_score, tier, position_mult)
         if size <= 0:
             return
-
-        # Generate unique trade ID
-        self.trade_counter += 1
-        self._current_trade_id = self.trade_counter
 
         if self._position_direction == 'long':
             stop = current_price - (stop_mult * current_data['ATR'])
@@ -4539,7 +3890,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self._trailing_stop = None
         self._be_stop_set = False
 
-        # Capture signal data from pending signal
+        # ── Capture signal data from pending signal ──
         if self._pending_signal:
             self._signal_adx = self._pending_signal.get('signal_adx')
             self._signal_rsi = self._pending_signal.get('signal_rsi')
@@ -4553,11 +3904,15 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             self._signal_ml_confidence = self._pending_signal.get('ml_confidence', 0.0)
             self._entry_confluence_score = self._pending_signal.get('confluence_score', self._entry_confluence_score)
 
-        # CREATE COMPLETE TRADE RECORD
+        # ─── CREATE COMPLETE TRADE RECORD ──────────────────────────────────────────
+        # Use the actual timestamp of the current bar being traded (from the
+        # backtest data index), NOT datetime.now() — the latter just records
+        # whatever wall-clock time the script happened to run, which is
+        # meaningless for a historical backtest.
         bar_entry_time = self.data.index[-1]
         self._entry_time = bar_entry_time
         trade_record = TradeRecord(
-            trade_id=self._current_trade_id,
+            trade_id=self.trade_counter,
             symbol=getattr(self, 'symbol', 'SOL-USDT'),
             entry_time=bar_entry_time,
             entry_price=current_price,
@@ -4566,7 +3921,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             entry_quality_score=quality_score,
             entry_reason="entry_signal",
             entry_direction=self._position_direction,
-            entry_bar=self._entry_bar,
+            # Signal data
             signal_adx=self._signal_adx or current_data.get('ADX', 0),
             signal_rsi=self._signal_rsi or current_data.get('RSI', 50),
             signal_macd=self._signal_macd or current_data.get('MACD', 0),
@@ -4576,6 +3931,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             signal_ml_confidence=self._signal_ml_confidence,
             confluence_score=self._entry_confluence_score,
             market_regime=self.current_regime,
+            # These will be filled on exit
             exit_time=None,
             exit_price=None,
             exit_size=None,
@@ -4587,7 +3943,6 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             partial_exits_taken=0,
             partial_pnl_realised=0.0,
             original_size=size,
-            partial_exit_details=[],
         )
 
         # Store the active record and append to history
@@ -4603,7 +3958,6 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         print(f"{direction_icon} ENTER T{tier} ({tier_names.get(tier, 'Unknown')}) Q={quality_score} "
               f"@ ${current_price:.2f} ADX={current_data['ADX']:.1f} RSI={current_data['RSI']:.1f} "
               f"Dir={self.trade_direction.upper()} → IN_TRADE")
-
     def _calculate_actual_tier(self, quality_score):
         if self.only_tier1_entries:
             return 1 if quality_score >= self.quality_tier1_min_long else 0
@@ -4731,145 +4085,10 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
         return min(100, int(score))
 
-    def _record_partial_exit_row(self, partial_size, partial_fill_price, partial_profit, exit_signal):
-        """
-        Log a partial exit as its own complete TradeRecord row — entry
-        inherited from the original position, exit at this partial fill.
-        This is what makes each scale-out show up as its own line in the
-        trade log instead of being folded silently into the final row's PnL.
-        """
-        exit_bar = len(self.data) - 1
-        bar_exit_time = self.data.index[-1]
-
-        # ─── FIX: Store BOTH decision bar and fill bar keys ────────────────
-        # The strategy records exit_bar at the DECISION bar, but the actual
-        # fill happens ONE BAR LATER (trade_on_close=False). Store both so
-        # the exporter can find the reason regardless of which index it uses.
-        decision_exit_bar = exit_bar
-        fill_exit_bar = exit_bar + 1  # Fill happens on next bar
-
-        # Store all possible key combinations
-        self._exit_reason_map[(self._entry_bar, decision_exit_bar)] = f"{exit_signal}_partial"
-        self._exit_reason_map[(self._entry_bar, fill_exit_bar)] = f"{exit_signal}_partial"
-        self._exit_reason_map[(self._entry_bar + 1, decision_exit_bar)] = f"{exit_signal}_partial"
-        self._exit_reason_map[(self._entry_bar + 1, fill_exit_bar)] = f"{exit_signal}_partial"
-        # Legacy single-key fallback
-        self._exit_reason_map[self._entry_bar] = f"{exit_signal}_partial"
-
-        profit_pct_calc = (
-            (partial_fill_price - self._entry_price) / self._entry_price * 100
-            if self._position_direction == 'long'
-            else (self._entry_price - partial_fill_price) / self._entry_price * 100
-        )
-
-        # Use SAME trade ID as the parent trade
-        trade_id = self._current_trade_id
-
-        partial_record = TradeRecord(
-            trade_id=trade_id,
-            symbol=getattr(self, 'symbol', 'SOL-USDT'),
-            entry_time=self._entry_time,
-            entry_price=self._entry_price,
-            entry_size=partial_size,
-            entry_tier=self._entry_tier,
-            entry_quality_score=self._entry_quality,
-            entry_reason="entry_signal",
-            entry_direction=self._position_direction,
-            entry_bar=self._entry_bar,
-            signal_adx=self._signal_adx or 0,
-            signal_rsi=self._signal_rsi or 50,
-            signal_macd=self._signal_macd or 0,
-            signal_volume=self._signal_volume or 1.0,
-            signal_price_pct=self._signal_price_pct or 50,
-            signal_ml_prediction=getattr(self, '_signal_ml_prediction', 0),
-            signal_ml_confidence=getattr(self, '_signal_ml_confidence', 0.0),
-            confluence_score=self._entry_confluence_score,
-            market_regime=self.current_regime,
-            exit_time=bar_exit_time,
-            exit_price=partial_fill_price,
-            exit_size=partial_size,
-            exit_reason=f"{exit_signal}_partial",
-            profit=partial_profit,
-            profit_pct=profit_pct_calc,
-            hold_duration=self._bars_held,
-            partial_exits_taken=self._partial_exits,
-            partial_pnl_realised=partial_profit,
-            original_size=partial_size,
-            partial_exit_details=[],
-        )
-        self.trade_records.append(partial_record)
-
-        # Update the active trade record's partial exit details
-        if hasattr(self, '_active_trade_record') and self._active_trade_record:
-            self._active_trade_record.partial_exits_taken = self._partial_exits
-            self._active_trade_record.partial_pnl_realised = self._partial_pnl_realised
-            if not hasattr(self._active_trade_record, 'partial_exit_details'):
-                self._active_trade_record.partial_exit_details = []
-            self._active_trade_record.partial_exit_details.append({
-                'exit_time': bar_exit_time,
-                'exit_price': partial_fill_price,
-                'exit_size': partial_size,
-                'exit_reason': f"{exit_signal}_partial",
-                'profit': partial_profit,
-                'profit_pct': profit_pct_calc,
-            })
-
-        self.record_trade(
-            profit=partial_profit, exit_reason=f"{exit_signal}_partial",
-            tier=self._entry_tier, size=partial_size,
-            direction=self._position_direction,
-            entry_quality=self._entry_quality,
-            entry_price=self._entry_price, exit_price=partial_fill_price,
-            hold_duration=self._bars_held,
-            entry_bar=self._entry_bar, exit_bar=exit_bar,
-            signal_adx=self._signal_adx, signal_rsi=self._signal_rsi,
-            signal_macd=self._signal_macd, signal_volume=self._signal_volume,
-            signal_price_pct=self._signal_price_pct,
-            signal_price=self._signal_price,
-            signal_time=self._signal_time, signal_bar=self._signal_bar,
-            confluence_score=getattr(self, '_entry_confluence_score', None),
-            entry_time=self._entry_time, exit_time=bar_exit_time,
-            trade_id=trade_id)
-
     def _bt_close_position(self, current_price, exit_signal, profit_pct):
         size_at_close = abs(self.position.size)
-        exit_bar = len(self.data) - 1
-
-        # ─── FIX: Store BOTH decision bar and fill bar keys ────────────────
-        # The strategy records exit_bar at the DECISION bar, but the actual
-        # fill happens ONE BAR LATER (trade_on_close=False). Store both so
-        # the exporter can find the reason regardless of which index it uses.
-        decision_exit_bar = exit_bar
-        fill_exit_bar = exit_bar + 1  # Fill happens on next bar
-
-        # Store all possible key combinations
-        self._exit_reason_map[(self._entry_bar, decision_exit_bar)] = exit_signal
-        self._exit_reason_map[(self._entry_bar, fill_exit_bar)] = exit_signal
-        self._exit_reason_map[(self._entry_bar + 1, decision_exit_bar)] = exit_signal
-        self._exit_reason_map[(self._entry_bar + 1, fill_exit_bar)] = exit_signal
-        # Legacy single-key fallback
         self._exit_reason_map[self._entry_bar] = exit_signal
-
-        # Store the exit signal directly on the strategy for immediate access
-        self._exit_reason = exit_signal
-        self._exit_bar = exit_bar
-
         self.position.close()
-
-        # SAFETY NET: backtesting.py's own Trade.close() rounds any small
-        # leftover trade fragment up to at least 1 whole share. If size
-        # tracking ever drifts, this can overshoot and leave residual size
-        # on the position.
-        if self.position.size != 0:
-            leftover = self.position.size
-            print(f"⚠️ POSITION DRIFT DETECTED after close(): leftover={leftover} "
-                  f"at {self.data.index[-1]} — force-flattening via position.close() "
-                  f"(never a new order) now.")
-            self.position.close()
-            if self.position.size != 0:
-                print(f"❌ POSITION STILL NOT FLAT after second close(): "
-                      f"size={self.position.size} at {self.data.index[-1]} — "
-                      f"investigate, NOT auto-reversing.")
 
         current_data = self._build_current_data()
         exit_fill_price = self._slippage_adjusted_price(
@@ -4883,49 +4102,46 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             final_leg = (self._entry_price - exit_fill_price) * size_at_close
             profit_pct_calc = (self._entry_price - exit_fill_price) / self._entry_price * 100
 
-        total_profit_for_whole_trade = final_leg + self._partial_pnl_realised
+        total_profit = final_leg + self._partial_pnl_realised
 
+        # Real timestamp of the bar on which the position is being closed.
         bar_exit_time = self.data.index[-1]
         bar_entry_time = getattr(self, '_entry_time', None)
 
-        trade_id = self._current_trade_id
-
         self.record_trade(
-            profit=final_leg, exit_reason=exit_signal,
+            profit=total_profit, exit_reason=exit_signal,
             tier=self._entry_tier, size=size_at_close,
             direction=self._position_direction,
             entry_quality=self._entry_quality,
             entry_price=self._entry_price, exit_price=exit_fill_price,
             hold_duration=self._bars_held,
-            entry_bar=self._entry_bar, exit_bar=exit_bar,
+            entry_bar=self._entry_bar, exit_bar=len(self.data) - 1,
             signal_adx=self._signal_adx, signal_rsi=self._signal_rsi,
             signal_macd=self._signal_macd, signal_volume=self._signal_volume,
             signal_price_pct=self._signal_price_pct,
             signal_price=self._signal_price,
             signal_time=self._signal_time, signal_bar=self._signal_bar,
             confluence_score=getattr(self, '_entry_confluence_score', None),
-            entry_time=bar_entry_time, exit_time=bar_exit_time,
-            trade_id=trade_id)
+            entry_time=bar_entry_time, exit_time=bar_exit_time)
 
-        # Fill in the exit fields on the matching TradeRecord object
+        # Also fill in the exit fields on the matching TradeRecord object
+        # (self.trade_records), which was previously left with exit_time=None
+        # forever since nothing ever wrote back to it after the entry.
         active_record = getattr(self, '_active_trade_record', None)
         if active_record is not None:
             active_record.exit_time = bar_exit_time
             active_record.exit_price = exit_fill_price
             active_record.exit_reason = exit_signal
-            active_record.profit = final_leg
+            active_record.profit = total_profit
             active_record.profit_pct = profit_pct_calc
             active_record.hold_duration = self._bars_held
-            active_record.partial_exits_taken = self._partial_exits
-            active_record.partial_pnl_realised = self._partial_pnl_realised
 
         tier_names = {1: 'Low Risk', 2: 'Medium Risk'}
         direction_icon = "⬆️" if self._position_direction == 'long' else "⬇️"
-        win_loss_icon = "✅" if total_profit_for_whole_trade > 0 else "❌"
+        win_loss_icon = "✅" if total_profit > 0 else "❌"
         print(f"{win_loss_icon} {direction_icon} EXIT @ ${exit_fill_price:.2f} {profit_pct_calc:+.2f}% "
               f"hold={self._bars_held}bars tier={self._entry_tier} ({tier_names.get(self._entry_tier, 'Unknown')}) "
-              f"reason={exit_signal} final_leg=${final_leg:.2f} "
-              f"whole_trade_total=${total_profit_for_whole_trade:.2f} → SEEKING_ENTRY")
+              f"reason={exit_signal} → SEEKING_ENTRY")
 
         self._entry_price = np.nan
         self._stop_loss = np.nan
@@ -4952,9 +4168,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self._signal_ml_confidence = 0.0
         self._transition_to_seeking_entry()
 
-    def _extract_exit_reason(self, entry_bar, exit_bar=None):
-        if exit_bar is not None and (entry_bar, exit_bar) in self._exit_reason_map:
-            return self._exit_reason_map[(entry_bar, exit_bar)]
+    def _extract_exit_reason(self, entry_bar):
         return self._exit_reason_map.get(entry_bar, "unknown")
 
     def get_trade_records_for_export(self):
@@ -4970,10 +4184,8 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 return_pct = ((entry_price - trade.get('exit_price', 0)) / entry_price) * 100 if entry_price > 0 else 0
 
             trade_record = {
-                'Trade_#': trade.get('trade_id', i + 1),  # Use trade_id if available
-                'Tier': f"Tier {actual_tier}" if actual_tier > 0 else "Unknown",
-                'Tier_Number': actual_tier if actual_tier > 0 else -1,
-                'Direction': trade.get('direction', 'UNKNOWN').upper(),
+                'Trade_#': i + 1, 'Tier': f"Tier {actual_tier}",
+                'Tier_Number': actual_tier,
                 'Signal_Bar': trade.get('signal_bar', trade.get('entry_bar', 0) - 1),
                 'Signal_Time': trade.get('signal_time', ''),
                 'Signal_Price': trade.get('signal_price', 0),
@@ -5005,6 +4217,12 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
     def next(self):
         # ─── FINALIZE PENDING TRADE-RECORD ENTRY TIME ───────────────────────
+        # backtesting.py's broker fills an order placed during the previous
+        # next() call using THIS bar's data, before this next() call runs.
+        # So self.data.index[-1] right now is the authoritative fill
+        # timestamp for whatever was just opened — no need to guess it via
+        # bar-interval arithmetic, which breaks across irregular gaps
+        # (session boundaries, weekends, missing bars, etc.).
         if getattr(self, '_entry_time_pending', False):
             true_entry_time = self.data.index[-1]
             self._entry_time = true_entry_time
@@ -5027,69 +4245,10 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self._current_df = self.df_enhanced.iloc[:idx + 1]
         self.bar_count = idx
 
-        # ─── ENHANCED REGIME DETECTION ──────────────────────────────────────
-        # FIX: Proper regime detection with bearish state
-        ema_fast_val = current_data.get('EMA_Fast', 0)
-        ema_slow_val = current_data.get('EMA_Slow', 0)
-        adx_val = current_data.get('ADX', 0)
-        vol_ratio_val = current_data.get('Vol_Regime_Ratio', 1.0)
-        bb_width_pct = current_data.get('BB_Width_Percentile', 50)
-        close_val = current_data.get('Close', 0)
-
-        # Get EMA200 from indicators
-        ema200_val = float(self.ema_200[-1]) if len(self.ema_200) > 0 and not np.isnan(self.ema_200[-1]) else 0
-
-        # Detect regime using enhanced logic
-        regime, confidence = self.regime_detector.detect_regime(
-            ema_fast=ema_fast_val,
-            ema_slow=ema_slow_val,
-            adx=adx_val,
-            vol_ratio=vol_ratio_val,
-            bb_width_percentile=bb_width_pct
-        )
-        self.current_regime = regime
-
-        # ─── FIX: Log bearish regime detection ──────────────────────────────
-        if regime.startswith('BEARISH'):
-            print(f"🐻 BEARISH REGIME DETECTED: {regime} (conf={confidence:.2f}) | "
-                  f"Price=${close_val:.2f} EMA200=${ema200_val:.2f} ADX={adx_val:.1f}")
-
-        # ─── Check for price below EMA200 (additional bearish signal) ──────
-        is_below_ema200 = False
-        if ema200_val > 0 and close_val > 0:
-            is_below_ema200 = close_val < ema200_val
-            if is_below_ema200 and not regime.startswith('BEARISH'):
-                print(f"⚠️ PRICE BELOW EMA200: ${close_val:.2f} < ${ema200_val:.2f} — Bearish signal detected")
-
         # Check for pending signal from previous bar
         if self._pending_signal is not None and self.bar_count > self._signal_bar:
             signal = self._pending_signal
             execution_price = self.data.Open[-1]
-
-            # ─── FIX: Re-validate signal based on current regime ────────────
-            # If we're in a BEARISH regime and signal is LONG, block it
-            if regime.startswith('BEARISH') and signal['decision'] == "buy":
-                print(f"❌ BLOCKED: LONG signal in BEARISH regime ({regime})")
-                self._pending_signal = None
-                self._signal_bar = -999
-                self._signal_price = None
-                return
-
-            # If we're in a BULLISH regime and signal is SHORT, block it
-            if regime.startswith('BULLISH') and signal['decision'] == "sell":
-                print(f"❌ BLOCKED: SHORT signal in BULLISH regime ({regime})")
-                self._pending_signal = None
-                self._signal_bar = -999
-                self._signal_price = None
-                return
-
-            # If price is below EMA200 and signal is LONG, block it
-            if is_below_ema200 and signal['decision'] == "buy":
-                print(f"❌ BLOCKED: LONG signal with price below EMA200")
-                self._pending_signal = None
-                self._signal_bar = -999
-                self._signal_price = None
-                return
 
             self._position_direction = 'long' if signal['decision'] == "buy" else 'short'
             tier = signal['tier']
@@ -5099,27 +4258,19 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 tier_config = self._get_tier_config(1)
             stop_mult = tier_config.get('stop_mult', 2.5)
 
-            # ─── FIX: Reduce position size in bearish regimes ──────────────
-            position_mult = signal.get('position_mult', 1.0)
-            if regime.startswith('BEARISH'):
-                position_mult *= 0.25  # 75% reduction in bear markets
-                print(f"⚠️ BEARISH REGIME: Position size reduced to {position_mult:.2f}x")
-
             size = self.calculate_position_size(
                 self.equity, current_data['ATR'], execution_price,
-                signal['power_score'], tier, position_mult)
+                signal['power_score'], tier, signal['position_mult'])
 
             if size > 0:
-                # Generate unique trade ID
-                self.trade_counter += 1
-                self._current_trade_id = self.trade_counter
-
                 if signal['decision'] == "buy":
                     stop = execution_price - (stop_mult * current_data['ATR'])
                     if stop < execution_price:
                         self.buy(size=self._bt_safe_size(size, execution_price))
                         fill_price = self._slippage_adjusted_price(
                             execution_price, size, current_data, adverse_direction=+1)
+                        self._diag_orders_placed = getattr(self, '_diag_orders_placed', {'long': 0, 'short': 0})
+                        self._diag_orders_placed['long'] += 1
                     else:
                         self._pending_signal = None
                         return
@@ -5129,6 +4280,8 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                         self.sell(size=self._bt_safe_size(size, execution_price))
                         fill_price = self._slippage_adjusted_price(
                             execution_price, size, current_data, adverse_direction=-1)
+                        self._diag_orders_placed = getattr(self, '_diag_orders_placed', {'long': 0, 'short': 0})
+                        self._diag_orders_placed['short'] += 1
                     else:
                         self._pending_signal = None
                         return
@@ -5161,42 +4314,62 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
                 tier_names = {1: 'Low Risk', 2: 'Medium Risk'}
                 direction_icon = "⬆️" if self._position_direction == 'long' else "⬇️"
-                regime_icon = "🐻" if regime.startswith('BEARISH') else "🐂"
                 print(f"{direction_icon} ENTER T{tier} ({tier_names.get(tier, 'Unknown')}) "
-                      f"Q={signal['power_score']} @ ${execution_price:.2f} Size={size} Stop=${stop:.2f} "
-                      f"{regime_icon} {regime}")
+                      f"Q={signal['power_score']} @ ${execution_price:.2f} Size={size} Stop=${stop:.2f}")
 
                 # ─── LOG THE ACTUAL TRADE RECORD ───────────────────────────────
+                # This is the real fill, so this is where the TradeRecord that
+                # the Excel exporter enriches from (self.trade_records) needs
+                # to be created. (Previously only the never-called
+                # _bt_open_position() did this, so self.trade_records stayed
+                # empty for the whole backtest.)
+                #
+                # entry_time is a PLACEHOLDER here — backtesting.py actually
+                # fills this order using the NEXT bar's data (the broker
+                # processes it at the start of the following next() call,
+                # before any strategy code runs there). We finalize the real
+                # entry_time at the top of the next next() call, where
+                # self.data.index[-1] is authoritatively that fill bar. See
+                # the '_entry_time_pending' block at the top of next().
                 bar_entry_time = self.data.index[-1]
                 self._entry_time = bar_entry_time
                 self._entry_time_pending = True
-                trade_record = TradeRecord(
-                    trade_id=self._current_trade_id,
-                    symbol=getattr(self, 'symbol', 'SOL-USDT'),
-                    entry_time=bar_entry_time,
-                    entry_price=fill_price,
-                    entry_size=size,
-                    entry_tier=tier,
-                    entry_quality_score=signal['power_score'],
-                    entry_reason="entry_signal",
-                    entry_direction=self._position_direction,
-                    entry_bar=self._entry_bar,
-                    signal_adx=self._signal_adx or current_data.get('ADX', 0),
-                    signal_rsi=self._signal_rsi or current_data.get('RSI', 50),
-                    signal_macd=self._signal_macd or current_data.get('MACD', 0),
-                    signal_volume=self._signal_volume or current_data.get('Volume_Ratio', 1.0),
-                    signal_price_pct=self._signal_price_pct or current_data.get('Price_Percentile_20bar', 50),
-                    signal_ml_prediction=self._signal_ml_prediction,
-                    signal_ml_confidence=self._signal_ml_confidence,
-                    confluence_score=self._entry_confluence_score,
-                    market_regime=regime,  # Store actual regime
-                    original_size=size,
-                    partial_exit_details=[],
-                )
-                if not hasattr(self, 'trade_records'):
-                    self.trade_records = []
-                self.trade_records.append(trade_record)
-                self._active_trade_record = trade_record
+                self.trade_counter = getattr(self, 'trade_counter', 0) + 1
+                try:
+                    trade_record = TradeRecord(
+                        trade_id=self.trade_counter,
+                        symbol=getattr(self, 'symbol', 'SOL-USDT'),
+                        entry_time=bar_entry_time,
+                        entry_price=fill_price,
+                        entry_size=size,
+                        entry_tier=tier,
+                        entry_quality_score=signal['power_score'],
+                        entry_reason="entry_signal",
+                        entry_direction=self._position_direction,
+                        signal_adx=self._signal_adx or current_data.get('ADX', 0),
+                        signal_rsi=self._signal_rsi or current_data.get('RSI', 50),
+                        signal_macd=self._signal_macd or current_data.get('MACD', 0),
+                        signal_volume=self._signal_volume or current_data.get('Volume_Ratio', 1.0),
+                        signal_price_pct=self._signal_price_pct or current_data.get('Price_Percentile_20bar', 50),
+                        signal_ml_prediction=self._signal_ml_prediction,
+                        signal_ml_confidence=self._signal_ml_confidence,
+                        confluence_score=self._entry_confluence_score,
+                        market_regime=getattr(self, 'current_regime', 'UNKNOWN'),
+                        original_size=size,
+                    )
+                    if not hasattr(self, 'trade_records'):
+                        self.trade_records = []
+                    self.trade_records.append(trade_record)
+                    self._active_trade_record = trade_record
+                    self._diag_records_appended = getattr(self, '_diag_records_appended', {'long': 0, 'short': 0})
+                    self._diag_records_appended[self._position_direction] += 1
+                except Exception as e:
+                    # Surface this loudly instead of letting it disappear —
+                    # this is exactly the kind of failure that would silently
+                    # shrink trade_records relative to actual executed orders.
+                    print(f"🔴 DIAG: TradeRecord build/append FAILED for a "
+                          f"{self._position_direction} entry at bar {idx} "
+                          f"({bar_entry_time}): {type(e).__name__}: {e}")
 
             self._pending_signal = None
             self._signal_bar = -999
@@ -5205,12 +4378,6 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
         # SEEKING ENTRY STATE
         if self.strategy_state == StrategyState.SEEKING_ENTRY:
-            # ─── FIX: Pass regime to entry check ────────────────────────────
-            # Add regime data to current_data for entry validation
-            current_data['_regime'] = regime
-            current_data['_is_below_ema200'] = is_below_ema200
-            current_data['_ema200'] = ema200_val
-
             result = self._check_entry_conditions(current_data)
             if hasattr(self, '_pending_signal') and self._pending_signal is not None:
                 return
@@ -5356,83 +4523,38 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 exit_pct = 1.0
                 print(f"🏁 FORCED EXIT AT END OF BACKTEST: Profit={profit_pct:.2f}%")
 
-            # ═══════════════════════════════════════════════════════════════════
-            # EXECUTE EXIT - UPDATED WITH EXIT REASON STORAGE FIX
-            # ═══════════════════════════════════════════════════════════════════
+            # EXECUTE EXIT
             if exit_signal:
                 if self._position_direction == 'long':
                     profit_pct = (current_price - self._entry_price) / self._entry_price * 100
                 else:
                     profit_pct = (self._entry_price - current_price) / self._entry_price * 100
 
-                # ─── FIX: Store exit reason with BOTH entry and exit bar ──────
-                # This ensures the reason is available even if the exporter
-                # uses a different bar index (off-by-one bug fix)
-                current_exit_bar = idx
-
-                # Store ALL possible key combinations for the exporter to find
-                # 1. Decision bar -> Decision bar
-                self._exit_reason_map[(self._entry_bar, current_exit_bar)] = exit_signal
-                # 2. Decision bar -> Fill bar (next bar)
-                self._exit_reason_map[(self._entry_bar, current_exit_bar + 1)] = exit_signal
-                # 3. Entry bar + 1 -> Decision bar
-                self._exit_reason_map[(self._entry_bar + 1, current_exit_bar)] = exit_signal
-                # 4. Entry bar + 1 -> Fill bar
-                self._exit_reason_map[(self._entry_bar + 1, current_exit_bar + 1)] = exit_signal
-                # 5. Legacy single-key fallback
-                self._exit_reason_map[self._entry_bar] = exit_signal
-                # 6. Store on strategy for direct access
-                self._exit_reason = exit_signal
-                self._exit_bar = current_exit_bar
-
-                # Handle partial exits - FIXED: use position.close(portion)
+                # Handle partial exits
                 if exit_pct < 1.0 and self._partial_exits < 4:
                     self._partial_exits += 1
-
-                    # CRITICAL FIX: use self.position.close(portion=...), NOT
-                    # self.sell()/self.buy(). This Backtest is configured
-                    # with exclusive_orders=True, which makes ANY brand-new
-                    # order (self.buy()/self.sell()) submitted while a
-                    # position is open FIRST close the ENTIRE existing
-                    # position, THEN open a new opposite-direction position
-                    # sized at whatever was requested. That is exactly how a
-                    # 33% partial take-profit on a LONG was silently turning
-                    # into "close the whole long, then open a brand-new
-                    # SHORT" — every time, in every mode, including
-                    # long-only. position.close(portion) builds its closing
-                    # order directly and bypasses order submission (and thus
-                    # exclusive_orders) entirely, so it can never flip
-                    # direction.
-                    #
-                    # Compute the closed size with the SAME formula
-                    # backtesting.py's own Trade.close() uses internally
-                    # (max(1, round(size * portion))), so our bookkeeping
-                    # can never drift from what the engine actually closes.
-                    current_position_size = abs(self.position.size)
-                    if current_position_size > 0:
-                        partial_size = max(1, int(round(current_position_size * exit_pct)))
-                        portion = min(1.0, partial_size / current_position_size)
-
-                        partial_fill_price = self._slippage_adjusted_price(
-                            current_price, partial_size, current_data,
-                            adverse_direction=(-1 if self._position_direction == 'long' else +1))
-
-                        # FIX: use position.close(portion) - NO new order, NO direction flip
-                        self.position.close(portion=portion)
-
-                        if self._position_direction == 'long':
-                            partial_profit = (partial_fill_price - self._entry_price) * partial_size
-                        else:
-                            partial_profit = (self._entry_price - partial_fill_price) * partial_size
-
-                        self._partial_pnl_realised += partial_profit
-                        self._record_partial_exit_row(
-                            partial_size, partial_fill_price, partial_profit, exit_signal)
-                        return
+                    raw_partial = abs(self.position.size) * exit_pct
+                    if current_price >= 1000:
+                        partial_size = round(raw_partial, 6)
+                    elif current_price >= 100:
+                        partial_size = round(raw_partial, 4)
                     else:
-                        self._partial_exits -= 1
+                        partial_size = int(raw_partial)
+                    partial_size = self._bt_safe_size(raw_partial, current_price)
+                    if partial_size > 0:
+                        partial_fill_price = self._slippage_adjusted_price(
+                            current_price, raw_partial, current_data,
+                            adverse_direction=(-1 if self._position_direction == 'long' else +1))
+                        if self._position_direction == 'long':
+                            self.sell(size=partial_size)
+                            partial_profit = (partial_fill_price - self._entry_price) * raw_partial
+                        else:
+                            self.buy(size=partial_size)
+                            partial_profit = (self._entry_price - partial_fill_price) * raw_partial
+                        self._partial_pnl_realised += partial_profit
+                        return
 
-                # Full exit - pass exit_signal to _bt_close_position
+                # Full exit
                 self._bt_close_position(current_price, exit_signal, profit_pct)
 
 
@@ -5441,17 +4563,17 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def run_walk_forward_optimization(
-        df,
-        strategy_class=BacktestMomentumStrategy,
-        train_bars=2160,
-        test_bars=720,
-        step_bars=None,
-        cash=10000,
-        commission=0.001,
-        maximize='Sharpe Ratio',
-        param_ranges=None,
-        max_tries=200,
-        verbose=True,
+    df,
+    strategy_class=BacktestMomentumStrategy,
+    train_bars=2160,
+    test_bars=720,
+    step_bars=None,
+    cash=10000,
+    commission=0.001,
+    maximize='Sharpe Ratio',
+    param_ranges=None,
+    max_tries=200,
+    verbose=True,
 ):
     if step_bars is None:
         step_bars = test_bars
@@ -5483,15 +4605,6 @@ def run_walk_forward_optimization(
                 for param_name in param_names:
                     param_ranges[param_name] = values
 
-    # ─── CALCULATE TOTAL COMBINATIONS ──────────────────────────────────────
-    total_combinations = 1
-    for param_name, values in param_ranges.items():
-        total_combinations *= len(values)
-    print(f"📊 TOTAL PARAMETER COMBINATIONS: {total_combinations}")
-
-    # Set optimization context on the strategy class BEFORE any Backtest is created
-    strategy_class.set_optimization_context(total_combinations)
-
     results = []
     n = len(df)
     fold = 0
@@ -5504,10 +4617,10 @@ def run_walk_forward_optimization(
 
         strategy_class.reset_to_defaults()
         bt_train = Backtest(train_df, strategy_class, cash=cash,
-                            commission=commission, exclusive_orders=True)
+                             commission=commission, exclusive_orders=True)
         try:
             train_stats = bt_train.optimize(**param_ranges, maximize=maximize,
-                                            max_tries=max_tries)
+                                             max_tries=max_tries)
         except Exception as e:
             if verbose:
                 print(f"[Fold {fold}] optimize() failed: {e}")
@@ -5518,7 +4631,7 @@ def run_walk_forward_optimization(
         strategy_class.set_updated_params(best_params)
 
         bt_test = Backtest(test_df, strategy_class, cash=cash,
-                           commission=commission, exclusive_orders=True)
+                            commission=commission, exclusive_orders=True)
         test_stats = bt_test.run()
 
         train_sharpe = train_stats.get('Sharpe Ratio', float('nan'))
@@ -5551,7 +4664,7 @@ def run_walk_forward_optimization(
             if not np.isnan(degradation):
                 flag = ("⚠️ OVERFIT SIGNAL" if degradation < 0.3
                         else "✅ HOLDS UP" if degradation > 0.6
-                else "🟡 PARTIAL DECAY")
+                        else "🟡 PARTIAL DECAY")
                 print(f"  Degradation ratio (test/train Sharpe) = {degradation:.2f}  {flag}")
 
         start += step_bars

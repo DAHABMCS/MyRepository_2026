@@ -951,7 +951,7 @@ class TradingApp:
         self.log_message(f"   quality_tier2_min      = {self.custom_params['momentum']['quality_tier2_min']}", "green")
         self.log_message(f"   risk_tier1             = {self.custom_params['momentum']['risk_tier1']}", "green")
         self.log_message(f"   max_daily_trades       = {self.custom_params['momentum']['max_daily_trades']}", "green")
-        self.log_message(f"   only_tier1_entries     = {self.custom_params['momentum']['only_tier1_entries']}", "green")
+        self.log_message(f"   only_tier2_entries     = {self.custom_params['momentum']['only_tier2_entries']}", "green")
         self.log_message("=" * 70, "green")
         return True
 
@@ -962,7 +962,7 @@ class TradingApp:
         checks = {
             "Tier 1 Quality Min":   (s.quality_tier1_min,  72),
             "Tier 2 Quality Min":   (s.quality_tier2_min,  62),
-            "Only Tier 2 Entries":  (s.only_tier1_entries, False),
+            "Only Tier 2 Entries":  (s.only_tier2_entries, False),
             "Tier 1 ADX Hard Min":  (s.tier1_adx_hard_min, 20),
             "Tier 1 RSI Min":       (s.tier1_rsi_min,      44),
             "Tier 1 RSI Max":       (s.tier1_rsi_max,      64),
@@ -1332,9 +1332,9 @@ class TradingApp:
             if stored_value != ui_value:
                 self.custom_params['momentum'][param_name] = ui_value
                 updates_made += 1
-                if param_name == 'only_tier1_entries':
+                if param_name == 'only_tier2_entries':
                     self.log_message(
-                        f"   🔧 Updated only_tier1_entries: {stored_value} → {ui_value}",
+                        f"   🔧 Updated only_tier2_entries: {stored_value} → {ui_value}",
                         "yellow" if ui_value else "green")
         if updates_made > 0:
             self.log_message(f"✅ Updated {updates_made} parameters from UI", "green")
@@ -1525,24 +1525,11 @@ class TradingApp:
 
         paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        # left_frame  = ttk.Frame(paned, width=600)
-        # paned.add(left_frame, weight=2)
-        # right_frame = ttk.LabelFrame(paned, text="Backtest Optimization Parameters", width=500)
-        # paned.add(right_frame, weight=1)
-        screen_width = parent.winfo_screenwidth()
+        left_frame  = ttk.Frame(paned, width=600)
+        paned.add(left_frame, weight=2)
+        right_frame = ttk.LabelFrame(paned, text="Backtest Optimization Parameters", width=500)
+        paned.add(right_frame, weight=1)
 
-        left_width = int(screen_width * 0.65)  # 65%
-        right_width = int(screen_width * 0.35)  # 35%
-
-        left_frame = ttk.Frame(paned, width=left_width)
-        right_frame = ttk.LabelFrame(
-            paned,
-            text="Backtest Optimization Parameters",
-            width=right_width
-        )
-
-        paned.add(left_frame, weight=65)
-        paned.add(right_frame, weight=35)
         headers_frame = ttk.Frame(left_frame)
         headers_frame.pack(fill='x', padx=5, pady=(5, 0), side=tk.TOP)
         headers_frame.columnconfigure(0, weight=0, minsize=250)
@@ -1574,10 +1561,10 @@ class TradingApp:
 
         categories = {
             '📊 EMA Parameters': ['ema_fast_period','ema_mid_period','ema_slow_period','ema_near_tolerance','daily_ema_period'],
-            '🎯 LONG Quality Thresholds': ['quality_tier1_min','quality_tier2_min'],
-            '🎯 SHORT Quality Thresholds': ['short_quality_tier1_min','short_quality_tier2_min'],
+            '🎯 LONG Quality Thresholds': ['quality_tier1_min','quality_tier2_min','fixed_threshold'],
+            '🎯 SHORT Quality Thresholds': ['short_quality_tier1_min','short_quality_tier2_min','short_fixed_threshold'],
             '📊 Quality Component Weights': ['weight_ema','weight_adx','weight_macd','weight_rsi','weight_volume'],
-            '🎯 TIER CONTROL': ['only_tier1_entries'],
+            '🎯 TIER CONTROL': ['only_tier2_entries'],
             '⏱️ TIER COOLDOWN & CONFLUENCE': ['min_bars_between_trades_tier1','min_bars_between_trades_tier2','cooldown_tier2_enabled','tier1_confluence_min','tier2_confluence_min'],
             '⬆️ TIER 1 LONG FILTERS': ['tier1_adx_hard_min','tier1_adx_min','tier1_rsi_min','tier1_rsi_max','tier1_volume_min','tier1_momentum_min','tier1_kalman_min','tier1_macd_gate','tier1_price_ema_max_pct','daily_trend_filter_enabled','pullback_zone_lower_pct','pullback_zone_upper_pct','adx_slope_min'],
             '⬇️ TIER 1 SHORT FILTERS': ['short_tier1_adx_hard_min','short_tier1_rsi_min','short_tier1_rsi_max','short_tier1_volume_min','short_tier1_momentum_min','short_tier1_macd_gate','daily_trend_down_filter_enabled'],
@@ -4892,12 +4879,12 @@ class TradingApp:
         # STEP 2: Apply the selected parameters to the strategy
         self.apply_selected_parameters()
 
-        # Log final Tier 1 status (only_tier1_entries blocks Tier 1,
+        # Log final Tier 1 status (only_tier2_entries blocks Tier 1,
         # allowing only Tier 2 through)
-        only_tier1 = self.custom_params['momentum'].get('only_tier1_entries', False)
+        only_tier2 = self.custom_params['momentum'].get('only_tier2_entries', False)
         self.log_message("=" * 70, "green")
-        self.log_message(f"📊 FINAL TIER 1 STATUS: {'BLOCKED' if only_tier1 else 'ACTIVE'}",
-                         "yellow" if only_tier1 else "green")
+        self.log_message(f"📊 FINAL TIER 1 STATUS: {'BLOCKED' if only_tier2 else 'ACTIVE'}",
+                         "yellow" if only_tier2 else "green")
         self.log_message(f"📋 Current mode: {self.param_toggle_var.get()}", "blue")
         self.log_message("=" * 70, "green")
 
@@ -5422,6 +5409,8 @@ class TradingApp:
                 if self.needs_multitimeframe():
                     try:
                         multi_df = self.get_market_data_multiframe()
+                        # _htf_data is pushed into strategy inside
+                        # get_market_data_multiframe() — nothing else needed.
                         htf = multi_df.get('_htf', {})
                         if htf:
                             ef_1h = htf.get('ema_fast_1h', 0)
@@ -5436,6 +5425,7 @@ class TradingApp:
                         self.log_message(
                             f"⚠️ HTF fetch skipped this cycle: {htf_err}",
                             "orange")
+                # ── end U6 ────────────────────────────────────────────
 
                 df = self.get_market_data()
                 if df is None:
@@ -5455,22 +5445,9 @@ class TradingApp:
                     _wait = min(self._seconds_until_start(_strategy_name), 300)
                     time.sleep(max(5, _wait))
                     continue
+                # ─────────────────────────────────────────────────────────────
 
                 df = self.strategy.calculate_indicators(df)
-
-                # ── NEW: Calculate ATR for stop placement ──────────────────────
-                atr = self.get_atr(df)
-                current_price = float(df['Close'].iloc[-1])
-
-                # ── NEW: Log ATR-based stops for monitoring ────────────────────
-                if atr > 0:
-                    stops = self.calculate_atr_stops(current_price, atr)
-                    if self.detailed_output_var.get():
-                        self.log_message(
-                            f"📊 ATR: {atr:.4f} | Stop: ${stops['stop_loss']:.2f} "
-                            f"({stops['risk_pct']:.2f}%) | T1: ${stops['target_1']:.2f} "
-                            f"| T2: ${stops['target_2']:.2f}",
-                            "blue")
 
                 # ── ensure trade_direction is always in sync with the GUI ─────
                 _gui_dir = self.trade_direction_var.get()
@@ -5482,6 +5459,7 @@ class TradingApp:
                     self.strategy.only_long_entries = (_gui_dir == 'long')
                 if hasattr(self.strategy, 'only_short_entries'):
                     self.strategy.only_short_entries = (_gui_dir == 'short')
+                # ─────────────────────────────────────────────────────────────
 
                 if df is None or len(df) < 2:
                     self.log_message("⚠️ Indicator calculation failed or insufficient data", "orange")
@@ -5502,7 +5480,6 @@ class TradingApp:
                     st = self.strategy_type_var.get()
                     active_params = (self.get_current_momentum_params() if st == "Momentum"
                                      else self.get_current_kalman_params() if st == "Kalman"
-                    else self.get_current_scalping_params() if st == "Scalping"
                     else {})
                     stop_loss = self.position.get('stop_loss') if self.position.get('type') else None
                     trailing_stop = self.position.get('trailing_stop') if self.position.get('type') else None
@@ -5703,9 +5680,8 @@ class TradingApp:
         paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # ─── FIX: Set fixed width for left frame ──────────────────────────────────
-        left_frame = ttk.Frame(paned, width=900)  # Fixed width
-        paned.add(left_frame, weight=1)  # weight=0 prevents expansion
+        left_frame = ttk.Frame(paned, width=600)
+        paned.add(left_frame, weight=2)
 
         right_frame = ttk.LabelFrame(paned, text="Backtest Optimization Parameters", width=500)
         paned.add(right_frame, weight=1)
@@ -5716,25 +5692,25 @@ class TradingApp:
 
         headers_frame = ttk.Frame(left_frame)
         headers_frame.pack(fill='x', padx=5, pady=(5, 0), side=tk.TOP)
-        headers_frame.columnconfigure(0, weight=0, minsize=200)  # Reduced from 250
-        headers_frame.columnconfigure(1, weight=0, minsize=100)  # Reduced from 120
-        headers_frame.columnconfigure(2, weight=0, minsize=100)  # Reduced from 120
-        headers_frame.columnconfigure(3, weight=1, minsize=250)  # Reduced from 350
+        headers_frame.columnconfigure(0, weight=0, minsize=250)
+        headers_frame.columnconfigure(1, weight=0, minsize=120)
+        headers_frame.columnconfigure(2, weight=0, minsize=120)
+        headers_frame.columnconfigure(3, weight=1, minsize=350)
 
-        header_style = ('Arial', 9, 'bold')  # Smaller font
-        ttk.Label(headers_frame, text="Parameter", font=header_style, anchor='w').grid(row=0, column=0, padx=3, pady=5,
+        header_style = ('Arial', 10, 'bold')
+        ttk.Label(headers_frame, text="Parameter", font=header_style, anchor='w').grid(row=0, column=0, padx=5, pady=8,
                                                                                        sticky='w')
-        ttk.Label(headers_frame, text="📌 Default Value", font=header_style, anchor='w').grid(row=0, column=1, padx=3,
-                                                                                             pady=5, sticky='w')
-        ttk.Label(headers_frame, text="✏️ Custom Value", font=header_style, anchor='w').grid(row=0, column=2, padx=3,
-                                                                                             pady=5, sticky='w')
-        ttk.Label(headers_frame, text="Description", font=header_style, anchor='w').grid(row=0, column=3, padx=3,
-                                                                                         pady=5, sticky='w')
-        ttk.Separator(headers_frame, orient='horizontal').grid(row=1, column=0, columnspan=4, sticky='ew', padx=3,
-                                                               pady=(0, 3))
+        ttk.Label(headers_frame, text="📌 Default Value", font=header_style, anchor='w').grid(row=0, column=1, padx=5,
+                                                                                             pady=8, sticky='w')
+        ttk.Label(headers_frame, text="✏️ Custom Value", font=header_style, anchor='w').grid(row=0, column=2, padx=5,
+                                                                                             pady=8, sticky='w')
+        ttk.Label(headers_frame, text="Description", font=header_style, anchor='w').grid(row=0, column=3, padx=5,
+                                                                                         pady=8, sticky='w')
+        ttk.Separator(headers_frame, orient='horizontal').grid(row=1, column=0, columnspan=4, sticky='ew', padx=5,
+                                                               pady=(0, 5))
 
         content_frame = ttk.Frame(left_frame)
-        content_frame.pack(fill='both', expand=True, padx=3, pady=3, side=tk.TOP)
+        content_frame.pack(fill='both', expand=True, padx=5, pady=5, side=tk.TOP)
 
         canvas = tk.Canvas(content_frame, bg='white', highlightthickness=0)
         scrollbar = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
@@ -5752,7 +5728,7 @@ class TradingApp:
         # v9.4 FIX: categories now matches MOMENTUM_PARAMS EXACTLY
         # Every param in MOMENTUM_PARAMS appears here (except trade_direction
         # which is controlled by a separate dropdown widget, and
-        # backtest_only_tier1_active/values which are backtest-internal).
+        # backtest_only_tier2_active/values which are backtest-internal).
         # NO phantom params (params that don't exist in MOMENTUM_PARAMS).
         # ═══════════════════════════════════════════════════════════════
         categories = {
@@ -5761,16 +5737,16 @@ class TradingApp:
                 'ema_near_tolerance', 'daily_ema_period',
             ],
             '🎯 LONG Quality Thresholds': [
-                'quality_tier1_min', 'quality_tier2_min',
+                'quality_tier1_min', 'quality_tier2_min', 'fixed_threshold',
             ],
             '🎯 SHORT Quality Thresholds': [
-                'short_quality_tier1_min', 'short_quality_tier2_min',
+                'short_quality_tier1_min', 'short_quality_tier2_min', 'short_fixed_threshold',
             ],
             '📊 Quality Component Weights (total=100)': [
                 'weight_ema', 'weight_adx', 'weight_macd', 'weight_rsi', 'weight_volume',
             ],
             '🎯 TIER CONTROL': [
-                'only_tier1_entries',
+                'only_tier2_entries',
             ],
             '⏱️ TIER COOLDOWN & CONFLUENCE': [
                 'min_bars_between_trades_tier1', 'min_bars_between_trades_tier2',
@@ -5885,21 +5861,20 @@ class TradingApp:
             ttk.Separator(scrollable_frame, orient='horizontal').grid(row=row, column=0, columnspan=4, sticky='ew',
                                                                       pady=(10, 5), padx=5)
             row += 1
-            ttk.Label(scrollable_frame, text=category, font=('Arial', 10, 'bold')).grid(row=row, column=0, columnspan=4,
+            ttk.Label(scrollable_frame, text=category, font=('Arial', 11, 'bold')).grid(row=row, column=0, columnspan=4,
                                                                                         sticky='w', padx=5, pady=5)
             row += 1
 
             for param_name in params:
                 if param_name in default_params:
-                    scrollable_frame.columnconfigure(0, weight=0, minsize=200)
-                    scrollable_frame.columnconfigure(1, weight=0, minsize=100)
-                    scrollable_frame.columnconfigure(2, weight=0, minsize=100)
-                    scrollable_frame.columnconfigure(3, weight=1, minsize=250)
+                    scrollable_frame.columnconfigure(0, weight=0, minsize=250)
+                    scrollable_frame.columnconfigure(1, weight=0, minsize=120)
+                    scrollable_frame.columnconfigure(2, weight=0, minsize=120)
+                    scrollable_frame.columnconfigure(3, weight=1, minsize=350)
 
-                    # ─── Use smaller font for parameter labels ──────────────────────────
                     label_text = param_name.replace('_', ' ').title()
-                    ttk.Label(scrollable_frame, text=label_text, anchor='w', font=('Arial', 8)).grid(
-                        row=row, column=0, padx=3, pady=1, sticky='w'
+                    ttk.Label(scrollable_frame, text=label_text, anchor='w').grid(
+                        row=row, column=0, padx=5, pady=2, sticky='w'
                     )
 
                     default_value = default_params[param_name]
@@ -5908,10 +5883,10 @@ class TradingApp:
                     else:
                         default_display = str(default_value)
 
-                    default_entry = ttk.Entry(scrollable_frame, width=12, font=('Arial', 8))
+                    default_entry = ttk.Entry(scrollable_frame, width=15)
                     default_entry.insert(0, default_display)
                     default_entry.config(state='readonly')
-                    default_entry.grid(row=row, column=1, padx=3, pady=1, sticky='w')
+                    default_entry.grid(row=row, column=1, padx=5, pady=2, sticky='w')
 
                     custom_value = self.custom_params['momentum'].get(param_name, default_value)
 
@@ -5922,14 +5897,14 @@ class TradingApp:
                             scrollable_frame, variable=custom_var,
                             text="Enable" if custom_value else "Disable"
                         )
-                        custom_entry.grid(row=row, column=2, padx=3, pady=1, sticky='w')
+                        custom_entry.grid(row=row, column=2, padx=5, pady=2, sticky='w')
 
                         # ── Highlight indicator label for booleans ──────────────────
                         bool_indicator = tk.Label(
                             scrollable_frame, text="●", width=2,
                             bg="yellow" if (bool(custom_value) != bool(default_value)) else "white"
                         )
-                        bool_indicator.grid(row=row, column=2, padx=(80, 0), pady=1, sticky='w')
+                        bool_indicator.grid(row=row, column=2, padx=(100, 0), pady=2, sticky='w')
 
                         def _make_bool_callbacks(v, w, txt_widget, indicator, def_val):
                             def _update_text(*_):
@@ -5954,11 +5929,10 @@ class TradingApp:
                         custom_var = tk.StringVar(value=str(custom_value))
 
                         custom_entry = tk.Entry(  # ← tk.Entry (not ttk) so .config(bg=) works
-                            scrollable_frame, textvariable=custom_var, width=12,
-                            bg="yellow" if str(custom_value) != str(default_value) else "white",
-                            font=('Arial', 8)
+                            scrollable_frame, textvariable=custom_var, width=15,
+                            bg="yellow" if str(custom_value) != str(default_value) else "white"
                         )
-                        custom_entry.grid(row=row, column=2, padx=3, pady=1, sticky='w')
+                        custom_entry.grid(row=row, column=2, padx=5, pady=2, sticky='w')
 
                         def _make_str_callback(v, widget, def_val):
                             def _highlight(*_):
@@ -5977,11 +5951,10 @@ class TradingApp:
                         )
 
                     description = self.get_momentum_param_description(param_name)
-                    # ─── Use smaller font for descriptions ──────────────────────────────
                     ttk.Label(
-                        scrollable_frame, text=description, wraplength=300,
-                        anchor='w', foreground='#555555', font=('Arial', 7)
-                    ).grid(row=row, column=3, padx=3, pady=1, sticky='w')
+                        scrollable_frame, text=description, wraplength=400,
+                        anchor='w', foreground='#555555'
+                    ).grid(row=row, column=3, padx=5, pady=2, sticky='w')
 
                     self.momentum_param_widgets[param_name] = {
                         'default': default_entry,
@@ -5989,6 +5962,57 @@ class TradingApp:
                         'widget': custom_entry
                     }
                     row += 1
+
+            # for param_name in params:
+            #     if param_name in default_params:
+            #         scrollable_frame.columnconfigure(0, weight=0, minsize=250)
+            #         scrollable_frame.columnconfigure(1, weight=0, minsize=120)
+            #         scrollable_frame.columnconfigure(2, weight=0, minsize=120)
+            #         scrollable_frame.columnconfigure(3, weight=1, minsize=350)
+            #
+            #         label_text = param_name.replace('_', ' ').title()
+            #         ttk.Label(scrollable_frame, text=label_text, anchor='w').grid(row=row, column=0, padx=5, pady=2,
+            #                                                                       sticky='w')
+            #
+            #         default_value = default_params[param_name]
+            #         if isinstance(default_value, bool):
+            #             default_display = "✓ Enabled" if default_value else "✗ Disabled"
+            #         else:
+            #             default_display = str(default_value)
+            #
+            #         default_entry = ttk.Entry(scrollable_frame, width=15)
+            #         default_entry.insert(0, default_display)
+            #         default_entry.config(state='readonly')
+            #         default_entry.grid(row=row, column=1, padx=5, pady=2, sticky='w')
+            #
+            #         custom_value = self.custom_params['momentum'].get(param_name, default_value)
+            #
+            #         if isinstance(default_value, bool):
+            #             custom_var = tk.BooleanVar(value=custom_value)
+            #             custom_entry = ttk.Checkbutton(scrollable_frame, variable=custom_var,
+            #                                            text="Enable" if custom_value else "Disable")
+            #             custom_entry.grid(row=row, column=2, padx=5, pady=2, sticky='w')
+            #             def _safe_update_text(v, w):
+            #                 def _cb(*args):
+            #                     try:
+            #                         w.config(text="Enable" if v.get() else "Disable")
+            #                     except tk.TclError:
+            #                         pass  # Widget destroyed, ignore
+            #                 return _cb
+            #             custom_var.trace_add('write', _safe_update_text(custom_var, custom_entry))
+            #         else:
+            #             custom_var = tk.StringVar(value=str(custom_value))
+            #             custom_entry = ttk.Entry(scrollable_frame, textvariable=custom_var, width=15)
+            #             custom_entry.grid(row=row, column=2, padx=5, pady=2, sticky='w')
+            #
+            #         description = self.get_momentum_param_description(param_name)
+            #         ttk.Label(scrollable_frame, text=description, wraplength=400, anchor='w',
+            #                   foreground='#555555').grid(row=row, column=3, padx=5, pady=2, sticky='w')
+            #
+            #         self.momentum_param_widgets[param_name] = {
+            #             'default': default_entry, 'custom': custom_var, 'widget': custom_entry
+            #         }
+            #         row += 1
 
         # ═══════════════════════════════════════════════════════════════
         # RIGHT PANEL: BACKTEST OPTIMIZATION PARAMETERS
@@ -6327,6 +6351,7 @@ class TradingApp:
     def _build_momentum_backtest_panel(self, right_frame):
         """Build COMPLETE Momentum-specific backtest optimization panel with ALL 160+ parameters"""
 
+
         # ═══ Get current parameters from GUI (respects toggle selection) ══════════
         current_params = self.get_current_momentum_params()
 
@@ -6349,6 +6374,10 @@ class TradingApp:
                 'description': 'Tier 2 Minimum Score (LONG)',
                 'current': current_params.get('quality_tier2_min', 62),
                 'v1': '55', 'v2': '58', 'v3': '62', 'v4': '65'},
+            'fixed_threshold': {
+                'description': 'Fixed Entry Threshold',
+                'current': current_params.get('fixed_threshold', 72),
+                'v1': '65', 'v2': '68', 'v3': '72', 'v4': '75'},
             'short_quality_tier1_min': {
                 'description': 'Tier 1 Minimum Score (SHORT)',
                 'current': current_params.get('short_quality_tier1_min', 70),
@@ -6357,9 +6386,13 @@ class TradingApp:
                 'description': 'Tier 2 Minimum Score (SHORT)',
                 'current': current_params.get('short_quality_tier2_min', 65),
                 'v1': '60', 'v2': '63', 'v3': '65', 'v4': '68'},
-            'only_tier1_entries': {
+            'short_fixed_threshold': {
+                'description': 'Fixed Entry Threshold (SHORT)',
+                'current': current_params.get('short_fixed_threshold', 75),
+                'v1': '70', 'v2': '72', 'v3': '75', 'v4': '78'},
+            'only_tier2_entries': {
                 'description': '🔥 ONLY Tier 2 Entries (Block Tier 1)',
-                'current': current_params.get('only_tier1_entries', False),
+                'current': current_params.get('only_tier2_entries', False),
                 'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
 
             # ──────────────────────────────────────────────────────────────────────
@@ -6539,7 +6572,8 @@ class TradingApp:
                 'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
 
             # ──────────────────────────────────────────────────────────────────────
-            # TIER-AWARE COOLDOWN & CONFLUENCE
+            # TIER-AWARE COOLDOWN & CONFLUENCE (bars-since-last-trade + secondary
+            # directional-agreement gate, scaled by tier risk)
             # ──────────────────────────────────────────────────────────────────────
             'min_bars_between_trades_tier1': {
                 'description': 'Min Bars Between Trades (Tier 1)',
@@ -6703,16 +6737,16 @@ class TradingApp:
                 'v1': '25', 'v2': '30', 'v3': '35', 'v4': '40'},
 
             # ──────────────────────────────────────────────────────────────────────
-            # TRADE MANAGEMENT ← FIX: ADD max_daily_trades HERE
+            # TRADE MANAGEMENT
             # ──────────────────────────────────────────────────────────────────────
             'max_hold_bars': {
                 'description': 'Max Hold Bars',
                 'current': current_params.get('max_hold_bars', 500),
                 'v1': '200', 'v2': '300', 'v3': '400', 'v4': '500'},
-            'max_daily_trades': {  # ← ADD THIS ENTIRE BLOCK
+            'max_daily_trades': {
                 'description': 'Max Daily Trades',
                 'current': current_params.get('max_daily_trades', 15),
-                'v1': '5', 'v2': '8', 'v3': '10', 'v4': '15'},
+                'v1': '6', 'v2': '8', 'v3': '10', 'v4': '15'},
             'min_bars_between_trades': {
                 'description': 'Min Bars Between Trades',
                 'current': current_params.get('min_bars_between_trades', 4),
@@ -6733,6 +6767,7 @@ class TradingApp:
                 'description': 'Tier 2 Risk %',
                 'current': current_params.get('risk_tier2', 0.030),
                 'v1': '0.020', 'v2': '0.025', 'v3': '0.030', 'v4': '0.035'},
+
             'tier1_size_multiplier': {
                 'description': 'Tier 1 Position Size Multiplier',
                 'current': current_params.get('tier1_size_multiplier', 1.0),
@@ -6741,6 +6776,7 @@ class TradingApp:
                 'description': 'Tier 2 Position Size Multiplier',
                 'current': current_params.get('tier2_size_multiplier', 0.70),
                 'v1': '0.5', 'v2': '0.6', 'v3': '0.70', 'v4': '0.8'},
+
             'tier1_stop_multiplier': {
                 'description': 'Tier 1 Stop ATR Multiplier',
                 'current': current_params.get('tier1_stop_multiplier', 2.0),
@@ -6749,6 +6785,7 @@ class TradingApp:
                 'description': 'Tier 2 Stop ATR Multiplier',
                 'current': current_params.get('tier2_stop_multiplier', 2.5),
                 'v1': '2.0', 'v2': '2.2', 'v3': '2.5', 'v4': '3.0'},
+
             'exit_threshold_tier1': {
                 'description': 'Exit Power Threshold (Tier 1)',
                 'current': current_params.get('exit_threshold_tier1', 60),
@@ -6757,6 +6794,7 @@ class TradingApp:
                 'description': 'Exit Power Threshold (Tier 2)',
                 'current': current_params.get('exit_threshold_tier2', 50),
                 'v1': '40', 'v2': '45', 'v3': '50', 'v4': '55'},
+
             'trailing_activation_tier1': {
                 'description': 'Trailing Activation % (Tier 1)',
                 'current': current_params.get('trailing_activation_tier1', 0.03),
@@ -6765,6 +6803,7 @@ class TradingApp:
                 'description': 'Trailing Activation % (Tier 2)',
                 'current': current_params.get('trailing_activation_tier2', 0.04),
                 'v1': '0.03', 'v2': '0.035', 'v3': '0.04', 'v4': '0.05'},
+
             'trailing_distance_tier1': {
                 'description': 'Trailing Distance % (Tier 1)',
                 'current': current_params.get('trailing_distance_tier1', 0.025),
@@ -6773,6 +6812,7 @@ class TradingApp:
                 'description': 'Trailing Distance % (Tier 2)',
                 'current': current_params.get('trailing_distance_tier2', 0.035),
                 'v1': '0.025', 'v2': '0.03', 'v3': '0.035', 'v4': '0.045'},
+
             'risk_per_trade': {
                 'description': 'Base Risk Per Trade',
                 'current': current_params.get('risk_per_trade', 0.022),
@@ -7390,9 +7430,9 @@ class TradingApp:
                 'description': 'Trade Direction',
                 'current': current_params.get('trade_direction', 'both'),
                 'v1': 'long', 'v2': 'both', 'v3': 'short', 'v4': ''},
-            'only_tier1_entries': {
+            'only_tier2_entries': {
                 'description': 'Only Tier 2 Entries',
-                'current': current_params.get('only_tier1_entries', False),
+                'current': current_params.get('only_tier2_entries', False),
                 'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
         }
 
@@ -7970,7 +8010,7 @@ class TradingApp:
     #         'short_fixed_threshold': {
     #             'description': 'Fixed Entry Threshold (SHORT)',
     #             'v1': '70', 'v2': '72', 'v3': '75', 'v4': '78'},
-    #         'only_tier1_entries': {
+    #         'only_tier2_entries': {
     #             'description': '🔥 Only Tier 2 Entries',
     #             'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
     #
@@ -8914,8 +8954,10 @@ class TradingApp:
             # Quality thresholds
             'quality_tier1_min': 72,
             'quality_tier2_min': 68,
+            'fixed_threshold': 72,
             'short_quality_tier1_min': 75,
             'short_quality_tier2_min': 70,
+            'short_fixed_threshold': 75,
 
             # EMA periods
             'ema_fast_period': 10,
@@ -8936,6 +8978,7 @@ class TradingApp:
             'risk_tier1': 0.02,
             'risk_tier2': 0.025,
 
+
             # Entry filters
             'tier1_adx_hard_min': 20,
             'tier1_rsi_min': 44,
@@ -8953,24 +8996,30 @@ class TradingApp:
             # Tier 2
             'tier2_adx_min': 18,
             'tier2_volume_min': 0.8,
+
+            # Tier 3
+
             'tier1_size_multiplier': 1.0,
             'tier2_size_multiplier': 0.70,
+
             'tier1_stop_multiplier': 2.0,
             'tier2_stop_multiplier': 2.5,
+
             'min_bars_between_trades': 4,
             'min_bars_between_trades_tier1': 4,
             'min_bars_between_trades_tier2': 3,
+
             'cooldown_tier2_enabled': True,
+
             'tier1_confluence_min': 0.65,
             'tier2_confluence_min': 0.70,
 
-            # Trade management - FIX: ADD max_daily_trades HERE
-            'only_tier1_entries': False,
-            'max_daily_trades': 15,  # ← ADD THIS
+
+            # Trade management
+            'only_tier2_entries': False,
+            'max_daily_trades': 15,
             'min_bars_between_trades': 5,
             'max_hold_bars': 150,
-            'cooldown_after_profit_target_bars': 2,
-            'cooldown_after_loss_bars': 12,
 
             # Price percentile
             'price_percentile_bonus_early': 12,
@@ -9106,7 +9155,7 @@ class TradingApp:
                 'fuzzy_default_margin_pct', 'fuzzy_min_confidence', 'fuzzy_min_samples',
             ],
             '⚙️ Trade Direction': [
-                'trade_direction', 'only_tier1_entries',
+                'trade_direction', 'only_tier2_entries',
             ],
         }
 
@@ -9214,7 +9263,7 @@ class TradingApp:
             'fuzzy_min_confidence'       : 'Minimum confidence for fuzzy entry to fire',
             'fuzzy_min_samples'          : 'Minimum near-miss samples before fuzzy activates',
             'trade_direction'            : 'long / short / both',
-            'only_tier1_entries'         : 'When True, only Tier 1 (high-conviction) entries fire',
+            'only_tier2_entries'         : 'When True, only Tier 1 (high-conviction) entries fire',
         }
 
         row = 0
@@ -9477,7 +9526,7 @@ class TradingApp:
             'quality_tier1_min': 'Minimum quality score for Tier 1 entries (lower confidence)',
             'quality_tier2_min': 'Minimum quality score for Tier 2 entries (higher confidence)',
             # ═══ NEW: IMPROVEMENT 1 DESCRIPTION ═══════════════════════════════
-            'only_tier1_entries': '🔥 IMPROVEMENT 1: Block Tier 1 (Score 2) entries. When True, only Tier 2 entries (score≥88) execute. This addresses the 36% win rate issue with Tier 1 trades.',
+            'only_tier2_entries': '🔥 IMPROVEMENT 1: Block Tier 1 (Score 2) entries. When True, only Tier 2 entries (score≥88) execute. This addresses the 36% win rate issue with Tier 1 trades.',
             # ═══ NEW: TIER 2 SPECIFIC FILTER DESCRIPTIONS ═══════════════════
             'tier2_adx_min': '🎯 TIER 2: Minimum ADX for high-quality entries (lower than Tier 1 hard min). Default: 18',
             'tier2_volume_min': '🎯 TIER 2: Minimum volume ratio for high-quality entries. Default: 0.9x',
@@ -9765,7 +9814,7 @@ class TradingApp:
                 sample_params = list(self.custom_params['momentum'].items())[:10]
                 for param, value in sample_params:
                     # Highlight critical parameters
-                    if param == 'only_tier1_entries':
+                    if param == 'only_tier2_entries':
                         status = "BLOCKED" if value else "ACTIVE"
                         print(f"   🔥 {param}: {value} [TIER 1 {status}]")
                     else:
@@ -9779,11 +9828,11 @@ class TradingApp:
             self.log_message(f"📁 Full path: {full_path}", "blue")
             self.log_message(f"💾 File size: {file_size:,} bytes", "blue")
 
-            # Log Tier 1 status (only_tier1_entries blocks it)
-            only_tier1 = self.custom_params['momentum'].get('only_tier1_entries', False)
+            # Log Tier 1 status (only_tier2_entries blocks it)
+            only_tier2 = self.custom_params['momentum'].get('only_tier2_entries', False)
             self.log_message(
-                f"📊 TIER 1 STATUS SAVED: {'BLOCKED' if only_tier1 else 'ACTIVE'} (only_tier1_entries = {only_tier1})",
-                "yellow" if only_tier1 else "green")
+                f"📊 TIER 1 STATUS SAVED: {'BLOCKED' if only_tier2 else 'ACTIVE'} (only_tier2_entries = {only_tier2})",
+                "yellow" if only_tier2 else "green")
 
             # If Custom mode is active, apply the saved parameters immediately
             if self.param_toggle_var.get() == "Custom Parameters":
@@ -10146,91 +10195,6 @@ class TradingApp:
                                 self.log_message(f"❌ Failed to train {model_name} model", "red")
                         else:
                             self.log_message(f"❌ Failed to prepare data for {model_name}", "red")
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # ATR-BASED STOP CALCULATOR (NEW)
-    # ═══════════════════════════════════════════════════════════════════════
-
-    def calculate_atr_stops(self, entry_price: float, atr: float = None,
-                            stop_mult: float = 2.0, trail_mult: float = 1.5,
-                            target_mult_1: float = 1.5, target_mult_2: float = 3.0,
-                            df: pd.DataFrame = None) -> dict:
-        """
-        Calculate ATR-based stops, targets, and position sizing.
-
-        Parameters:
-        -----------
-        entry_price : float
-            Entry price for the trade
-        atr : float, optional
-            Current ATR value. If None, calculated from df.
-        stop_mult : float
-            Multiplier for stop loss (default: 2.0)
-        trail_mult : float
-            Multiplier for trailing stop (default: 1.5)
-        target_mult_1 : float
-            Multiplier for first profit target (default: 1.5)
-        target_mult_2 : float
-            Multiplier for second profit target (default: 3.0)
-        df : pd.DataFrame, optional
-            DataFrame with OHLCV data for ATR calculation
-
-        Returns:
-        --------
-        dict with keys:
-            - stop_loss: float
-            - trailing_stop_start: float
-            - target_1: float
-            - target_2: float
-            - risk_pct: float
-            - atr_value: float
-            - stop_distance: float
-        """
-        # Get ATR if not provided
-        if atr is None:
-            if df is not None and 'ATR' in df.columns:
-                atr = float(df['ATR'].iloc[-1])
-            else:
-                # Estimate ATR from recent price
-                atr = entry_price * 0.02  # Assume 2% ATR
-
-        stop_distance = atr * stop_mult
-        trail_distance = atr * trail_mult
-
-        return {
-            'stop_loss': entry_price - stop_distance,
-            'trailing_stop_start': entry_price - trail_distance,
-            'target_1': entry_price + (atr * target_mult_1),
-            'target_2': entry_price + (atr * target_mult_2),
-            'risk_pct': (stop_distance / entry_price) * 100,
-            'atr_value': atr,
-            'stop_distance': stop_distance,
-            'entry_price': entry_price,
-        }
-
-    def get_atr(self, df: pd.DataFrame = None, period: int = 14) -> float:
-        """Get current ATR value from DataFrame or estimate."""
-        if df is not None and 'ATR' in df.columns and len(df) > period:
-            return float(df['ATR'].iloc[-1])
-
-        # Estimate from price if data available
-        if df is not None and 'Close' in df.columns and len(df) > period:
-            closes = df['Close'].values
-            highs = df['High'].values
-            lows = df['Low'].values
-
-            # Calculate ATR manually
-            tr = np.maximum(
-                highs - lows,
-                np.maximum(
-                    abs(highs - np.roll(closes, 1)),
-                    abs(lows - np.roll(closes, 1))
-                )
-            )
-            atr = np.mean(tr[-period:])
-            return float(atr) if not np.isnan(atr) else 0.0
-
-        return 0.0
 
     def calculate_volume_strength(self, df):
         candles = df["Close"].diff().fillna(0)
@@ -10986,6 +10950,8 @@ class TradingApp:
 
         return numeric_df
 
+
+
     def _display_detailed_analysis(self, df, current_data, result):
         self.log_message(f"{'═' * 77}", "blue")
         self.log_message(f"📅 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}", "blue")
@@ -11013,51 +10979,6 @@ class TradingApp:
         else:
             self._last_forecast = None
             self._last_ml_prediction = 0
-
-        # ─── NEW: ATR-BASED STOP DISPLAY (Always show if available) ────────────
-        atr = current_data.get('ATR', 0)
-        current_price = float(current_data.get('Close', 0))
-
-        if atr > 0 and current_price > 0:
-            try:
-                # Get ATR-based stops using the calculator
-                if hasattr(self, 'atr_calc'):
-                    stops = self.atr_calc.calculate_stops(
-                        entry_price=current_price,
-                        atr=atr,
-                        stop_mult=2.0,
-                        trail_mult=1.5,
-                        target_mult_1=1.5,
-                        target_mult_2=3.0
-                    )
-
-                    self.log_message(f"\n🛑 ATR-BASED LEVELS (v10.1.0):", "cyan")
-                    self.log_message(f"   ATR: ${atr:.4f} ({atr / current_price * 100:.2f}%)", "white")
-                    self.log_message(f"   Stop Loss: ${stops['stop_loss']:.2f} ({stops['risk_pct']:.2f}% risk)",
-                                     "yellow")
-                    self.log_message(f"   Trail Start: ${stops['trailing_start']:.2f} (1.5× ATR)", "orange")
-                    self.log_message(
-                        f"   Target 1: ${stops['target_1']:.2f} ({stops['target_1'] / current_price * 100 - 100:+.2f}%)",
-                        "green")
-                    self.log_message(
-                        f"   Target 2: ${stops['target_2']:.2f} ({stops['target_2'] / current_price * 100 - 100:+.2f}%)",
-                        "green")
-
-                    # Show Risk/Reward ratio
-                    rr_1 = self.atr_calc.get_risk_reward(current_price, stops['stop_loss'], stops['target_1'], 'long')
-                    rr_2 = self.atr_calc.get_risk_reward(current_price, stops['stop_loss'], stops['target_2'], 'long')
-                    self.log_message(f"   Risk/Reward: 1:{rr_1:.1f} (T1) | 1:{rr_2:.1f} (T2)",
-                                     "green" if rr_1 >= 1.5 else "orange")
-
-            except Exception as e:
-                # Fallback to simple ATR display if calculator not available
-                self.log_message(f"\n🛑 ATR LEVELS:", "cyan")
-                self.log_message(f"   ATR: ${atr:.4f} ({atr / current_price * 100:.2f}%)", "white")
-                stop_pct = getattr(self.strategy, 'stop_loss_atr_mult', 2.0) * atr / current_price * 100
-                self.log_message(f"   Stop Loss: ${current_price - (atr * 2.0):.2f} ({stop_pct:.2f}% risk)",
-                                 "yellow")
-        else:
-            self.log_message(f"\n📊 ATR: Not available", "gray")
 
         if isinstance(result, tuple) and len(result) >= 4:
             decision, quality_score, shares, reason = result[:4]
@@ -11090,7 +11011,7 @@ class TradingApp:
                     if ml_is_enabled and ml_conf_pct > 0:
                         combined_confidence = (total_score + ml_conf_pct) / 2
 
-                    self.log_message(f"\n🎯 QUALITY SCORE SYSTEM ANALYSIS", "purple")
+                    self.log_message(f"🎯 QUALITY SCORE SYSTEM ANALYSIS", "purple")
 
                     col_widths = [24, 25, 24]
                     self.log_message(self._create_table_separator(col_widths, "top"), "purple")
@@ -11151,21 +11072,6 @@ class TradingApp:
 
                     self.log_message(f"📝 Reason: {reason}", "blue")
 
-                    # ─── NEW: Exit confirmation status ──────────────────────────────
-                    if getattr(self.strategy, 'exit_confirmation_enabled', True):
-                        rsi = current_data.get('RSI', 50)
-                        adx = current_data.get('ADX', 0)
-                        macd = current_data.get('MACD', 0)
-                        macd_signal = current_data.get('MACD_Signal', 0)
-
-                        self.log_message(f"\n🔒 EXIT CONFIRMATION STATUS:", "cyan")
-                        self.log_message(f"   RSI: {rsi:.1f} {'✓' if rsi < 50 else '✗'} (need < 50 for long exit)",
-                                         "green" if rsi < 50 else "red")
-                        self.log_message(f"   ADX: {adx:.1f} {'✓' if adx < 25 else '✗'} (need < 25 for trend weak)",
-                                         "green" if adx < 25 else "red")
-                        self.log_message(f"   MACD: {'Bearish' if macd < macd_signal else 'Bullish'}",
-                                         "red" if macd < macd_signal else "green")
-
                 elif is_scalping_strategy:
                     # ── SCALPING STRATEGY (simplified additive scoring) ──
                     _eff_dir = getattr(self.strategy, "_pending_signal", None)
@@ -11181,7 +11087,7 @@ class TradingApp:
                     if ml_is_enabled and ml_conf_pct > 0:
                         combined_confidence = (total_score + ml_conf_pct) / 2
 
-                    self.log_message(f"\n🎯 SCALPING STRATEGY - QUALITY SCORE ANALYSIS", "bold purple")
+                    self.log_message(f"🎯 SCALPING STRATEGY - QUALITY SCORE ANALYSIS", "bold purple")
                     self.log_message(f"{'─' * 77}", "purple")
 
                     # Display the breakdown
@@ -11269,7 +11175,7 @@ class TradingApp:
                     if ml_is_enabled and ml_conf_pct > 0:
                         combined_confidence = (total_score + ml_conf_pct) / 2
 
-                    self.log_message(f"\n🎯 QUALITY SCORE (Basic Mode)", "yellow")
+                    self.log_message(f"🎯 QUALITY SCORE (Basic Mode)", "yellow")
                     bar_length = int((total_score / 100) * 10)
                     bar = "█" * bar_length + "░" * (10 - bar_length)
                     self.log_message(f"   Score: {total_score}/100 {bar}",
@@ -11285,23 +11191,7 @@ class TradingApp:
                                         getattr(self.strategy, 'quality_tier2_min', 75)))
 
                 if (decision == "buy" or decision == "sell") and shares and shares > 0:
-                    self.log_message(f"\n✅ {decision.upper()} SIGNAL DETECTED - {shares:.4f} shares", "green")
-
-                    # ─── NEW: Show ATR-based position sizing ──────────────────────────
-                    if atr > 0 and current_price > 0:
-                        try:
-                            if hasattr(self, 'atr_calc'):
-                                equity = self.get_balance('USDT') if hasattr(self, 'get_balance') else 50000
-                                stops = self.atr_calc.calculate_stops(current_price, atr)
-                                pos_size = self.atr_calc.get_position_size(
-                                    equity=equity,
-                                    risk_pct=2.0,  # 2% risk per trade
-                                    entry_price=current_price,
-                                    stop_loss=stops['stop_loss']
-                                )
-                                self.log_message(f"📊 Position Size: {pos_size:.2f} units (2% risk)", "cyan")
-                        except Exception:
-                            pass
+                    self.log_message(f"✅ BUY SIGNAL DETECTED - {shares:.4f} shares", "green")
                 else:
                     self.log_message(f"\n🎯 QUALITY SCORE REJECTED", "red")
                     self.log_message(f"{'=' * 70}", "red")
@@ -11318,15 +11208,7 @@ class TradingApp:
             if len(result) == 2:
                 exit_signal, exit_pct = result
                 if exit_signal:
-                    # ─── NEW: Enhanced exit signal display with ATR context ──────────
-                    self.log_message(f"\n🚨 EXIT SIGNAL: {exit_signal} ({exit_pct * 100:.0f}%)", "yellow")
-
-                    # Show exit confirmation status
-                    if getattr(self.strategy, 'exit_confirmation_enabled', True):
-                        rsi = current_data.get('RSI', 50)
-                        adx = current_data.get('ADX', 0)
-                        self.log_message(f"   Exit Confirmations: RSI={rsi:.1f} ADX={adx:.1f}",
-                                         "green" if (rsi < 50 or adx < 25) else "orange")
+                    self.log_message(f"🚨 EXIT SIGNAL: {exit_signal} ({exit_pct * 100:.0f}%)", "yellow")
 
                     if hasattr(self.strategy, 'position') and self.strategy.position:
                         entry_price = self.strategy.position.get('entry_price', 0)
@@ -11341,22 +11223,9 @@ class TradingApp:
                                 profit_pct = ((current_price - entry_price) / entry_price) * 100
                                 profit_r = ((current_price - entry_price) /
                                             (current_data.get('ATR', 1) * 3.0))
-
-                            # Show current P/L with ATR context
                             self.log_message(
                                 f"📊 Current P/L: {profit_pct:.2f}% ({profit_r:.2f}R)",
                                 "green" if profit_pct > 0 else "red")
-
-                            # Show distance to stop
-                            stop_loss = self.strategy.position.get('stop_loss', 0)
-                            if stop_loss > 0:
-                                if pos_type == 'long':
-                                    stop_distance = (current_price - stop_loss) / current_price * 100
-                                else:
-                                    stop_distance = (stop_loss - current_price) / current_price * 100
-                                self.log_message(f"   Distance to Stop: {stop_distance:.2f}%",
-                                                 "yellow" if stop_distance < 1.0 else "gray")
-        self.log_message(f"{'═' * 77}", "blue")
 
     def _display_component_scores(self, component_scores):
         self.log_message(f"\n📊 Component Scores:", "cyan")
@@ -11486,10 +11355,6 @@ class TradingApp:
         return float(min(max(combined, 0.0), 100.0))
 
     def _execute_trades_from_result(self, result, current_data, current_price, df):
-        """
-        Execute trades from strategy result with GUI Order Size % as a hard ceiling.
-        Includes visual feedback for position sizing relative to GUI cap.
-        """
         if isinstance(result, tuple) and len(result) == 2:
             exit_signal, exit_pct = result
             if exit_signal is not None:
@@ -11546,7 +11411,7 @@ class TradingApp:
                             if ml_conf_pct >= model_thresh_pct:
                                 combined_confidence = self.combined_score(
                                     quality_score=quality_score,
-                                    ml_score_raw=ml_prediction,
+                                    ml_score_raw=ml_prediction,  # raw -1 / 0 / +1
                                     ml_confidence=ml_conf_pct / 100.0,
                                     trade_direction=_direction
                                 )
@@ -11582,9 +11447,6 @@ class TradingApp:
 
                     tier = getattr(self.strategy, '_last_entry_tier', 1)
 
-                    # ═══════════════════════════════════════════════════════════════
-                    # Execute the trade - GUI cap is applied inside execute_buy()
-                    # ═══════════════════════════════════════════════════════════════
                     success, filled_qty, order_id = self.strategy.execute_buy(
                         shares=shares,
                         price=current_price,
@@ -11594,63 +11456,16 @@ class TradingApp:
                     )
 
                     if success:
-                        # ═══════════════════════════════════════════════════════════
-                        # LOG POSITION SIZING DETAILS WITH GUI CAP VISUAL FEEDBACK
-                        # ═══════════════════════════════════════════════════════════
-                        gui_pct = self.order_size_var.get()
-                        final_position_value = filled_qty * current_price
-
-                        # Get current equity
-                        equity = self.get_balance('USDT')
-                        if equity is None or equity <= 0:
-                            equity = 50000  # fallback
-
-                        account_pct = (final_position_value / equity) * 100 if equity > 0 else 0
-                        max_allowed = equity * (gui_pct / 100.0)
-
-                        # Determine if GUI cap was binding
-                        cap_binding = "🔒 CAP BINDING" if abs(account_pct - gui_pct) < 0.5 else "✅ WITHIN CAP"
-                        cap_color = "yellow" if "CAP BINDING" in cap_binding else "green"
-
-                        self.log_message(
-                            f"📊 POSITION SIZE DETAILS:",
-                            "cyan"
+                        ml_msg = (
+                            f' | ML {ml_prediction:+d} ({ml_conf_pct:.0f}%)'
+                            if ml_is_enabled and ml_conf_pct > 0 else ''
                         )
-                        self.log_message(
-                            f"   GUI Cap:     {gui_pct:.0f}% of equity (${max_allowed:,.2f})",
-                            "blue"
-                        )
-                        self.log_message(
-                            f"   Position:    {filled_qty:.4f} {self.base_symbol()} @ ${current_price:.2f}",
-                            "white"
-                        )
-                        self.log_message(
-                            f"   Value:       ${final_position_value:,.2f} ({account_pct:.1f}% of equity) {cap_binding}",
-                            cap_color
-                        )
-
-                        # Show risk amount if available
-                        if hasattr(self.strategy, 'position') and self.strategy.position:
-                            stop_loss = self.strategy.position.get('stop_loss', 0)
-                            if stop_loss and stop_loss > 0:
-                                if _direction == 'long':
-                                    risk_per_unit = current_price - stop_loss
-                                else:
-                                    risk_per_unit = stop_loss - current_price
-                                risk_amount = risk_per_unit * filled_qty
-                                risk_pct = (risk_amount / equity) * 100 if equity > 0 else 0
-                                self.log_message(
-                                    f"   Risk:        ${risk_amount:,.2f} ({risk_pct:.2f}% of equity)",
-                                    "orange" if risk_pct > 2.0 else "green"
-                                )
-                        # ═══════════════════════════════════════════════════════════
-
-                        ml_msg = f' | ML {ml_prediction:+d} ({ml_conf_pct:.0f}%)' if ml_is_enabled and ml_conf_pct > 0 else ''
                         direction_label = "SHORT" if decision == "sell" else "LONG"
                         direction_emoji = "🔴" if decision == "sell" else "🟢"
                         self.log_message(
                             f"{direction_emoji} {direction_label} EXECUTED{ml_msg} "
-                            f"(Quality: {quality_score:.0f}, Combined: {combined_confidence:.0f}, Tier {tier})",
+                            f"(Quality: {quality_score:.0f}, Combined: {combined_confidence:.0f}, Tier {tier})\n"
+                            f"Qty {shares:.4f} at ${current_price:.4f}",
                             "green" if decision == "buy" else "red"
                         )
                         self.play_notification("buy_success")
@@ -13152,7 +12967,7 @@ class TradingApp:
 
         # Log critical parameters that should affect behavior
         critical_params = [
-            'only_tier1_entries',
+            'only_tier2_entries',
             'quality_tier2_min',
             'quality_tier1_min',
             'tier1_adx_hard_min',
@@ -13168,8 +12983,8 @@ class TradingApp:
         for param in critical_params:
             if param in current_params:
                 value = current_params[param]
-                # Highlight only_tier1_entries specially
-                if param == 'only_tier1_entries':
+                # Highlight only_tier2_entries specially
+                if param == 'only_tier2_entries':
                     color = "yellow" if value else "green"
                     status = "BLOCKED" if value else "ACTIVE"
                     self.log_message(f"   {param:25} = {value}  [TIER 1 {status}]", color)
@@ -13185,9 +13000,9 @@ class TradingApp:
             if BacktestMomentumStrategy._updated_params:
                 self.log_message(f"   Parameters in backtest class: {len(BacktestMomentumStrategy._updated_params)}",
                                  "cyan")
-                if 'only_tier1_entries' in BacktestMomentumStrategy._updated_params:
-                    bt_value = BacktestMomentumStrategy._updated_params['only_tier1_entries']
-                    self.log_message(f"   Backtest only_tier1_entries = {bt_value}",
+                if 'only_tier2_entries' in BacktestMomentumStrategy._updated_params:
+                    bt_value = BacktestMomentumStrategy._updated_params['only_tier2_entries']
+                    self.log_message(f"   Backtest only_tier2_entries = {bt_value}",
                                      "yellow" if bt_value else "green")
 
         self.log_message("=" * 70, "yellow")
@@ -13236,59 +13051,21 @@ class TradingApp:
                the selected default/custom parameter set as its base
         FIXED: Early return when no optimization parameters are selected
         FIXED: numpy int64/float64/bool_ types converted before json.dump
-        FIXED: GUI Order Size % applied as hard ceiling to all trades in backtest
-        FIXED: bt.optimize() crashing with 0xC0000005 (access violation). Root cause
-               chain: backtesting.py's optimize() always spins up a real
-               SharedMemoryManager subprocess (independent of Pool type); and the GUI's
-               'fixed_threshold'/'short_fixed_threshold' params (leftover from an
-               earlier design, superseded by the Tier1/Tier2 hybrid quality score
-               system) are not declared as class attributes on BacktestMomentumStrategy,
-               so backtesting.py's _check_params() raised AttributeError deep inside a
-               worker thread — and that exception, combined with Windows' shared-memory
-               cleanup path, is what actually produced the access violation instead of
-               a clean traceback. We (a) force a single-worker thread pool so TA-Lib is
-               never called concurrently, and (b) strip the stale params before they
-               ever reach bt.optimize()/bt.run().
         """
-        # ── Neutralize the crash sources in backtesting.py's optimize() ──────
-        import backtesting
-        from multiprocessing.dummy import Pool as _ThreadPool
-
-        # (a) Force a single-worker thread pool — avoids concurrent TA-Lib calls.
-        backtesting.Pool = lambda processes=None, initializer=None, initargs=(): _ThreadPool(1)
-
-        # (b) Bypass the SharedMemoryManager subprocess entirely. Since we're using
-        # a thread pool (not real processes), there's no need to move the dataframe
-        # into a shared-memory segment via a separate manager process — just pass
-        # it through in-process. This removes the Windows spawn/re-import crash path
-        # and also lets any real exception (e.g. bad params) surface cleanly instead
-        # of triggering a shared-memory-cleanup crash.
-        class _NoOpSharedMemoryManager:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def df2shm(self, df):
-                return df
-
-            @staticmethod
-            def shm2df(data):
-                return data, []  # second value must be iterable — backtesting.py loops over it
-
-        backtesting.backtesting.SharedMemoryManager = _NoOpSharedMemoryManager
-        # ──────────────────────────────────────────────────────────────────────
-
+        # ═══ REMOVED: this block used to force only_tier2_entries = False on
+        # every backtest run, silently overriding whatever the user had
+        # configured (GUI checkbox or custom_params). We now simply
+        # respect self.custom_params['momentum']['only_tier2_entries'] /
+        # the GUI checkbox as-is, whatever it's set to. ═══
         original_mode = None
         original_value = None
         if hasattr(self, 'param_toggle_var'):
             original_mode = self.param_toggle_var.get()
 
         if 'momentum' in self.custom_params:
-            original_value = self.custom_params['momentum'].get('only_tier1_entries', None)
+            original_value = self.custom_params['momentum'].get('only_tier2_entries', None)
             self.log_message(
-                f"   ℹ️ only_tier1_entries = {original_value} (respecting current configuration)", "cyan")
+                f"   ℹ️ only_tier2_entries = {original_value} (respecting current configuration)", "cyan")
 
         init_excel = None
         opt_excel = None
@@ -13366,6 +13143,7 @@ class TradingApp:
             self.log_message("=" * 70, "purple")
 
             # ── Collect & log selected backtest parameters ───────────────────
+            # Use strategy-specific param collection
             if strategy_type == "Scalping":
                 selected_params_preview = {
                     k: v for k, v in getattr(self, 'scalping_backtest_params', {}).items()
@@ -13384,7 +13162,8 @@ class TradingApp:
                 self.log_message(
                     "⚠️ No optimization parameters selected!\n"
                     "   Go to Settings → Backtest Optimization Parameters panel\n"
-                    "   and check the parameters you want to optimize.", "orange")
+                    "   and check the parameters you want to optimize.", "orange"
+                )
 
             self.log_message("=" * 70, "green")
 
@@ -13398,6 +13177,7 @@ class TradingApp:
 
             self.log_message("📥 Loading historical data...", "blue")
 
+            # Single-TF for all strategies
             df = self.get_historical_data(symbol=symbol, start=start_ts, end=end_ts, interval=interval)
 
             if df is None or df.empty:
@@ -13407,8 +13187,8 @@ class TradingApp:
 
             self.debug_data_range(df)
             df.columns = [col.capitalize() for col in df.columns]
-            self._last_backtest_df = df
-            self._last_backtest_stats = None
+            self._last_backtest_df = df  # cache for AI analysis
+            self._last_backtest_stats = None  # reset stats cache
             actual_start = df.index[0].strftime('%Y-%m-%d')
             actual_end = df.index[-1].strftime('%Y-%m-%d')
             self.log_message(f"✅ Loaded {len(df):,} candles  ({actual_start} → {actual_end})", "green")
@@ -13437,6 +13217,7 @@ class TradingApp:
             import sys
             import importlib
 
+            # Only reload momentum module for non-scalping strategies
             if strategy_type != "Scalping":
                 strategy_module = 'strategies.MomentumStrategy_MACD_HybridScore_Latest'
                 if strategy_module in sys.modules:
@@ -13453,16 +13234,11 @@ class TradingApp:
                 self.default_params['momentum'] = MOMENTUM_PARAMS_live.copy()
                 self.log_message(f"   ✅ Updated default_params from reloaded MOMENTUM_PARAMS", "green")
             else:
+                # For scalping, use its own config
                 from strategies.scalping_strategy import ScalpingConfig
                 GlobalConfig_live = type('GlobalConfig', (), {'INITIAL_CAPITAL': 50000})()
 
             self.log_message(f"   💰 Fresh INITIAL_CAPITAL: ${GlobalConfig_live.INITIAL_CAPITAL:,.2f}", "blue")
-
-            gui_order_pct = self.order_size_var.get()
-            self.log_message("=" * 70, "bold cyan")
-            self.log_message(f"📊 GUI ORDER SIZE CAP: {gui_order_pct:.0f}% of equity", "bold cyan")
-            self.log_message(f"   → Applied as HARD CEILING to all backtest trades", "cyan")
-            self.log_message("=" * 70, "bold cyan")
 
             # ── Choose strategy class ────────────────────────────────────────
             if strategy_type == "Kalman":
@@ -13479,6 +13255,7 @@ class TradingApp:
                     self.log_message("   Make sure scalping_strategy.py is in strategies/", "orange")
                     return
 
+                # Get current scalping parameters from GUI
                 initial_params = self.get_current_scalping_params()
 
                 self.log_message("🎯 Using Professional Scalping Strategy v1.0", "purple")
@@ -13500,6 +13277,7 @@ class TradingApp:
                     "white")
                 self.log_message("=" * 70, "cyan")
 
+                # Inject parameters into backtest strategy class
                 BacktestScalpingStrategy.set_updated_params(initial_params)
                 self.log_message(
                     f"   📊 {len(initial_params)} params injected into BacktestScalpingStrategy (mode: {self.param_toggle_var.get()})",
@@ -13513,7 +13291,8 @@ class TradingApp:
 
                 current_params = self.get_current_momentum_params()
 
-                gui_direction = self.trade_direction_var.get()
+                # ─── FIX: Force GUI trade direction into backtest ──────────────────────────
+                gui_direction = self.trade_direction_var.get()  # 'long', 'short', or 'both'
                 current_params['trade_direction'] = gui_direction
                 self.log_message(f"📊 BACKTEST DIRECTION FORCED: {gui_direction.upper()} (from GUI)", "bold green")
                 self.log_message(f"   Tier1 Pass (LONG): {current_params.get('quality_tier1_min_long', 75)}", "cyan")
@@ -13523,14 +13302,11 @@ class TradingApp:
                                      "cyan")
                     self.log_message(f"   Tier2 Pass (SHORT): {current_params.get('quality_tier2_min_short', 65)}",
                                      "cyan")
+                # ──────────────────────────────────────────────────────────────────────────
 
-                current_params['gui_order_size_pct'] = gui_order_pct
-                self.log_message(f"📊 GUI Order Size Cap applied to backtest: {gui_order_pct:.0f}%", "bold cyan")
-                self.log_message(f"   → All position sizes will be capped at {gui_order_pct:.0f}% of equity", "cyan")
-
-                tier2_value = current_params.get('only_tier1_entries', 'NOT FOUND')
+                tier2_value = current_params.get('only_tier2_entries', 'NOT FOUND')
                 tier2_min = current_params.get('quality_tier2_min', 'NOT FOUND')
-                self.log_message(f"   🔧 only_tier1_entries = {tier2_value}",
+                self.log_message(f"   🔧 only_tier2_entries = {tier2_value}",
                                  "yellow" if tier2_value else "green")
                 self.log_message(f"   📊 quality_tier2_min = {tier2_min}", "white")
                 self.log_message(f"   📊 quality_tier1_min = {current_params.get('quality_tier1_min', 'NOT FOUND')}",
@@ -13542,7 +13318,10 @@ class TradingApp:
 
                 BacktestMomentumStrategy._updated_params = current_params.copy()
                 BacktestMomentumStrategy._use_updated_params = True
+
+                # ─── Also set the class-level trade_direction directly ──────────────────
                 BacktestMomentumStrategy.trade_direction = gui_direction
+                # ──────────────────────────────────────────────────────────────────────────
 
                 for _k, _v in current_params.items():
                     try:
@@ -13606,7 +13385,8 @@ class TradingApp:
                 self.log_message(f"   Max trades (penalty)  : {config['max_trades_penalty']}", "white")
                 self.log_message(
                     f"   Penalties : low={config['penalty_low']:.2f}, high={config['penalty_high']:.2f}",
-                    "white")
+                    "white"
+                )
 
                 if strategy_type == "Kalman":
                     self.log_message("⚙️ Optimizing Kalman parameters...", "blue")
@@ -13621,6 +13401,7 @@ class TradingApp:
                     )
 
                 elif strategy_type == "Scalping":
+                    # ═══ SCALPING OPTIMIZATION USING scalping_backtest_params ═══
                     scalping_opt_params = {}
                     scalping_fixed_params = {}
 
@@ -13628,6 +13409,7 @@ class TradingApp:
                     if not sc_params:
                         self.log_message("⚠️ Scalping optimization panel not initialised — run standard backtest only",
                                          "orange")
+                        # Run standard backtest with current params only (no optimization)
                         pass
                     else:
                         for param_key, param_data in sc_params.items():
@@ -13637,6 +13419,7 @@ class TradingApp:
                                 raw = param_data[vk].get()
                                 if raw not in ('', None):
                                     values.append(self.convert_param_value(raw))
+                            # deduplicate
                             seen, uvals = set(), []
                             for v in values:
                                 k2 = (type(v), v)
@@ -13647,6 +13430,7 @@ class TradingApp:
                             if is_active and uvals:
                                 scalping_opt_params[param_key] = uvals
                             else:
+                                # fixed — use current strategy value
                                 cur = self._get_scalping_param_value(param_key)
                                 if cur is not None:
                                     scalping_fixed_params[param_key] = [cur]
@@ -13659,6 +13443,7 @@ class TradingApp:
                                 "orange"
                             )
                         else:
+                            # Merge active + fixed into one dict for bt.optimize
                             all_sc_opt = {**scalping_opt_params, **scalping_fixed_params}
 
                             total_sc = 1
@@ -13696,6 +13481,7 @@ class TradingApp:
                                         optimized_stats = bt.run(**optimized_params_dict)
                                         self.display_backtest_results(
                                             optimized_stats, "SCALPING — OPTIMIZED RESULTS")
+                                        # Save optimized params
                                         _fname = f"scalping_optimized_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
                                         with open(_fname, 'w') as _f:
                                             json.dump({k: _to_python(v) for k, v in optimized_params_dict.items()}, _f,
@@ -13715,7 +13501,7 @@ class TradingApp:
                         if not values:
                             continue
 
-                        if param_key == 'only_tier1_entries':
+                        if param_key == 'only_tier2_entries':
                             bool_values = []
                             for v in values:
                                 if isinstance(v, str):
@@ -13725,25 +13511,6 @@ class TradingApp:
                             optimization_params[param_key] = bool_values
                         else:
                             optimization_params[param_key] = values
-
-                    # ── Strip params BacktestMomentumStrategy doesn't declare ──
-                    # 'fixed_threshold' / 'short_fixed_threshold' are stale GUI
-                    # parameters left over from an earlier design, superseded by
-                    # the Tier1/Tier2 hybrid quality score system, and are not
-                    # class attributes on BacktestMomentumStrategy. Passing them
-                    # to bt.optimize()/bt.run() makes backtesting.py's
-                    # _check_params() raise AttributeError deep inside a worker
-                    # thread, which on Windows can surface as a 0xC0000005 access
-                    # violation instead of a clean traceback.
-                    _stale_params = {'fixed_threshold', 'short_fixed_threshold'}
-                    for _stale in _stale_params:
-                        if _stale in optimization_params:
-                            self.log_message(
-                                f"⚠️ Skipping '{_stale}' — not a declared parameter on "
-                                f"BacktestMomentumStrategy (leftover from an earlier "
-                                f"design, superseded by Tier1/Tier2 scoring)", "orange"
-                            )
-                            del optimization_params[_stale]
 
                     active_opt_params = {
                         k: v for k, v in optimization_params.items()
@@ -13863,6 +13630,7 @@ class TradingApp:
                                 self.log_parameter_changes(initial_params, optimized_params_dict)
                                 self.analyze_quality_score_results(optimized_stats)
 
+                                # ── Export optimized params to JSON ──────
                                 params_export_file = (
                                     f"optimized_params_{strategy_type.lower()}_"
                                     f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -13964,7 +13732,6 @@ class TradingApp:
                 self.log_message("=" * 70, "blue")
 
                 kalman_strategy_instance = None
-
                 if optimized_stats is not None and hasattr(optimized_stats, '_strategy'):
                     kalman_strategy_instance = optimized_stats._strategy
                 elif initial_stats is not None and hasattr(initial_stats, '_strategy'):
@@ -14032,8 +13799,7 @@ class TradingApp:
                 f"Backtest Complete!\n\n"
                 f"Strategy : {strategy_type}\n"
                 f"Period   : {start_date} to {end_date}\n"
-                f"Candles  : {len(df):,}\n"
-                f"GUI Cap  : {gui_order_pct:.0f}% of equity (hard ceiling)\n\n"
+                f"Candles  : {len(df):,}\n\n"
                 f"Initial Results:\n"
                 f"  Final Equity : ${initial_stats['Equity Final [$]']:,.2f}\n"
                 f"  Return       : {initial_stats['Return [%]']:.2f}%\n"
@@ -14079,73 +13845,113 @@ class TradingApp:
         finally:
             try:
                 if original_mode == "Custom Parameters" and original_value is not None:
-                    self.custom_params['momentum']['only_tier1_entries'] = original_value
-                    self.log_message(f"   🔄 Restored only_tier1_entries = {original_value}", "blue")
+                    self.custom_params['momentum']['only_tier2_entries'] = original_value
+                    self.log_message(f"   🔄 Restored only_tier2_entries = {original_value}", "blue")
             except Exception:
                 pass
 
+
     def _get_param_values(self, param_key):
         """
-        Get values for a parameter:
-        - If ACTIVE: Returns the 4 values for optimization (grid search)
-        - If INACTIVE: Returns SINGLE value (current/default) as a list
+        Get values for a parameter.
 
-        This ensures inactive parameters are FIXED during optimization.
+        ACTIVE  → up to 4 distinct optimisation values (grid search ranges).
+        INACTIVE → single-element list with the CURRENT value taken from the
+                   selected parameter set (custom or default), so the optimiser
+                   never silently reverts an inactive param to its strategy-class
+                   default.
         """
         if param_key not in self.backtest_params:
             return []
 
         param_data = self.backtest_params[param_key]
 
-        # =========================================================
-        # CASE 1: Parameter is ACTIVE - return 4 values for optimization
-        # =========================================================
+        # ── ACTIVE: return optimisation range ────────────────────────────────
         if param_data['active'].get():
             values = []
-            for v in ['value1', 'value2', 'value3', 'value4']:
-                val = param_data[v].get()
-                if val and val != '':
-                    # Convert type based on content
-                    if isinstance(val, str):
-                        if val.lower() == 'true':
-                            val = True
-                        elif val.lower() == 'false':
-                            val = False
-                        elif '.' in val:
-                            try:
-                                val = float(val)
-                            except ValueError:
-                                pass
-                        else:
-                            try:
-                                val = int(val)
-                            except ValueError:
-                                pass
-                    # FIX: Ensure max_daily_trades is always int
-                    if param_key == 'max_daily_trades' and isinstance(val, (int, float)):
-                        val = int(val)
-                    values.append(val)
+            for v_key in ['value1', 'value2', 'value3', 'value4']:
+                raw = param_data[v_key].get()
+                if raw == '' or raw is None:
+                    continue
+                # Type conversion
+                if isinstance(raw, str):
+                    if raw.lower() == 'true':
+                        raw = True
+                    elif raw.lower() == 'false':
+                        raw = False
+                    elif '.' in raw:
+                        try:
+                            raw = float(raw)
+                        except ValueError:
+                            pass
+                    else:
+                        try:
+                            raw = int(raw)
+                        except ValueError:
+                            pass
+                values.append(raw)
 
-            # Remove duplicates while preserving order
-            seen = set()
-            unique_values = []
+            # Deduplicate while preserving order
+            seen, unique = set(), []
             for v in values:
-                if v not in seen:
-                    seen.add(v)
-                    unique_values.append(v)
+                key = (type(v), v)
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(v)
 
-            # Ensure we have at least one value
-            if not unique_values:
-                unique_values = [False]
+            return unique if unique else [self._get_current_param_value(param_key)]
 
-            return unique_values
+        # ── INACTIVE: return single CURRENT value ────────────────────────────
+        # Priority:
+        #   1. Live UI widget (highest — reflects any unsaved edits)
+        #   2. custom_params / default_params via get_current_momentum_params()
+        #   3. _get_current_param_value() fallback chain
+        current_value = None
 
-        # =========================================================
-        # CASE 2: Parameter is INACTIVE - return SINGLE current value
-        # =========================================================
-        else:
+        # Layer 1: live UI widget for momentum params
+        if hasattr(self, 'momentum_param_widgets') and param_key in self.momentum_param_widgets:
+            widget_info = self.momentum_param_widgets[param_key]
+            custom_var  = widget_info.get('custom')
+            if custom_var is not None:
+                try:
+                    if isinstance(custom_var, tk.BooleanVar):
+                        current_value = custom_var.get()
+                    else:
+                        raw = custom_var.get()
+                        if raw not in ('', None):
+                            if isinstance(raw, str):
+                                if raw.lower() == 'true':
+                                    current_value = True
+                                elif raw.lower() == 'false':
+                                    current_value = False
+                                elif '.' in raw:
+                                    try:
+                                        current_value = float(raw)
+                                    except ValueError:
+                                        current_value = raw
+                                else:
+                                    try:
+                                        current_value = int(raw)
+                                    except ValueError:
+                                        current_value = raw
+                            else:
+                                current_value = raw
+                except Exception:
+                    pass
+
+        # Layer 2: selected custom/default parameter dict
+        if current_value is None:
+            mode = self.param_toggle_var.get() if hasattr(self, 'param_toggle_var') else "Default Parameters"
+            if mode == "Custom Parameters":
+                current_value = self.custom_params.get('momentum', {}).get(param_key)
+            if current_value is None:
+                current_value = self.default_params.get('momentum', {}).get(param_key)
+
+        # Layer 3: fallback chain (strategy instance → MOMENTUM_PARAMS → hardcoded)
+        if current_value is None:
             current_value = self._get_current_param_value(param_key)
-            return [current_value] if current_value is not None else []
+
+        return [current_value] if current_value is not None else []
 
 
     def _convert_value(self, value_str):
@@ -15151,122 +14957,53 @@ class TradingApp:
 
     def _extract_exit_reason(self, trade_row, exit_bar, market_df):
         """
-        Extract exit reason with improved lookup that handles off-by-one.
-
-        Priority:
-          1. Real reason from _exit_reason_map (checks ALL possible key combinations)
+        Extract exit reason. Priority:
+          1. Real reason stored in _exit_reason_map at close time (always accurate)
           2. Stored exit_reason field on trade_row
-          3. Position-level stored reason
-          4. Heuristic fallback (last resort - NOT "trailing_stop_profit_protection")
+          3. Heuristics (fallback — only fires if map lookup misses)
         """
         try:
-            # ── PRIORITY 1: Get entry bar from trade row ──────────────────────────
-            entry_bar = -1
+            # ── PRIORITY 1: Real reason stored by strategy at close time ──
+            entry_bar_key = -1
             if hasattr(trade_row, 'get'):
-                entry_bar = int(trade_row.get('EntryBar', -1))
+                entry_bar_key = int(trade_row.get('EntryBar', -1))
             elif hasattr(trade_row, 'EntryBar'):
-                entry_bar = int(trade_row.EntryBar)
-
-            if entry_bar < 0:
-                if hasattr(self, 'log_message'):
-                    self.log_message(f"   ⚠️ No entry_bar found in trade row", "orange")
-                return self._heuristic_exit_reason(trade_row, exit_bar, market_df, 0)
+                entry_bar_key = int(trade_row.EntryBar)
 
             exit_bar_key = int(exit_bar) if exit_bar is not None else None
             exit_map = getattr(self, '_exit_reason_map', {})
 
-            # ── PRIORITY 2: Try ALL possible key combinations ──────────────────────
-            # The off-by-one bug means the strategy stores reasons with:
-            #   - Entry bar at decision bar (entry_bar)
-            #   - Exit bar at decision bar (exit_bar)
-            # But the exporter looks at:
-            #   - Entry bar from trade row (entry_bar)
-            #   - Exit bar from trade row (exit_bar)
-            # The fill actually happens on the NEXT bar.
+            if entry_bar_key >= 0:
+                real_reason = None
+                # New tuple key first — distinguishes partial legs from the
+                # final leg, since they share the same entry_bar.
+                if exit_bar_key is not None:
+                    real_reason = exit_map.get((entry_bar_key, exit_bar_key))
+                # Legacy single-key fallback for older runs / older maps.
+                if not real_reason:
+                    real_reason = exit_map.get(entry_bar_key)
+                if real_reason:
+                    if hasattr(self, 'log_message'):
+                        self.log_message(f"   ✅ Using real exit reason: {real_reason}", "green")
+                    return real_reason
+            # ──────────────────────────────────────────────────────────────
 
-            possible_keys = []
-
-            # 1. Exact match (decision bar -> decision bar)
-            possible_keys.append((entry_bar, exit_bar_key))
-
-            # 2. Entry bar + 1, Exit bar (fill after entry)
-            if entry_bar >= 0:
-                possible_keys.append((entry_bar + 1, exit_bar_key))
-
-            # 3. Entry bar, Exit bar + 1 (fill after exit decision)
-            if exit_bar_key is not None:
-                possible_keys.append((entry_bar, exit_bar_key + 1))
-
-            # 4. Entry bar + 1, Exit bar + 1 (both delayed)
-            if entry_bar >= 0 and exit_bar_key is not None:
-                possible_keys.append((entry_bar + 1, exit_bar_key + 1))
-
-            # 5. Entry bar - 1, Exit bar (early entry recorded)
-            if entry_bar > 0:
-                possible_keys.append((entry_bar - 1, exit_bar_key))
-
-            # 6. Entry bar, Exit bar - 1 (early exit recorded)
-            if exit_bar_key is not None and exit_bar_key > 0:
-                possible_keys.append((entry_bar, exit_bar_key - 1))
-
-            # 7. Legacy single-key (old format)
-            possible_keys.append(entry_bar)
-            if entry_bar >= 0:
-                possible_keys.append(entry_bar + 1)
-                if entry_bar > 0:
-                    possible_keys.append(entry_bar - 1)
-
-            # Try each key
-            for key in possible_keys:
-                if key in exit_map:
-                    real_reason = exit_map[key]
-                    if real_reason and real_reason not in ['', None, 'unknown', 'exit_condition_met']:
-                        if hasattr(self, 'log_message'):
-                            if isinstance(key, tuple):
-                                offset_info = f"(entry={key[0]}, exit={key[1]})"
-                            else:
-                                offset_info = f"(legacy key={key})"
-                            self.log_message(f"   ✅ Real exit reason found: {real_reason} {offset_info}", "green")
-                        return real_reason
-
-            # ── PRIORITY 3: Stored reason on trade_row ─────────────────────────────
+            # ── PRIORITY 2: Stored reason field ───────────────────────────
             if hasattr(trade_row, 'get'):
                 stored_reason = trade_row.get('exit_reason', None)
                 if stored_reason and stored_reason not in ['exit_condition_met', 'unknown', None, '']:
                     if hasattr(self, 'log_message'):
                         self.log_message(f"   ℹ️ Using stored reason: {stored_reason}", "blue")
                     return stored_reason
+            # ──────────────────────────────────────────────────────────────
 
-            # ── PRIORITY 4: Strategy-level stored reason ──────────────────────────
-            if hasattr(self, 'strategy') and hasattr(self.strategy, '_exit_reason'):
-                stored = getattr(self.strategy, '_exit_reason', None)
-                if stored:
-                    if hasattr(self, 'log_message'):
-                        self.log_message(f"   ✅ Using strategy stored exit reason: {stored}", "blue")
-                    return stored
-
-            # ── PRIORITY 5: HEURISTIC FALLBACK (LAST RESORT) ──────────────────────
-            # This should only fire if ALL lookups fail
-            return self._heuristic_exit_reason(trade_row, exit_bar, market_df, entry_bar)
-
-        except Exception as e:
-            if hasattr(self, 'log_message'):
-                self.log_message(f"⚠️ Exit reason extraction error: {str(e)}", "orange")
-            return f"extraction_error_{type(e).__name__}"
-
-    def _heuristic_exit_reason(self, trade_row, exit_bar, market_df, entry_bar):
-        """
-        Heuristic fallback - only used when real reason can't be found.
-        This is the LAST resort, not the first.
-        IMPORTANT: This method NEVER guesses "trailing_stop_profit_protection"
-        unless it can actually detect a trailing stop hit.
-        """
-        try:
+            # ── PRIORITY 3: Heuristics (ONLY if no real reason found) ─
             if exit_bar >= len(market_df):
                 return "index_error"
 
-            if entry_bar < 0 or entry_bar >= len(market_df):
-                entry_bar = 0
+            entry_bar = entry_bar_key if entry_bar_key >= 0 else 0
+            if entry_bar >= len(market_df):
+                return "entry_data_missing"
 
             exit_data = market_df.iloc[exit_bar]
             entry_price = float(market_df.iloc[entry_bar]['Close'])
@@ -15275,81 +15012,151 @@ class TradingApp:
             if entry_price == 0:
                 return "invalid_entry_price"
 
-            # Direction-aware price change
+            # v9.4.2: direction-aware price change — positive = profit for that direction
             trade_direction = 'long'
             if hasattr(trade_row, 'get'):
                 trade_direction = trade_row.get('direction', 'long') or 'long'
-
             if trade_direction == 'short':
                 price_change_pct = (entry_price - exit_price) / entry_price * 100
             else:
                 price_change_pct = (exit_price - entry_price) / entry_price * 100
-
             bars_held = exit_bar - entry_bar
+
             atr = float(exit_data.get('ATR', 1))
+            atr_mean = getattr(self, 'atr_mean', atr)
+            rsi = float(exit_data.get('RSI', 50))
+            adx = float(exit_data.get('ADX', 25))
+            macd = float(exit_data.get('MACD_closed', 0))
+            macd_signal = float(exit_data.get('MACD_Signal_closed', 0))
+            ema_fast = float(exit_data.get('EMA_Fast', 0))
+            ema_slow = float(exit_data.get('EMA_Slow', 0))
+            ema_mid = float(exit_data.get('EMA_Mid', ema_slow))
+            bb_upper = float(exit_data.get('UpperBand_closed', float('inf')))
+            volume_ratio = float(exit_data.get('Volume_Ratio', 1.0))
             stop_atr_mult = getattr(self, 'stop_loss_atr_mult', 2.5)
             stop_pct = (atr * stop_atr_mult / entry_price) * 100
 
-            # ─── Check if this was actually a trailing stop hit ──────────────
-            # Try to detect actual trailing stop hit from strategy state
-            if hasattr(self, 'strategy') and hasattr(self.strategy, '_trailing_stop'):
-                trailing_stop = getattr(self.strategy, '_trailing_stop', None)
-                if trailing_stop is not None:
-                    if trade_direction == 'long' and exit_price <= trailing_stop:
-                        return "trailing_stop_hit"
-                    elif trade_direction == 'short' and exit_price >= trailing_stop:
-                        return "trailing_stop_hit"
-
-            # ─── Stop loss detection ────────────────────────────────────────────
+            # Hard stop — use actual ATR-based threshold not fixed 1.5%
             if price_change_pct <= -stop_pct:
-                return "stop_loss_hard"
+                heuristic_reason = "stop_loss_hard"
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+                return heuristic_reason
 
-            # ─── Emergency stop detection ──────────────────────────────────────
-            emergency_mult = getattr(self, 'emergency_stop_multiplier', 2.0)
-            if price_change_pct <= -(stop_pct * emergency_mult):
-                return "stop_loss_hard_emergency"
+            # Emergency stop (early bars)
+            if price_change_pct <= -(stop_pct * getattr(self, 'emergency_stop_multiplier', 2.0)):
+                heuristic_reason = "stop_loss_hard_emergency"
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+                return heuristic_reason
 
-            # ─── Max hold time detection ──────────────────────────────────────
+            # Max hold time
             max_hold = getattr(self, 'max_hold_bars', 120)
             if bars_held >= max_hold:
-                return "max_hold_time_profitable" if price_change_pct > 0 else "max_hold_time"
+                heuristic_reason = "max_hold_time" if price_change_pct <= 0 else "max_hold_time_profitable"
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+                return heuristic_reason
 
-            # ─── EMA reversal detection ────────────────────────────────────────
-            ema_fast = float(exit_data.get('EMA_Fast', 0))
-            ema_mid = float(exit_data.get('EMA_Mid', ema_fast))
-            ema_slow = float(exit_data.get('EMA_Slow', 0))
-            if trade_direction == 'long' and ema_fast < ema_mid < ema_slow and price_change_pct > 0:
-                return "ema_full_reversal"
-            elif trade_direction == 'short' and ema_fast > ema_mid > ema_slow and price_change_pct > 0:
-                return "ema_full_reversal"
+            # EMA full reversal
+            if ema_fast < ema_mid < ema_slow and price_change_pct >= 0:
+                heuristic_reason = "ema_full_reversal"
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+                return heuristic_reason
 
-            # ─── MACD cross detection ──────────────────────────────────────────
-            macd = float(exit_data.get('MACD_closed', 0))
-            macd_signal = float(exit_data.get('MACD_Signal_closed', 0))
-            if trade_direction == 'long' and macd < macd_signal and price_change_pct > 0:
-                return "macd_bearish_cross"
-            elif trade_direction == 'short' and macd > macd_signal and price_change_pct > 0:
-                return "macd_bullish_cross"
+            # EMA cross
+            if ema_fast < ema_slow:
+                heuristic_reason = "ema_cross_down_confirmed" if macd < macd_signal else "ema_cross_down_unconfirmed"
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+                return heuristic_reason
 
-            # ─── ADX collapse detection ────────────────────────────────────────
-            adx = float(exit_data.get('ADX', 25))
-            if adx < 25 and price_change_pct > 0.5:
-                return "adx_collapse_trend_weak"
+            # ADX collapse
+            if adx < 25 and macd < macd_signal and price_change_pct >= 0.5:
+                heuristic_reason = "adx_collapse_trend_weak"
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+                return heuristic_reason
 
-            # ─── Price-based heuristics (meaningful categories) ──────────────
+            # MACD bearish cross
+            if macd < macd_signal and price_change_pct > 0:
+                heuristic_reason = "macd_bearish_cross"
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+                return heuristic_reason
+
+            # Trailing stop (price fell from peak while in profit)
+            if price_change_pct < 0 and bars_held > getattr(self, 'min_hold_bars_before_stop', 6):
+                heuristic_reason = "trailing_stop_profit_protection"
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+                return heuristic_reason
+
+            # Overbought exit
+            if rsi >= 70 and macd < macd_signal:
+                heuristic_reason = "overbought_macd_cross"
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+                return heuristic_reason
+
+            # Bollinger upper band
+            if exit_price >= bb_upper * 0.995 and price_change_pct > 0:
+                heuristic_reason = "bollinger_upper_band_exit"
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+                return heuristic_reason
+
+            # Break-even time exit
+            if abs(price_change_pct) < 0.5 and bars_held >= 4:
+                heuristic_reason = "break_even_time_exit"
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+                return heuristic_reason
+
+            # Volume fade
+            if volume_ratio < 0.7 and price_change_pct < 1.0:
+                heuristic_reason = "low_volume_exit"
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+                return heuristic_reason
+
+            # Final catch-all — named by magnitude, never "unspecified"
             if price_change_pct >= 6.0:
-                return "heuristic_large_profit"
-            elif price_change_pct >= 3.0:
-                return "heuristic_profit_target"
-            elif price_change_pct >= 0.5:
-                return "heuristic_small_profit"
-            elif price_change_pct >= -stop_pct:
-                return "heuristic_small_loss"
-            else:
-                return "heuristic_large_loss"
+                heuristic_reason = "heuristic_large_profit"
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+                return heuristic_reason
+            if price_change_pct >= 3.0:
+                heuristic_reason = "heuristic_profit_target"
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+                return heuristic_reason
+            # if price_change_pct >= 1.0:
+            #     heuristic_reason = "heuristic_profit_1to3pct"
+            #     if hasattr(self, 'log_message'):
+            #         self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+            #     return heuristic_reason
+            if price_change_pct >= 0:
+                heuristic_reason = "heuristic_small_profit"
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+                return heuristic_reason
+            if price_change_pct >= -stop_pct:
+                heuristic_reason = "heuristic_small_loss"
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+                return heuristic_reason
+
+            heuristic_reason = "heuristic_large_loss"
+            if hasattr(self, 'log_message'):
+                self.log_message(f"   ⚠️ Heuristic fallback: {heuristic_reason}", "orange")
+            return heuristic_reason
 
         except Exception as e:
-            return f"heuristic_error_{type(e).__name__}"
+            if hasattr(self, 'log_message'):
+                self.log_message(f"⚠️ Exit reason extraction error: {str(e)}", "orange")
+            return f"extraction_error_{type(e).__name__}"
 
     def _calculate_entry_confluence(self, entry_data):
         """Calculate confluence score for an entry based on technical conditions."""

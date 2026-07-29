@@ -11,7 +11,7 @@ FIXES APPLIED:
 """
 
 from datetime import datetime, timezone
-import ta
+import talib as ta
 from backtesting import Strategy
 from .base3_New import BaseStrategy
 import numpy as np
@@ -167,21 +167,40 @@ class KalmanIndicatorCalculator:
             df['EMA_Slow'] = df['Close'].rolling(params['ema_slow_period']).mean()
 
             # RSI
-            df['RSI'] = ta.rsi(df['Close'], length=params['rsi_period'])
-
+            df['ATR'] = ta.ATR(
+                df['High'],
+                df['Low'],
+                df['Close'],
+                timeperiod=params['atr_period']
+            )
             # ATR
-            df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=params['atr_period'])
+            df['ATR'] = ta.ATR(
+                df['High'],
+                df['Low'],
+                df['Close'],
+                timeperiod=params['atr_period']
+            )
 
             # Bollinger Bands
-            bbands = ta.bbands(df['Close'], length=params['bb_period'], std=params['bb_std'])
-            df['UpperBand'] = bbands['BBU_20_2.0']
-            df['MiddleBand'] = bbands['BBM_20_2.0']
-            df['LowerBand'] = bbands['BBL_20_2.0']
+            upper, middle, lower = ta.BBANDS(
+                df['Close'],
+                timeperiod=params['bb_period'],
+                nbdevup=params['bb_std'],
+                nbdevdn=params['bb_std'],
+                matype=0
+            )
+
+            df['UpperBand'] = upper
+            df['MiddleBand'] = middle
+            df['LowerBand'] = lower
 
             # ADX for trend strength
-            adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=params['adx_period'])
-            df['ADX'] = adx_df['ADX_25']
-
+            df['ADX'] = ta.ADX(
+                df['High'],
+                df['Low'],
+                df['Close'],
+                timeperiod=params['adx_period']
+            )
             # Volume analysis
             df['Volume_MA'] = df['Volume'].rolling(params['volume_period']).mean()
             df['Volume_Ratio'] = df['Volume'] / df['Volume_MA']
@@ -653,6 +672,24 @@ class KalmanTrendStrategy(BaseStrategy, KalmanLogic):
             'strength_smooth_param': strength_smooth
         })
 
+        # Ensure required config keys exist with defaults
+        default_config = {
+            'stop_loss_pct': 0.02,  # 2% default stop loss
+            'trailing_stop_pct': 0.01,  # 1% trailing stop
+            'atr_multiplier': 2.0,  # 2x ATR multiplier
+            'cooldown_bars': 5,  # 5 bar cooldown
+            'trading_direction': 'both',  # both, long_only, short_only
+            'kalman_q': 0.001,
+            'kalman_r': 0.1,
+            'trend_period': 20,
+            'signal_threshold': 2.0,
+        }
+
+        # Merge defaults with config (config takes precedence)
+        for key, default_value in default_config.items():
+            if key not in config:
+                config[key] = default_value
+
         # Get trading direction from app if available
         if trading_app and hasattr(trading_app, 'get_trading_direction'):
             config['trading_direction'] = trading_app.get_trading_direction()
@@ -665,10 +702,12 @@ class KalmanTrendStrategy(BaseStrategy, KalmanLogic):
         self.window = window
         self.strength_smooth = strength_smooth
 
-        # For compatibility
-        self.stop_loss_pct = self.config['stop_loss_pct']
-        self.trailing_stop_pct = self.config['trailing_stop_pct']
-        self.atr_multiplier = self.config['atr_multiplier']
+        # For compatibility - now safe to access
+        self.stop_loss_pct = self.config.get('stop_loss_pct', 0.02)
+        self.trailing_stop_pct = self.config.get('trailing_stop_pct', 0.01)
+        self.atr_multiplier = self.config.get('atr_multiplier', 2.0)
+        self.cooldown_bars = self.config.get('cooldown_bars', 5)
+        self.trading_direction = self.config.get('trading_direction', 'both')
 
         # ML/Prediction integration
         self.ml_enabled = False
@@ -680,8 +719,10 @@ class KalmanTrendStrategy(BaseStrategy, KalmanLogic):
 
         if self.trading_app:
             try:
-                mode = 'Custom' if hasattr(trading_app, 'param_toggle_var') and trading_app.param_toggle_var.get() == 'Custom Parameters' else 'Default'
-                direction_display = {'long_only': 'LONG ONLY', 'short_only': 'SHORT ONLY', 'both': 'LONG & SHORT'}.get(self.trading_direction, 'LONG & SHORT')
+                mode = 'Custom' if hasattr(trading_app,
+                                           'param_toggle_var') and trading_app.param_toggle_var.get() == 'Custom Parameters' else 'Default'
+                direction_display = {'long_only': 'LONG ONLY', 'short_only': 'SHORT ONLY', 'both': 'LONG & SHORT'}.get(
+                    self.trading_direction, 'LONG & SHORT')
                 self._log(f"🚀 KALMAN FIXED Strategy Initialized", "green")
                 self._log(f"  - Trading Direction: {direction_display}", "cyan")
                 self._log(f"  - Mode: {mode} Parameters", "yellow")
@@ -691,7 +732,6 @@ class KalmanTrendStrategy(BaseStrategy, KalmanLogic):
                 self._log(f"  - Cooldown: {self.cooldown_bars} bars", "yellow")
             except Exception as e:
                 print(f"Kalman Strategy Initialized (log failed: {e})")
-
     def get_strategy_info(self):
         """Return strategy information for display in the app"""
         direction_display = {

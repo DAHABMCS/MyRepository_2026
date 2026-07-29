@@ -1,57 +1,211 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
   <component name="ChangeListManager">
-    <list default="true" id="fc1788b3-1e63-4bdb-99af-8dad1ad8eea2" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/New_Bollinger_bands.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/New_Bollinger_bands.iml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/claudeCodeEditorTabs.xml" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/inspectionProfiles/Project_Default.xml" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/pySourceRootDetection.xml" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/shelf/Changes.xml" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/shelf/Changes/shelved.patch" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/shelf/Changes1.xml" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/shelf/Changes1/shelved.patch" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/vcs.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
+    <list default="true" id="fc1788b3-1e63-4bdb-99af-8dad1ad8eea2" name="Changes" comment="commit 25-07-2026">
+      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/EMA_CCI_MACD_professional.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/MomentumStrategy_MACD_HybridScore_Analysis.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/ema_chart.png" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/monte_carlo_simulator.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/scalping_strategy.backup_20260519_100641.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/scalping_strategy.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/strategies/ATR_Calculator_Helper.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backtest_ETH_USDT_15m_Momentum_initial_20260704_090540.xlsx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backtest_params_momentum.json" beforeDir="false" afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backtest_params_momentum.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/App_MACD_AI_HybridScore_Latest1.py" beforeDir="false" afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/App_MACD_AI_HybridScore_Latest1.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backtest_params.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backtest_params_momentum.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/App_MACD_AI_HybridScore_Latest.py" beforeDir="false" afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/App_MACD_AI_HybridScore_Latest1.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/KalmanTrendStrategy_New.py" beforeDir="false" afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/KalmanTrendStrategy_New.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/MomentumStrategy_MACD_HybridScore_Latest.py" beforeDir="false" afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/MomentumStrategy_MACD_HybridScore_Latest.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/best_MomentumStrategy_MACD_HybridScore_LAST.py" beforeDir="false" afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/MomentumStrategy_MACD_HybridScore_Great.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/update_step1+2.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/strategies/MomentumStrategy_MACD_HybridScore_Latest.py" beforeDir="false" afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/strategies/MomentumStrategy_MACD_HybridScore_Latest.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Web_TradingApp/App_MACD_AI_HybridScore_Latest1.py" beforeDir="false" afterPath="$PROJECT_DIR$/Web_TradingApp/App_MACD_AI_HybridScore_Latest1.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Web_TradingApp/backtest_params_momentum.json" beforeDir="false" afterPath="$PROJECT_DIR$/Web_TradingApp/backtest_params_momentum.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Web_TradingApp/strategies/EMA_CCI_MACD_professional.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Web_TradingApp/strategies/ema_chart.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Web_TradingApp/strategies/scalping_strategy.backup_20260519_100641.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Web_TradingApp/utils/FinancialCircletimer.py" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Python Script" />
+      </list>
+    </option>
+  </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
-  <component name="ProjectColorInfo"><![CDATA[{
-  "customColor": "",
-  "associatedIndex": 3
-}]]></component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;DAHABMCS&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/DAHABMCS/MyRepository_2026.git&quot;,
+    &quot;accountId&quot;: &quot;7064af4c-c7ec-44fd-8d17-1f59c6118a0e&quot;
+  }
+}</component>
+  <component name="NextEditCompletionFeaturesState">
+    <decayedCancelled>
+      <entry key="MS100" value="1.0" />
+      <entry key="MS500" value="1.0" />
+      <entry key="S2" value="1.0" />
+      <entry key="S5" value="1.0" />
+      <entry key="S10" value="1.0" />
+      <entry key="S30" value="1.0" />
+      <entry key="S60" value="1.0" />
+      <entry key="M2" value="1.0" />
+      <entry key="M5" value="1.0" />
+      <entry key="M10" value="1.0" />
+      <entry key="M15" value="1.0" />
+      <entry key="M30" value="1.0" />
+      <entry key="H1" value="1.0000000007628378" />
+      <entry key="H2" value="1.000112835655862" />
+      <entry key="H4" value="1.0508585111458308" />
+      <entry key="D1" value="13.682654042722211" />
+      <entry key="W1" value="38.367034316670015" />
+    </decayedCancelled>
+    <decayedSelected>
+      <entry key="MS100" value="0.0" />
+      <entry key="MS500" value="0.0" />
+      <entry key="S2" value="0.0" />
+      <entry key="S5" value="0.0" />
+      <entry key="S10" value="0.0" />
+      <entry key="S30" value="0.0" />
+      <entry key="S60" value="0.0" />
+      <entry key="M2" value="0.0" />
+      <entry key="M5" value="0.0" />
+      <entry key="M10" value="0.0" />
+      <entry key="M15" value="0.0" />
+      <entry key="M30" value="0.0" />
+      <entry key="H1" value="0.0" />
+      <entry key="H2" value="0.0" />
+      <entry key="H4" value="0.0" />
+      <entry key="D1" value="0.0" />
+      <entry key="W1" value="0.0" />
+    </decayedSelected>
+    <decayedShown>
+      <entry key="MS100" value="1.5402207506895618E-12" />
+      <entry key="MS500" value="0.004340268471308957" />
+      <entry key="S2" value="0.25667238642999973" />
+      <entry key="S5" value="0.5804324166333267" />
+      <entry key="S10" value="0.7618611531199938" />
+      <entry key="S30" value="0.9133248549458318" />
+      <entry key="S60" value="0.9556803100126275" />
+      <entry key="M2" value="0.9775890292002194" />
+      <entry key="M5" value="0.9909746104398988" />
+      <entry key="M10" value="0.9954770768028256" />
+      <entry key="M15" value="0.9969824403057553" />
+      <entry key="M30" value="0.9984900802240128" />
+      <entry key="H1" value="0.9992447556770798" />
+      <entry key="H2" value="0.9997351299714903" />
+      <entry key="H4" value="1.0506671012581361" />
+      <entry key="D1" value="13.682548369589192" />
+      <entry key="W1" value="38.367003667381354" />
+    </decayedShown>
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;customColor&quot;: &quot;&quot;,
+  &quot;associatedIndex&quot;: 3
+}</component>
   <component name="ProjectId" id="3GX3ZIW8wZ7F4gCcxDAUCuCsvie" />
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
-    "codeWithMe.voiceChat.enabledByDefault": "false",
-    "git-widget-placeholder": "main",
-    "settings.editor.selected.configurable": "com.aito.ass.toolkit.settings.CodeAssistSettingsConfigurable"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;Python.App_MACD_AI_HybridScore_Latest1.executor&quot;: &quot;Debug&quot;,
+    &quot;Python.Examin.executor&quot;: &quot;Debug&quot;,
+    &quot;Python.main_New_MACD_HybridScore_Latest.executor&quot;: &quot;Debug&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
+    &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
+    &quot;ignore.virus.scanning.warn.message&quot;: &quot;true&quot;,
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/dahab/PyCharm_2026.2.23/New_Bollinger_bands/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.lookFeel&quot;
   }
-}]]></component>
+}</component>
+  <component name="RecentsManager">
+    <key name="CopyFile.RECENT_KEYS">
+      <recent name="C:\Users\dahab\PyCharm_2026.2.23\New_Bollinger_bands\9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade\backups\strategies" />
+      <recent name="C:\Users\dahab\PyCharm_2026.2.23\New_Bollinger_bands\9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade\backups" />
+      <recent name="C:\Users\dahab\PyCharm_2026.2.23\New_Bollinger_bands\9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade\strategies" />
+    </key>
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="C:\Users\dahab\PyCharm_2026.2.23\New_Bollinger_bands\9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade" />
+      <recent name="C:\Users\dahab\PyCharm_2026.2.23\New_Bollinger_bands\9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade\strategies" />
+    </key>
+  </component>
+  <component name="RunManager" selected="Python.main_New_MACD_HybridScore_Latest">
+    <configuration name="Examin" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="New_Bollinger_bands" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="false" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/Examin.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="main_New_MACD_HybridScore_Latest" type="PythonConfigurationType" factoryName="Python" singleton="false" temporary="true" nameIsGenerated="true">
+      <module name="New_Bollinger_bands" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="false" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/main_New_MACD_HybridScore_Latest.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <recent_temporary>
+      <list>
+        <item itemvalue="Python.main_New_MACD_HybridScore_Latest" />
+        <item itemvalue="Python.Examin" />
+      </list>
+    </recent_temporary>
+  </component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
@@ -67,9 +221,99 @@
       <option name="presentableId" value="Default" />
       <updated>1784104140745</updated>
     </task>
+    <task id="LOCAL-00001" summary="commit 16-07-2026">
+      <option name="closed" value="true" />
+      <created>1784203160824</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1784203160824</updated>
+    </task>
+    <task id="LOCAL-00002" summary="commit 16-07-2026">
+      <option name="closed" value="true" />
+      <created>1784203193418</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1784203193418</updated>
+    </task>
+    <task id="LOCAL-00003" summary="commit 16-07-2026">
+      <option name="closed" value="true" />
+      <created>1784204287525</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1784204287525</updated>
+    </task>
+    <task id="LOCAL-00004" summary="commit 18-07-2026">
+      <option name="closed" value="true" />
+      <created>1784378598820</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1784378598820</updated>
+    </task>
+    <task id="LOCAL-00005" summary="commit 21-07-2026">
+      <option name="closed" value="true" />
+      <created>1784653386094</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1784653386094</updated>
+    </task>
+    <task id="LOCAL-00006" summary="commit 23-07-2026">
+      <option name="closed" value="true" />
+      <created>1784787429075</created>
+      <option name="number" value="00006" />
+      <option name="presentableId" value="LOCAL-00006" />
+      <option name="project" value="LOCAL" />
+      <updated>1784787429075</updated>
+    </task>
+    <task id="LOCAL-00007" summary="commit 25-07-2026">
+      <option name="closed" value="true" />
+      <created>1784964592853</created>
+      <option name="number" value="00007" />
+      <option name="presentableId" value="LOCAL-00007" />
+      <option name="project" value="LOCAL" />
+      <updated>1784964592853</updated>
+    </task>
+    <option name="localTasksCounter" value="8" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="commit 16-07-2026" />
+    <MESSAGE value="commit 18-07-2026" />
+    <MESSAGE value="commit 21-07-2026" />
+    <MESSAGE value="commit 23-07-2026" />
+    <MESSAGE value="commit 25-07-2026" />
+    <option name="LAST_COMMIT_MESSAGE" value="commit 25-07-2026" />
+  </component>
+  <component name="XDebuggerManager">
+    <breakpoint-manager>
+      <default-breakpoints>
+        <breakpoint type="python-exception">
+          <properties notifyOnTerminate="true" exception="BaseException">
+            <option name="notifyOnTerminate" value="true" />
+          </properties>
+        </breakpoint>
+        <breakpoint type="jupyter-exception">
+          <properties exception="BaseException" />
+        </breakpoint>
+      </default-breakpoints>
+    </breakpoint-manager>
   </component>
 </project>

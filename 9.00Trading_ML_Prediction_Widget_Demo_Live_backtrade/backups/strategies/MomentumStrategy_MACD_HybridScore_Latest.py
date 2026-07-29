@@ -1,12 +1,17 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# v9.4.1 BUG-FIX PATCH (applied on top of v9.4):
-#
+# v10.0.3 - TWO-TIER SYSTEM with FIXED PARTIAL EXITS & TRADE ID TRACKING
 # ═══════════════════════════════════════════════════════════════════════════
-
-
+# FIXES:
+#   1. Partial exits use position.close(portion) - NEVER self.sell()
+#   2. Every trade gets a unique ID that persists across partial exits
+#   3. Trade IDs appear in Excel export (Trade_# column)
+#   4. No more spurious "Not logged by strategy" SHORT trades
+# ═══════════════════════════════════════════════════════════════════════════
 import json
 import logging
 import os
+
+os.environ['BACKTESTING_DISABLE_MULTIPROCESSING'] = '1'
 import random
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
@@ -16,39 +21,36 @@ from collections import deque
 import numpy as np
 import pandas as pd
 import talib
-from strategies.base3_New import BaseStrategy
-from backtesting import Strategy
+from .base3_New import BaseStrategy
+from backtesting import Strategy, Backtest
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# GLOBAL CONFIGURATION - Single source of truth for capital
+# GLOBAL CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════
 
 class GlobalConfig:
-    """Single source of truth for global trading parameters"""
-
-    # INITIAL CAPITAL - Change this value and EVERYTHING updates automatically
-    INITIAL_CAPITAL = 50000.0  # <-- CHANGE THIS VALUE
-
-    # Other global settings can go here too
+    INITIAL_CAPITAL = 50000.0
     COMMISSION_RATE = 0.001
     DEFAULT_SYMBOL = "SOL-USDT"
 
     @classmethod
     def update_capital(cls, new_capital):
-        """Update capital and log the change"""
         old = cls.INITIAL_CAPITAL
         cls.INITIAL_CAPITAL = float(new_capital)
         logging.info(f"💰 GLOBAL CAPITAL UPDATED: ${old:,.2f} → ${cls.INITIAL_CAPITAL:,.2f}")
         return cls.INITIAL_CAPITAL
 
 
-# Create a convenience reference
+def _get_capital():
+    return GlobalConfig.INITIAL_CAPITAL
+
+
 CAPITAL = GlobalConfig.INITIAL_CAPITAL
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# UTILITY FUNCTIONS FOR ROBUST METRICS
+# UTILITY FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════
 
 def safe_profit_factor(gross_profit: float, gross_loss: float) -> float:
@@ -128,20 +130,20 @@ def bootstrap_win_rate(trades: List[Any], n_iter: int = 1000, alpha: float = 0.0
     return results[lower_idx], results[upper_idx]
 
 
-def compute_sortino(returns, target=0.0, periods_per_year=252):
+def compute_sortino(returns, target=0.0, periods_per_year=6048):
     import numpy as _np
     if len(returns) < 2: return 0.0
     downside = returns[returns < target]
     if len(downside) == 0: return float('inf')
-    d = _np.sqrt(_np.mean(downside**2))
-    return (_np.mean(returns)/d)*_np.sqrt(periods_per_year) if d>0 else float('inf')
+    d = _np.sqrt(_np.mean(downside ** 2))
+    return (_np.mean(returns) / d) * _np.sqrt(periods_per_year) if d > 0 else float('inf')
 
 
-def compute_sharpe(returns, risk_free=0.0, periods_per_year=252):
+def compute_sharpe(returns, risk_free=0.0, periods_per_year=6048):
     import numpy as _np
     if len(returns) < 2: return 0.0
     s = _np.std(returns)
-    return ((_np.mean(returns)-risk_free)/s)*_np.sqrt(periods_per_year) if s>0 else 0.0
+    return ((_np.mean(returns) - risk_free) / s) * _np.sqrt(periods_per_year) if s > 0 else 0.0
 
 
 def load_params_with_validation(param_dict: Dict, defaults: Dict) -> Dict:
@@ -188,6 +190,7 @@ class TradeRecord:
     entry_quality_score: int
     entry_reason: str
     entry_direction: str
+    entry_bar: Optional[int] = None
     exit_time: Optional[datetime] = None
     exit_price: Optional[float] = None
     exit_size: Optional[float] = None
@@ -203,6 +206,16 @@ class TradeRecord:
     partial_exits_taken: int = 0
     partial_pnl_realised: float = 0.0
     original_size: float = 0.0
+    signal_adx: float = 0.0
+    signal_rsi: float = 50.0
+    signal_macd: float = 0.0
+    signal_volume: float = 1.0
+    signal_price_pct: float = 50.0
+    signal_ml_prediction: int = 0
+    signal_ml_confidence: float = 0.0
+    confluence_score: float = 0.0
+    # NEW: Track partial exits with same trade ID
+    partial_exit_details: List[Dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -217,6 +230,7 @@ class TradeRecord:
             'hold_duration': self.hold_duration, 'market_regime': self.market_regime,
             'partial_exits_taken': self.partial_exits_taken,
             'partial_pnl_realised': self.partial_pnl_realised,
+            'trade_direction': self.entry_direction,
         }
 
 
@@ -238,11 +252,11 @@ class RiskMetrics:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# BACKTEST OPTIMIZATION PARAMETERS
+# BACKTEST OPTIMIZATION PARAMETERS (Tier 1 & 2 only)
 # ═══════════════════════════════════════════════════════════════════════════
 
 BACKTEST_PARAMS = {
-    'quality': {'active': True, 'values': [60, 65, 70, 75], 'description': 'Quality Score Threshold'},
+    'quality': {'active': True, 'values': [55, 60, 65, 70, 75], 'description': 'Quality Score Threshold'},
     'adx': {'active': True, 'values': [20, 22, 25, 28], 'description': 'ADX Minimum'},
     'rsi': {'active': True, 'values': [30, 35, 40, 45], 'description': 'RSI Minimum'},
     'volume': {'active': True, 'values': [0.9, 1.0, 1.1, 1.2], 'description': 'Volume Ratio'},
@@ -255,14 +269,17 @@ BACKTEST_PARAMS = {
     'weight_macd': {'active': True, 'values': [20, 22, 25, 28], 'description': 'MACD Weight'},
     'weight_rsi': {'active': True, 'values': [15, 18, 20, 22], 'description': 'RSI Weight'},
     'weight_volume': {'active': True, 'values': [10, 12, 15, 18], 'description': 'Volume Weight'},
-    'risk_tier1': {'active': True, 'values': [0.010, 0.012, 0.015, 0.018], 'description': 'Tier 1 Risk %'},
-    'risk_tier2': {'active': True, 'values': [0.012, 0.015, 0.018, 0.022], 'description': 'Tier 2 Risk %'},
-    'stop_loss_mult': {'active': True, 'values': [2.5, 3.0, 3.5, 4.0], 'description': 'Stop Loss ATR Multiplier'},
+    'risk_tier1': {'active': True, 'values': [0.015, 0.020, 0.025, 0.030], 'description': 'Tier 1 Risk %'},
+    'risk_tier2': {'active': True, 'values': [0.010, 0.015, 0.018, 0.022], 'description': 'Tier 2 Risk %'},
+    'stop_loss_mult': {'active': True, 'values': [2.0, 2.5, 3.0, 3.5, 4.0], 'description': 'Stop Loss ATR Multiplier'},
+    'trailing_activation': {'active': True, 'values': [0.02, 0.03, 0.04, 0.05], 'description': 'Trailing Activation %'},
+    'trailing_distance': {'active': True, 'values': [0.025, 0.035, 0.045, 0.055], 'description': 'Trailing Distance %'},
+    'ml_weight': {'active': True, 'values': [0.10, 0.15, 0.20, 0.25, 0.30], 'description': 'ML Weight'},
 }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 2: RISK MANAGEMENT — v9.4: HARD CAP ON POSITION SIZE
+# PART 2: RISK MANAGEMENT — TWO-TIER SYSTEM
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ProfessionalRiskController:
@@ -282,9 +299,28 @@ class ProfessionalRiskController:
         self.max_concentration_pct = 0.10
         self.max_active_trades = 10
         self.min_cash_reserve = 0.15
-        self.base_risk_pct = 0.020
-        # ═══ v9.4 FIX #3: Hard cap on position size in units ═══
-        self.max_position_units = 50  # Never exceed 50 units regardless of price
+        self.base_risk_pct = 0.025
+
+        # TWO-TIER RISK SETTINGS
+        self.tier1_risk_pct = 0.025
+        self.tier2_risk_pct = 0.015
+
+        # TIER PASS MARKS (LONG / SHORT)
+        self.tier1_pass_long = 75
+        self.tier2_pass_long = 65
+        self.tier1_pass_short = 75
+        self.tier2_pass_short = 65
+
+        # POSITION SIZE MULTIPLIERS
+        self.tier1_size_mult = 1.0
+        self.tier2_size_mult = 0.70
+
+        # STOP LOSS MULTIPLIERS
+        self.tier1_stop_mult = 2.0
+        self.tier2_stop_mult = 2.5
+
+        self.max_position_units = 50
+
         self.trades: List[TradeRecord] = []
         self.daily_trades: deque = deque(maxlen=500)
         self.today_loss = 0.0
@@ -299,8 +335,33 @@ class ProfessionalRiskController:
         self.losing_trades = 0
         self.risk_metrics = RiskMetrics()
 
+    def get_tier_config(self, tier: int) -> dict:
+        if tier == 1:
+            return {'risk_pct': self.tier1_risk_pct, 'size_mult': self.tier1_size_mult,
+                    'stop_mult': self.tier1_stop_mult, 'pass_long': self.tier1_pass_long,
+                    'pass_short': self.tier1_pass_short, 'name': 'Tier 1 (Low Risk)', 'color': 'green'}
+        elif tier == 2:
+            return {'risk_pct': self.tier2_risk_pct, 'size_mult': self.tier2_size_mult,
+                    'stop_mult': self.tier2_stop_mult, 'pass_long': self.tier2_pass_long,
+                    'pass_short': self.tier2_pass_short, 'name': 'Tier 2 (Medium Risk)', 'color': 'yellow'}
+        return None
+
+    def determine_tier(self, quality_score: int, direction: str = 'long') -> int:
+        if direction == 'long':
+            if quality_score >= self.tier1_pass_long:
+                return 1
+            elif quality_score >= self.tier2_pass_long:
+                return 2
+        else:
+            if quality_score >= self.tier1_pass_short:
+                return 1
+            elif quality_score >= self.tier2_pass_short:
+                return 2
+        return 0
+
     def calculate_position_size(self, entry_price, stop_loss_price, win_rate=0.50,
-                                profit_factor=1.0, quality_score=75, tier=1, adx=25):
+                                profit_factor=1.0, quality_score=75, tier=1, adx=25,
+                                tier1_risk_pct=None, tier2_risk_pct=None):
         if entry_price <= 0:
             return 0
 
@@ -308,16 +369,18 @@ class ProfessionalRiskController:
         if risk_per_trade <= 0 or risk_per_trade > 0.25:
             return 0
 
-        expected_profit = risk_per_trade * 2.0
+        tier_config = self.get_tier_config(tier)
+        if tier_config is None:
+            tier_config = self.get_tier_config(1)
 
-        if expected_profit <= 0:
-            kelly_fraction = 0.0
+        if tier == 1 and tier1_risk_pct is not None:
+            base_risk = tier1_risk_pct
+        elif tier == 2 and tier2_risk_pct is not None:
+            base_risk = tier2_risk_pct
         else:
-            kelly_fraction = ((win_rate * expected_profit) - ((1 - win_rate) * risk_per_trade)) / expected_profit
-        kelly_fraction = max(0.0, min(kelly_fraction, 0.05))
+            base_risk = tier_config['risk_pct']
 
-        quality_weight = max(0.5, min((quality_score / 75) ** 0.5, 1.5))
-
+        # ADX multiplier
         if adx < 20:
             adx_multiplier = 0.6
         elif adx < 25:
@@ -329,6 +392,7 @@ class ProfessionalRiskController:
         else:
             adx_multiplier = 0.5
 
+        quality_weight = max(0.5, min((quality_score / 75) ** 0.5, 1.5))
         losing_streak_multiplier = 0.7 if self.consecutive_losses >= 2 else 1.0
 
         trailing_wr = 0.50
@@ -339,23 +403,29 @@ class ProfessionalRiskController:
         performance_adjust = max(0.5, trailing_wr) if len(self.daily_trades) >= 5 else 1.0
 
         equity_health = self.current_equity / max(1.0, self.peak_equity)
-        equity_adjustment = min(equity_health ** 2, 1.0)
+        equity_adjustment = min(equity_health, 1.0)
 
-        risk_pct = (self.base_risk_pct * quality_weight * adx_multiplier *
+        risk_pct = (base_risk * quality_weight * adx_multiplier *
                     losing_streak_multiplier * performance_adjust * equity_adjustment)
-
-        risk_pct = max(0.001, min(risk_pct, 0.05))
+        risk_pct *= tier_config['size_mult']
+        risk_pct = max(0.001, min(risk_pct, 0.07))
 
         risk_amount = self.current_equity * risk_pct
         position_size = (risk_amount / (entry_price * risk_per_trade))
         max_position_amount = self.current_equity * self.max_position_size_pct
-
         position_size = min(position_size, max_position_amount / entry_price)
 
-        # ═══ v9.4 FIX #3: Hard cap on units ═══
-        position_size = min(position_size, self.max_position_units)
+        if entry_price >= 1000:
+            position_size = max(0.0, round(position_size, 6))
+        elif entry_price >= 100:
+            position_size = max(0.0, round(position_size, 4))
+        else:
+            position_size = max(0, int(position_size))
 
-        return max(0, int(position_size))
+        if self.max_position_units is not None:
+            position_size = min(position_size, self.max_position_units)
+
+        return position_size
 
     def validate_trade_entry(self, position_size, entry_price):
         if self.today_loss <= -self.daily_loss_limit:
@@ -413,16 +483,17 @@ class ProfessionalRiskController:
         if len(self.equity_curve) > 1:
             returns = np.diff(self.equity_curve) / np.array(self.equity_curve[:-1])
             if len(returns) > 0 and np.std(returns) > 0:
-                self.risk_metrics.sharpe_ratio  = compute_sharpe(returns)
+                self.risk_metrics.sharpe_ratio = compute_sharpe(returns)
                 self.risk_metrics.sortino_ratio = compute_sortino(returns)
 
     def get_stats(self):
         return {
             'total_trades': self.total_trades,
             'win_rate': f"{self.risk_metrics.win_rate:.1f}%",
-            'profit_factor': f"{self.risk_metrics.profit_factor:.2f}" if self.risk_metrics.profit_factor != float('inf') else "∞",
+            'profit_factor': f"{self.risk_metrics.profit_factor:.2f}" if self.risk_metrics.profit_factor != float(
+                'inf') else "∞",
             'max_drawdown': f"{self.risk_metrics.max_drawdown:.1%}",
-            'sharpe_ratio':  f"{self.risk_metrics.sharpe_ratio:.2f}",
+            'sharpe_ratio': f"{self.risk_metrics.sharpe_ratio:.2f}",
             'sortino_ratio': f"{self.risk_metrics.sortino_ratio:.2f}",
             'expectancy': f"${self.risk_metrics.expectancy:.2f}",
             'current_equity': f"${self.current_equity:,.2f}",
@@ -433,7 +504,7 @@ class ProfessionalRiskController:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 3: MACRO REGIME DETECTION
+# PART 3: MACRO REGIME DETECTION (unchanged)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class MacroRegimeDetector:
@@ -443,61 +514,131 @@ class MacroRegimeDetector:
         self.regime_history = deque(maxlen=100)
         self.adx_threshold = 25
         self.tier1_adx_hard_min = 25
-        self.vix_low = 15
-        self.vix_high = 30
-        self.bb_squeeze_threshold = 0.4
+        self.vol_ratio_low = 0.6
+        self.vol_ratio_high = 2.0
+        self.bb_squeeze_threshold = 25
 
-    def detect_regime(self, ema_fast, ema_slow, adx, vix=20, bb_width_percentile=50):
+    def detect_regime(self, ema_fast, ema_slow, adx, vol_ratio=1.0, bb_width_percentile=50):
+        """Enhanced regime detection with proper bear market identification"""
         is_uptrend = ema_fast > ema_slow
         trend_strong = adx > self.adx_threshold
-        is_low_vol = vix < self.vix_low
-        is_high_vol = vix > self.vix_high
+
+        # CRITICAL FIX: Proper downtrend detection
+        is_downtrend = ema_fast < ema_slow
+        is_very_bearish = ema_fast < ema_slow and (ema_slow - ema_fast) / ema_slow > 0.02  # 2% spread
+
+        is_low_vol = vol_ratio < self.vol_ratio_low
+        is_high_vol = vol_ratio > self.vol_ratio_high
         is_range_bound = bb_width_percentile < self.bb_squeeze_threshold
+
+        # FIX: Prioritize bearish detection - this should come FIRST
+        if is_downtrend and trend_strong:
+            if is_very_bearish:
+                regime, confidence = "BEARISH_DECLINING", 0.95
+            elif vol_ratio > 1.5:
+                regime, confidence = "BEARISH_SELLOFF", 0.90
+            else:
+                regime, confidence = "BEARISH_DECLINING", 0.85
+            self.current_regime = regime
+            self.regime_confidence = confidence
+            self.regime_history.append(regime)
+            return regime, confidence
+
+        # Also check for price below EMA200 as additional bearish signal
+        # This is called from the strategy, so we need to pass the data
+        if is_downtrend and adx < self.adx_threshold:
+            regime, confidence = "BEARISH_WEAK", 0.70
+            self.current_regime = regime
+            self.regime_confidence = confidence
+            self.regime_history.append(regime)
+            return regime, confidence
+
+        # Original bullish logic (now after bearish checks)
         if is_uptrend and trend_strong and is_low_vol:
             regime, confidence = "BULLISH_LOW_VOL", 0.95
         elif is_uptrend and trend_strong and is_high_vol:
             regime, confidence = "BULLISH_HIGH_VOL", 0.85
+        elif is_uptrend and trend_strong:
+            regime, confidence = "BULLISH_NORMAL_VOL", 0.90
         elif is_uptrend and not trend_strong:
             regime, confidence = "BULLISH_WEAK", 0.70
-        elif not is_uptrend and trend_strong:
-            regime, confidence = "BEARISH_DECLINING", 0.90
         elif is_range_bound:
             regime, confidence = "RANGING_VOLATILE", 0.80
         else:
             regime, confidence = "UNDEFINED", 0.50
+
         self.current_regime = regime
         self.regime_confidence = confidence
         self.regime_history.append(regime)
         return regime, confidence
 
     def is_tradeable(self, regime: str) -> bool:
+        """FIX: Block trades in bearish regimes"""
+        # FIX: Do NOT trade in bear markets
+        blocked_regimes = ('BEARISH_DECLINING', 'BEARISH_SELLOFF', 'BEARISH_WEAK')
+        if regime in blocked_regimes:
+            return False
         return regime not in ('RANGING_VOLATILE', 'UNDEFINED')
 
     def get_position_multiplier(self, regime):
-        return {'BULLISH_LOW_VOL': 1.3, 'BULLISH_HIGH_VOL': 0.8, 'BULLISH_WEAK': 0.7,
-                'BEARISH_DECLINING': 0.3, 'RANGING_VOLATILE': 0.5, 'UNDEFINED': 0.6}.get(regime, 0.6)
+        """Position size multiplier based on regime - CONSERVATIVE in bear markets"""
+        multipliers = {
+            'BULLISH_LOW_VOL': 1.3,
+            'BULLISH_NORMAL_VOL': 1.0,
+            'BULLISH_HIGH_VOL': 0.8,
+            'BULLISH_WEAK': 0.7,
+            'BEARISH_DECLINING': 0.2,  # FIX: drastically reduce size
+            'BEARISH_SELLOFF': 0.1,  # FIX: almost no size in selloffs
+            'BEARISH_WEAK': 0.3,
+            'RANGING_VOLATILE': 0.5,
+            'UNDEFINED': 0.6
+        }
+        return multipliers.get(regime, 0.6)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 4: EXIT MANAGER — WITH FULL LONG/SHORT TRAILING STOP SUPPORT
+# PART 4: EXIT MANAGER — TWO-TIER EXIT RULES
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ProfessionalExitManager:
     def __init__(self, config: dict):
         self.config = config
-        self.stop_loss_atr_mult = config.get('stop_loss_atr_mult', 1.5)
+        self.stop_loss_atr_mult = config.get('stop_loss_atr_mult', 2.5)
         self.profit_targets = {}
         self.macd_bearish_cross_enabled = config.get('macd_bearish_cross_exit', True)
         self.macd_cross_profit_min = config.get('macd_bearish_cross_profit_min', 1.0)
         self.ema_cross_exit_enabled = config.get('ema_cross_exit', True)
         self.ema_cross_profit_min = 2.0
-        self.trailing_activation_pct = config.get('trailing_activation_pct', 0.005)
-        self.trailing_distance_pct = config.get('trailing_distance_pct', 0.01)
-        self.trailing_activation_r = config.get('trailing_activation_r', 3.0)
+        self.trailing_activation_pct = config.get('trailing_activation_pct', 0.03)
+        self.trailing_distance_pct = config.get('trailing_distance_pct', 0.035)
+        self.trailing_activation_r = config.get('trailing_activation_r', 2.5)
         self.initial_trailing_atr_mult = config.get('initial_trailing_atr_mult', 4.0)
-        self.max_hold_bars = config.get('max_hold_bars', 120)
-        self.min_hold_bars_before_stop = config.get('min_hold_bars_before_stop', 6)
-        self.emergency_stop_multiplier = config.get('emergency_stop_multiplier', 2.0)
+        self.max_hold_bars = config.get('max_hold_bars', 500)
+        self.min_hold_bars_before_stop = config.get('min_hold_bars_before_stop', 4)
+        self.emergency_stop_multiplier = config.get('emergency_stop_multiplier', 1.5)
+
+        self.take_profit_r1 = config.get('take_profit_r1', 3.0)
+        self.take_profit_r2 = config.get('take_profit_r2', 5.0)
+        self.take_profit_r3 = config.get('take_profit_r3', 8.0)
+        self.partial_exit_pct = config.get('partial_exit_pct', 0.33)
+
+        # TWO-TIER EXIT THRESHOLDS
+        self.exit_threshold_tier1 = 60
+        self.exit_threshold_tier2 = 50
+
+    def get_exit_threshold(self, tier: int) -> int:
+        if tier == 1:
+            return self.exit_threshold_tier1
+        elif tier == 2:
+            return self.exit_threshold_tier2
+        return 50
+
+    def get_trailing_config(self, tier: int) -> dict:
+        if tier == 1:
+            return {'activation': 0.03, 'distance': 0.025}
+        elif tier == 2:
+            return {'activation': 0.04, 'distance': 0.035}
+        return {'activation': 0.04, 'distance': 0.035}
 
     def get_initial_trailing_stop(self, entry_price, atr=None, position_type='long'):
         return entry_price
@@ -505,11 +646,12 @@ class ProfessionalExitManager:
     def evaluate_exit(self, current_price, entry_price, stop_loss, highest_price, lowest_price,
                       bars_held, partial_exits, ema_fast, ema_mid, ema_slow,
                       macd, macd_signal, macd_prev, signal_prev, adx, atr,
-                      position_type='long', trailing_activated=False, trailing_stop=None):
+                      position_type='long', trailing_activated=False, trailing_stop=None,
+                      tier=1, exit_power=0):
 
         if not hasattr(self, '_version_printed'):
             print("=" * 70)
-            print("🎯 EXIT MANAGER VERSION: v9.4 - FULL LONG/SHORT/BOTH SUPPORT")
+            print("🎯 EXIT MANAGER VERSION: v10.0.3 - FIXED PARTIAL EXITS")
             print("=" * 70)
             self._version_printed = True
 
@@ -523,15 +665,14 @@ class ProfessionalExitManager:
             profit_r = (entry_price - current_price) / stop_distance if stop_distance > 0 else 0
 
         atr_pct = (atr / current_price) * 100 if current_price > 0 else 0.01
-        activation_threshold = max(atr_pct * 1.5, 0.015)
-        trailing_distance_pct = max(atr_pct * 0.5, 0.01)
 
-        if not hasattr(self, '_trade_debug_printed') or self._trade_debug_printed != entry_price:
-            print(f"  🔬 VOLATILITY PARAMS: ATR={atr_pct:.2f}% | "
-                  f"Activate@{activation_threshold:.2%} | Trail={trailing_distance_pct:.2%}")
-            self._trade_debug_printed = entry_price
+        # Tier-specific trailing config
+        trail_config = self.get_trailing_config(tier)
+        activation_threshold = max(atr_pct * 1.5, trail_config['activation'])
+        trailing_distance_pct = max(atr_pct * 0.5, trail_config['distance'])
+        exit_threshold = self.get_exit_threshold(tier)
 
-        # ═══ 1. HARD STOP ═══
+        # 1. HARD STOP
         if position_type == 'long':
             if current_price <= stop_loss:
                 if bars_held < self.min_hold_bars_before_stop:
@@ -549,16 +690,22 @@ class ProfessionalExitManager:
                 else:
                     return "stop_loss_hard", 1.0
 
-        # ═══ 2. TRAILING STOP HIT ═══
+        # 2. TRAILING STOP HIT
         if trailing_activated and trailing_stop is not None:
             if position_type == 'long' and current_price <= trailing_stop:
-                print(f"  🎯 LONG TRAILING STOP HIT: ${current_price:.2f} <= ${trailing_stop:.2f}")
                 return "trailing_stop_hit", 1.0
             elif position_type == 'short' and current_price >= trailing_stop:
-                print(f"  🎯 SHORT TRAILING STOP HIT: ${current_price:.2f} >= ${trailing_stop:.2f}")
                 return "trailing_stop_hit", 1.0
 
-        # ═══ 3. MACD CROSS EXIT ═══
+        # 3. PARTIAL TAKE-PROFIT LADDER
+        if profit_r >= self.take_profit_r3 and partial_exits < 3:
+            return "take_profit_r3", self.partial_exit_pct
+        if profit_r >= self.take_profit_r2 and partial_exits < 2:
+            return "take_profit_r2", self.partial_exit_pct
+        if profit_r >= self.take_profit_r1 and partial_exits < 1:
+            return "take_profit_r1", self.partial_exit_pct
+
+        # 4. MACD CROSS EXIT
         if self.macd_bearish_cross_enabled and profit_r >= self.macd_cross_profit_min:
             if position_type == 'long':
                 if macd_prev >= signal_prev and macd < macd_signal:
@@ -573,7 +720,7 @@ class ProfessionalExitManager:
                     else:
                         return "macd_bullish_cross", 1.0
 
-        # ═══ 4. EMA FULL REVERSAL (>= 2R) ═══
+        # 5. EMA FULL REVERSAL
         if self.ema_cross_exit_enabled and profit_r >= 2.0:
             if position_type == 'long':
                 if ema_fast < ema_mid < ema_slow:
@@ -582,7 +729,7 @@ class ProfessionalExitManager:
                 if ema_fast > ema_mid > ema_slow:
                     return "ema_full_reversal", 1.0
 
-        # ═══ 5. ADX COLLAPSE + MACD INVERSION ═══
+        # 6. ADX COLLAPSE
         if adx < 25 and profit_r >= 1.5:
             if position_type == 'long':
                 if macd < macd_signal and not (current_price > ema_mid and ema_fast > ema_slow):
@@ -591,7 +738,11 @@ class ProfessionalExitManager:
                 if macd > macd_signal and not (current_price < ema_mid and ema_fast < ema_slow):
                     return "adx_collapse_trend_weak", 1.0
 
-        # ═══ 6. MAX HOLD TIME ═══
+        # 7. REVERSAL POWER EXIT (Tier-based)
+        if exit_power >= exit_threshold and profit_r >= 0.5:
+            return "reversal_power_exit", 1.0
+
+        # 8. MAX HOLD TIME
         if bars_held >= self.max_hold_bars:
             return "max_hold_time", 1.0
 
@@ -599,22 +750,46 @@ class ProfessionalExitManager:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 5: CONFIGURATION — WITH DIRECTION CONTROL (v9.4 UPDATED)
+# PART 5: CONFIGURATION — TWO-TIER SYSTEM
 # ═══════════════════════════════════════════════════════════════════════════
-#
+
 MOMENTUM_PARAMS = {
-    # ═══ DIRECTION CONTROL ════════════════════════════════════════════
     "trade_direction": "both",
 
-    # ═══ LONG THRESHOLDS ═══════════════════════════════════════════════
-    "quality_tier1_min": 68,           # updated: 72 → 68
-    "quality_tier2_min": 65,
-    "fixed_threshold": 72,
+    # TWO-TIER PASS MARKS (LONG / SHORT)
+    "quality_tier1_min_long": 75,
+    "quality_tier2_min_long": 65,
+    "quality_tier1_min_short": 75,
+    "quality_tier2_min_short": 65,
 
-    # ═══ SHORT THRESHOLDS ═══════════════════════════════════════════════
-    "short_quality_tier1_min": 70,     # updated: 75 → 70
-    "short_quality_tier2_min": 70,
-    "short_fixed_threshold": 75,
+    # LEGACY (mapped to _long/_short in get_current_momentum_params)
+    "quality_tier1_min": 75,
+    "quality_tier2_min": 65,
+    "short_quality_tier1_min": 75,
+    "short_quality_tier2_min": 65,
+
+    # ENTRY MODE
+    "only_tier1_entries": False,  # True = only Tier 1 allowed
+
+    # TWO-TIER RISK
+    "risk_tier1": 0.025,
+    "risk_tier2": 0.015,
+
+    "tier1_size_multiplier": 1.0,
+    "tier2_size_multiplier": 0.70,
+
+    "tier1_stop_multiplier": 2.0,
+    "tier2_stop_multiplier": 2.5,
+
+    "exit_threshold_tier1": 60,
+    "exit_threshold_tier2": 50,
+
+    "trailing_activation_tier1": 0.03,
+    "trailing_activation_tier2": 0.04,
+    "trailing_distance_tier1": 0.025,
+    "trailing_distance_tier2": 0.035,
+
+    "ml_weight": 0.20,
 
     # Fuzzy Learning
     "fuzzy_mode_enabled": False,
@@ -630,9 +805,9 @@ MOMENTUM_PARAMS = {
     "fuzzy_conservative_start": True,
 
     # EMA Settings
-    "ema_fast_period": 8,
-    "ema_mid_period": 24,
-    "ema_slow_period": 60,
+    "ema_fast_period": 10,
+    "ema_mid_period": 18,
+    "ema_slow_period": 45,
 
     # Regime Detection
     "regime_filter_enabled": True,
@@ -644,42 +819,51 @@ MOMENTUM_PARAMS = {
     "chop_period": 14,
     "chop_threshold": 58,
 
-    # Quality Component Weights — TOTAL 100 POINTS
-    "weight_ema": 20,
-    "weight_adx": 20,
-    "weight_macd": 25,
-    "weight_rsi": 20,
-    "weight_volume": 12,
+    # Quality Weights
+    "weight_ema": 22,
+    "weight_adx": 13,
+    "weight_macd": 24,
+    "weight_rsi": 16,
+    "weight_volume": 15,
+    "weight_cci": 5,
+    "weight_kalman": 5,
+
+    # Slippage
+    "slippage_enabled": True,
+    "slippage_base_bps": 2.0,
+    "slippage_impact_coef": 0.5,
+    "slippage_max_bps": 50.0,
 
     "ema_near_tolerance": 0.005,
     "rsi_dynamic_enabled": True,
 
-    # Price Percentile Adjustments
+    # Price Percentile
     "price_percentile_bonus_early": 12,
     "price_percentile_penalty_late": 12,
     "price_percentile_early_threshold": 25,
     "price_percentile_late_threshold": 80,
     "price_percentile_lookback": 20,
 
-    # ═══ LONG FILTERS ═══════════════════════════════════════════════════
-    "tier1_adx_hard_min": 25,          # updated: 20 → 25
+    # LONG FILTERS
+    "tier1_adx_hard_min": 22,
     "tier1_adx_min": 20,
-    "tier1_rsi_min": 40,               # updated: 44 → 40
-    "tier1_rsi_max": 68,               # updated: 64 → 68
-    "tier1_volume_min": 0.8,           # updated: 1.0 → 0.8
-    "tier1_momentum_min": 0.02,
+    "tier1_rsi_min": 42,
+    "tier1_rsi_max": 68,
+    "tier1_volume_min": 1.0,
+    "tier1_momentum_min": 0.01,
     "tier1_kalman_min": 0.0,
     "tier1_macd_gate": True,
     "tier1_price_ema_max_pct": 1.5,
     "daily_trend_filter_enabled": True,
-    "daily_ema_period": 1920,
+    "daily_ema_period": 720,
+    "daily_trend_adx_override": 28,
 
-    "extended_run_max_pct_long": 12.0,  # updated: 8.0 → 12.0
-    "extended_run_max_pct_short": 12.0, # updated: 8.0 → 12.0
+    "extended_run_max_pct_long": 12.0,
+    "extended_run_max_pct_short": 12.0,
     "extended_run_lookback": 20,
 
     "atr_compression_enabled": True,
-    "atr_compression_threshold": 0.4,  # updated: 0.55 → 0.4
+    "atr_compression_threshold": 0.25,
     "atr_compression_lookback": 50,
 
     "trend_age_penalty_enabled": True,
@@ -690,37 +874,37 @@ MOMENTUM_PARAMS = {
     "consecutive_loss_threshold": 3,
     "consecutive_loss_cooldown_bars": 12,
 
-    # === PRECISION FILTERS ================================================
-    "dmi_spread_min_long":    0.0,
-    "dmi_spread_min_short":   0.0,
-    "ema_trending_bars":      3,
-    "macd_hist_rising_bars":  0,
-    "rsi_direction_bars":               3,
-    "rsi_direction_min_move":           1.0,
+    # PRECISION FILTERS
+    "dmi_spread_min_long": 0.0,
+    "dmi_spread_min_short": 0.0,
+    "ema_trending_bars": 3,
+    "macd_hist_rising_bars": 0,
+    "rsi_direction_bars": 3,
+    "rsi_direction_min_move": 1.0,
     "macd_hist_positive_required_long": False,
-    "macd_hist_negative_required_short":False,
-    "bb_expand_required":     False,
-    "time_filter_enabled":    False,
-    "time_filter_start_utc":  6,
-    "time_filter_end_utc":    23,
+    "macd_hist_negative_required_short": False,
+    "bb_expand_required": False,
+    "time_filter_enabled": False,
+    "time_filter_start_utc": 6,
+    "time_filter_end_utc": 23,
 
-    # === BREAKEVEN STOP ===================================================
-    "be_stop_enabled":           True,
-    "be_stop_r_trigger":         2.0,   # updated: 1.5 → 2.0
-    "be_stop_no_progress_bars":  50,    # updated: 30 → 50
+    # BREAKEVEN STOP
+    "be_stop_enabled": True,
+    "be_stop_r_trigger": 2.0,
+    "be_stop_no_progress_bars": 50,
 
-    # ═══ SHORT FILTERS ════════════════════════════════════════════════════
-    "short_tier1_adx_hard_min": 30,    # updated: 28 → 30
-    "short_tier1_rsi_max": 54,
-    "short_tier1_rsi_min": 34,
-    "short_tier1_volume_min": 1.3,
-    "short_tier1_momentum_min": 0.05,
+    # SHORT FILTERS
+    "short_tier1_adx_hard_min": 25,
+    "short_tier1_rsi_max": 48,
+    "short_tier1_rsi_min": 32,
+    "short_tier1_volume_min": 1.2,
+    "short_tier1_momentum_min": 0.04,
     "short_tier1_macd_gate": True,
     "daily_trend_down_filter_enabled": True,
     "short_require_lower_highs_bars": 2,
     "short_require_lower_lows_bars": 2,
 
-    # ADX Scoring Bands
+    # ADX Scoring
     "adx_score_trend_forming": 15,
     "adx_score_good_trend": 20,
     "adx_score_strong_trend": 25,
@@ -729,13 +913,13 @@ MOMENTUM_PARAMS = {
 
     # Tier 2 Filters
     "tier2_adx_min": 18,
-    "tier2_volume_min": 0.8,
+    "tier2_volume_min": 0.5,
     "tier2_volume_min_ratio": 1.1,
     "tier2_momentum_min": 0.05,
     "tier2_macd_histogram_min": 0.001,
     "tier2_require_macd_histogram": True,
 
-    # MACD Settings
+    # MACD
     "macd_fast": 12,
     "macd_slow": 26,
     "macd_signal": 9,
@@ -744,40 +928,44 @@ MOMENTUM_PARAMS = {
     "macd_score_zero_cross": 4,
     "macd_score_histogram_value": 3,
 
-    # ADX Settings
+    # Add to MOMENTUM_PARAMS dict:
+    "ema200_filter_enabled": True,  # NEW: Block longs below EMA200
+    "bearish_regime_block": True,  # NEW: Block all longs in bear regimes
+    "short_only_bearish": True,  # NEW: Shorts only in bear regimes
+    "bearish_risk_multiplier": 0.25,  # NEW: Reduce risk in bear markets
+    "adx_bearish_min": 30,  # NEW: Require stronger ADX for bear entries
+
+    # ADX
     "adx_min": 18,
-    "adx_min_trend": 25,               # updated: 22 → 25
+    "adx_min_trend": 25,
     "adx_period": 14,
 
-    # RSI Settings
-    "rsi_entry_min": 40,               # updated: 42 → 40
+    # RSI
+    "rsi_entry_min": 40,
     "rsi_entry_max": 68,
     "rsi_period": 14,
 
-    # Volume Settings
+    # Volume
     "volume_min_ratio": 1.1,
     "volume_period": 20,
     "volume_ma_period": 20,
 
-    # Momentum & Other Indicators
+    # Momentum
     "momentum_min": 0.05,
     "kalman_min_strength": 0.0,
     "cci_period": 20,
     "cci_filter_enabled": False,
     "vix_max_threshold": 40,
 
-    # Risk Management
-    "risk_per_trade": 0.022,
+    # Legacy Risk
+    "risk_per_trade": 0.025,
     "risk_full_position": 0.025,
     "risk_reduced_position": 0.016,
     "risk_aggressive_position": 0.03,
-    "risk_tier1": 0.025,               # updated: 0.02 → 0.025
-    "risk_tier2": 0.03,                # updated: 0.025 → 0.03
-    "risk_tier2_exceptional": 0.035,   # updated: 0.03 → 0.035
 
-    # ═══ STOP LOSS & TRAILING ═════════════════════════════════════════
-    "stop_loss_atr_mult": 3.5,
-    "trailing_stop_atr_mult": 6.5,     # updated: 5.5 → 6.5
+    # STOP LOSS & TRAILING (legacy)
+    "stop_loss_atr_mult": 2.5,
+    "trailing_stop_atr_mult": 6.5,
     "atr_period": 14,
     "supertrend_atr_period": 10,
     "supertrend_multiplier": 3.0,
@@ -785,8 +973,21 @@ MOMENTUM_PARAMS = {
     "kalman_r_param": 0.8,
     "vix_atr_period": 14,
     "vix_rolling_period": 20,
+    "bb_width_percentile_lookback": 100,
 
-    # Profit Targets (legacy - disabled)
+    # Volatility-Breakout
+    "alpha_mode": "indicator",
+    "breakout_atr_percentile_lookback": 100,
+    "breakout_box_lookback": 20,
+    "breakout_consolidation_atr_pct_max": 30,
+    "breakout_min_coil_bars": 10,
+    "weight_breakout_strength": 30,
+    "weight_consolidation_quality": 20,
+    "weight_breakout_volume": 25,
+    "weight_breakout_ema_trend": 15,
+    "weight_breakout_adx": 10,
+
+    # Profit Targets
     "take_profit_r1": 3.0,
     "take_profit_r2": 5.0,
     "take_profit_r3": 8.0,
@@ -794,34 +995,24 @@ MOMENTUM_PARAMS = {
     "profit_target_r2": 9999.0,
     "profit_target_r3": 9999.0,
 
-    # ═══ TRAILING STOP ACTIVATION ═════════════════════════════════════
-    "trailing_activation_pct": 0.03,   # updated: 0.035 → 0.03
+    "trailing_activation_pct": 0.03,
     "trailing_distance_pct": 0.035,
-
-    # Backward compatibility
     "trailing_stop_pct": 0.1,
     "trailing_activation_r": 2.5,
     "initial_trailing_atr_mult": 5.5,
 
-    # ═══ EXIT MANAGEMENT ═══════════════════════════════════════════════
     "min_hold_bars_before_stop": 4,
     "emergency_stop_multiplier": 1.5,
-    "max_hold_bars": 500,              # updated: 300 → 500
+    "max_hold_bars": 500,
     "cooldown_after_profit_target_bars": 2,
 
-    # ═══ TIER CONTROL ═════════════════════════════════════════════════
-    "only_tier2_entries": False,
-    "backtest_only_tier2_active": True,
-    "backtest_only_tier2_values": [True, False],
-
-    # ═══ TRADE MANAGEMENT ═══════════════════════════════════════════════
-    "max_daily_trades": 15,
-    "min_bars_between_trades": 4,      # updated: 8 → 4
+    # ── TIER-AWARE COOLDOWN (bars since last trade before a NEW entry of this tier)
+    "min_bars_between_trades": 4,
+    "min_bars_between_trades_tier1": 4,
     "min_bars_between_trades_tier2": 3,
     "cooldown_tier2_enabled": True,
-    "cooldown_after_loss_bars": 12,    # updated: 24 → 12
+    "cooldown_after_loss_bars": 12,
 
-    # Exit Conditions
     "macd_bearish_cross_exit": True,
     "macd_bearish_cross_profit_min": 2.5,
     "ema_cross_exit": True,
@@ -834,18 +1025,58 @@ MOMENTUM_PARAMS = {
     "profit_min_time_exit": 0.5,
     "profit_min_ma_crossover": 0.5,
 
-    # Advanced Features
     "volatility_scaling": False,
     "trade_high_vol": False,
     "trade_ranging": False,
     "supertrend_exit_enabled": False,
 
-    # v9.4 FIX #3: Position size hard cap
     "max_position_units": 50,
+
+    "pullback_zone_lower_pct": -2.5,
+    "pullback_zone_upper_pct": 1.5,
+    "adx_slope_min": 0.1,
+
+    # TIER-AWARE DIRECTIONAL CONFLUENCE (fraction, 0.0-1.0)
+    "tier1_confluence_min": 0.65,
+    "tier2_confluence_min": 0.70,
+
+    # Kalman params
+    "trading_direction": "both",
+    "process_noise_1": 0.001,
+    "process_noise_2": 0.001,
+    "measurement_noise": 100.0,
+    "trend_lookback": 20,
+    "strength_smooth": 5,
+    "strength_smooth_param": 5,
+    "risk_reward": 1.5,
+    "lookback": 20,
+    "window": 10,
+    "ma_fast_period": 20,
+    "ma_slow_period": 50,
+    "long_kalman_strength_min": 30,
+    "long_rsi_min": 30,
+    "long_rsi_max": 70,
+    "long_pullback_percent": 0.1,
+    "long_rsi_exit_threshold": 80,
+    "short_kalman_strength_min": -30,
+    "short_rsi_min": 30,
+    "short_rsi_max": 70,
+    "short_rally_percent": 0.1,
+    "short_rsi_exit_threshold": 20,
+    "stop_loss_pct": 0.02,
+    "atr_multiplier": 2.0,
+    "max_position_pct": 0.15,
+    "min_hold_bars": 2,
+    "max_hold_seconds": 3600,
+    "min_adx": 15,
+    "min_volatility": 0.001,
+    "max_spread_pct": 0.001,
+    "cooldown_bars": 10,
 }
 
+
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 6: CONFIGURATION MANAGER
+# PART 6: CONFIGURATION MANAGER (unchanged)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class MomentumConfig:
@@ -859,7 +1090,6 @@ class MomentumConfig:
         try:
             config = MOMENTUM_PARAMS.copy()
             param_sources = {}
-
             for key in config.keys():
                 param_sources[key] = {'value': config[key], 'source': 'MOMENTUM_PARAMS', 'overridden': False}
 
@@ -890,7 +1120,8 @@ class MomentumConfig:
                             if key in config:
                                 old_value = config[key]
                                 config[key] = value
-                                param_sources[key] = {'value': value, 'source': 'Custom params (file)', 'overridden': True}
+                                param_sources[key] = {'value': value, 'source': 'Custom params (file)',
+                                                      'overridden': True}
                                 if old_value != value:
                                     custom_params_applied += 1
                 except Exception as e:
@@ -907,7 +1138,27 @@ class MomentumConfig:
                         if old_value != value:
                             runtime_overrides_applied += 1
 
-            logging.info(f"Total parameters: {len(config)} | Custom: {custom_params_applied} | Runtime: {runtime_overrides_applied}")
+            logging.info(
+                f"Total parameters: {len(config)} | Custom: {custom_params_applied} | Runtime: {runtime_overrides_applied}")
+
+            # Weight sum guardrails
+            weight_keys = ['weight_ema', 'weight_adx', 'weight_macd',
+                           'weight_rsi', 'weight_volume', 'weight_cci', 'weight_kalman']
+            weight_sum = sum(config.get(k, 0) for k in weight_keys)
+            assert weight_sum == 100, (
+                    f"Quality component weights must sum to 100, got {weight_sum}: "
+                    + ", ".join(f"{k}={config.get(k, 0)}" for k in weight_keys)
+            )
+
+            breakout_weight_keys = ['weight_breakout_strength', 'weight_consolidation_quality',
+                                    'weight_breakout_volume', 'weight_breakout_ema_trend',
+                                    'weight_breakout_adx']
+            breakout_weight_sum = sum(config.get(k, 0) for k in breakout_weight_keys)
+            assert breakout_weight_sum == 100, (
+                    f"Breakout component weights must sum to 100, got {breakout_weight_sum}: "
+                    + ", ".join(f"{k}={config.get(k, 0)}" for k in breakout_weight_keys)
+            )
+
             return config
 
         except Exception as e:
@@ -961,15 +1212,52 @@ class MomentumConfig:
     @classmethod
     def validate_config(cls, config):
         modified = False
-        if 'only_tier2_entries' in config:
-            if isinstance(config['only_tier2_entries'], str):
-                config['only_tier2_entries'] = config['only_tier2_entries'].lower() == 'true'
+        if 'only_tier1_entries' in config:
+            if isinstance(config['only_tier1_entries'], str):
+                config['only_tier1_entries'] = config['only_tier1_entries'].lower() == 'true'
                 modified = True
         return config, modified
 
+    @classmethod
+    def get_timeframe_aware_params(cls, timeframe: str) -> dict:
+        BARS_PER_DAY = {
+            '1M': 1440, '3M': 480, '5M': 288, '15M': 96,
+            '30M': 48, '1H': 24, '2H': 12, '4H': 6,
+            '6H': 4, '8H': 3, '12H': 2, '1D': 1,
+            '3D': 1 / 3, '1W': 1 / 7,
+        }
+        tf = timeframe.upper().replace('MIN', 'M').replace('HOUR', 'H').replace('DAY', 'D')
+        bpd = BARS_PER_DAY.get(tf)
+        if bpd is None:
+            logging.warning(
+                f"get_timeframe_aware_params: unknown timeframe '{timeframe}'. "
+                f"Returning empty dict — MOMENTUM_PARAMS defaults will be used as-is."
+            )
+            return {}
+
+        def bars(days: float) -> int:
+            return max(1, int(round(days * bpd)))
+
+        params = {
+            'daily_ema_period': bars(30),
+            'atr_compression_lookback': bars(14),
+            'trend_age_max_bars': bars(5),
+            'cooldown_after_loss_bars': max(1, bars(0.5)),
+            'consecutive_loss_cooldown_bars': max(1, bars(0.5)),
+            'min_bars_between_trades': max(1, bars(0.17)),
+            'be_stop_no_progress_bars': bars(2),
+            'max_hold_bars': bars(21),
+        }
+
+        logging.info(
+            f"⏱  TIMEFRAME PARAMS for '{timeframe}' (bpd={bpd}):\n"
+            + "\n".join(f"   {k}: {v}" for k, v in params.items())
+        )
+        return params
+
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 7: INDICATOR CALCULATOR
+# PART 7: INDICATOR CALCULATOR (unchanged)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class IndicatorCalculator:
@@ -980,7 +1268,7 @@ class IndicatorCalculator:
             df['EMA_Fast'] = talib.EMA(df['Close'], params['ema_fast_period'])
             df['EMA_Mid'] = talib.EMA(df['Close'], params['ema_mid_period'])
             df['EMA_Slow'] = talib.EMA(df['Close'], params['ema_slow_period'])
-            daily_ema_period = params.get('daily_ema_period', 4800)
+            daily_ema_period = params.get('daily_ema_period', 720)
             df['EMA_Daily_50'] = talib.EMA(df['Close'], daily_ema_period)
             df['Above_Daily_50'] = (df['Close'] > df['EMA_Daily_50']).astype(bool)
             df['EMA_200'] = talib.EMA(df['Close'], 200)
@@ -1008,6 +1296,39 @@ class IndicatorCalculator:
             df['DMM'] = talib.MINUS_DI(df['High'], df['Low'], df['Close'], params['adx_period'])
             df['Kalman_Strength'] = IndicatorCalculator._calculate_kalman_strength(df, params)
             df = IndicatorCalculator._detect_ranging_market(df, params)
+
+            # Regime inputs
+            bb_pct_lookback = params.get('bb_width_percentile_lookback', 100)
+            df['BB_Width_Percentile'] = (
+                df['BB_Width'].rolling(window=bb_pct_lookback, min_periods=20)
+                .apply(lambda s: s.rank(pct=True).iloc[-1] * 100, raw=False)
+            )
+            df['BB_Width_Percentile'] = df['BB_Width_Percentile'].fillna(50)
+
+            vix_rolling_period = params.get('vix_rolling_period', 20)
+            df['ATR_Pct'] = (df['ATR'] / df['Close'] * 100).replace([np.inf, -np.inf], np.nan)
+            df['ATR_Pct_MA'] = df['ATR_Pct'].rolling(window=vix_rolling_period).mean()
+            with np.errstate(divide='ignore', invalid='ignore'):
+                df['Vol_Regime_Ratio'] = np.where(
+                    df['ATR_Pct_MA'] > 0, df['ATR_Pct'] / df['ATR_Pct_MA'], 1.0)
+            df['Vol_Regime_Ratio'] = (pd.Series(df['Vol_Regime_Ratio'], index=df.index)
+                                      .replace([np.inf, -np.inf], np.nan).fillna(1.0).clip(0.1, 10.0))
+
+            # Breakout inputs
+            breakout_atr_lookback = params.get('breakout_atr_percentile_lookback', 100)
+            df['ATR_Percentile'] = (
+                df['ATR'].rolling(window=breakout_atr_lookback, min_periods=20)
+                .apply(lambda s: s.rank(pct=True).iloc[-1] * 100, raw=False)
+            )
+            df['ATR_Percentile'] = df['ATR_Percentile'].fillna(50)
+            breakout_box_lookback = params.get('breakout_box_lookback', 20)
+            df['Box_High'] = df['High'].rolling(window=breakout_box_lookback).max().shift(1)
+            df['Box_Low'] = df['Low'].rolling(window=breakout_box_lookback).min().shift(1)
+            consolidation_threshold = params.get('breakout_consolidation_atr_pct_max', 30)
+            is_coiled = df['ATR_Percentile'] < consolidation_threshold
+            coil_groups = (~is_coiled).cumsum()
+            df['Consolidation_Bars'] = is_coiled.groupby(coil_groups).cumsum()
+
             lookback = params.get('price_percentile_lookback', 20)
             df['High_20bar'] = df['High'].rolling(window=lookback).max()
             df['Low_20bar'] = df['Low'].rolling(window=lookback).min()
@@ -1019,22 +1340,18 @@ class IndicatorCalculator:
             df['Price_Percentile_20bar'] = df['Price_Percentile_20bar'].clip(0, 100).fillna(50)
             df['Price_Percentile_20bar_closed'] = df['Price_Percentile_20bar'].shift(1)
 
-            # v9.4: Pre-compute ATR compression indicator
             atr_lookback = params.get('atr_compression_lookback', 50)
             df['ATR_MA50'] = df['ATR'].rolling(window=atr_lookback).mean()
-            df['ATR_Compressed'] = (df['ATR'] < df['ATR_MA50'] * params.get('atr_compression_threshold', 0.70))
+            df['ATR_Compressed'] = (df['ATR'] < df['ATR_MA50'] * params.get('atr_compression_threshold', 0.25))
 
-            # v9.4: Pre-compute swing high/low for extended run filter
             run_lookback = params.get('extended_run_lookback', 20)
             df['Swing_Low_20'] = df['Low'].rolling(window=run_lookback).min()
             df['Swing_High_20'] = df['High'].rolling(window=run_lookback).max()
             df['Run_From_Low_Pct'] = ((df['Close'] - df['Swing_Low_20']) / df['Swing_Low_20'] * 100).fillna(0)
             df['Run_From_High_Pct'] = ((df['Swing_High_20'] - df['Close']) / df['Swing_High_20'] * 100).fillna(0)
 
-            # v9.4: Pre-compute trend age (bars since EMA fast crossed above/below slow)
             ema_bullish = (df['EMA_Fast'] > df['EMA_Slow']).astype(int)
             ema_bearish = (df['EMA_Fast'] < df['EMA_Slow']).astype(int)
-            # Count consecutive bars in current trend direction
             bullish_groups = ema_bullish.ne(ema_bullish.shift()).cumsum()
             bearish_groups = ema_bearish.ne(ema_bearish.shift()).cumsum()
             df['Trend_Age_Bullish'] = ema_bullish.groupby(bullish_groups).cumsum()
@@ -1052,9 +1369,11 @@ class IndicatorCalculator:
                 'UpperBand', 'MiddleBand', 'LowerBand', 'BB_Width', 'BB_Z',
                 'KC_Upper', 'KC_Mid', 'KC_Lower', 'KC_Width',
                 'Squeeze', 'ATR_MA30', 'EMA_Fast_diff', 'CHOP', 'Ranging',
-                'ATR_MA50', 'ATR_Compressed',  # v9.4
-                'Swing_Low_20', 'Swing_High_20', 'Run_From_Low_Pct', 'Run_From_High_Pct',  # v9.4
-                'Trend_Age_Bullish', 'Trend_Age_Bearish',  # v9.4
+                'ATR_MA50', 'ATR_Compressed',
+                'Swing_Low_20', 'Swing_High_20', 'Run_From_Low_Pct', 'Run_From_High_Pct',
+                'Trend_Age_Bullish', 'Trend_Age_Bearish',
+                'BB_Width_Percentile', 'Vol_Regime_Ratio',
+                'ATR_Percentile', 'Box_High', 'Box_Low', 'Consolidation_Bars',
             ]
             for col in indicators_to_export:
                 if col in df.columns:
@@ -1098,7 +1417,7 @@ class IndicatorCalculator:
         chop_period = params.get('chop_period', 14)
         df['CHOP'] = IndicatorCalculator._choppiness_index(df['High'], df['Low'], df['Close'], period=chop_period)
         chop_threshold = params.get('chop_threshold', 60)
-        min_checks = params.get('ranging_min_checks', 5)
+        min_checks = params.get('ranging_min_checks', 4)
         c1 = (abs(df['Close'] - df['EMA_Fast']) / df['EMA_Fast'] <= 0.005).fillna(False)
         c2 = (df['BB_Z'] < -0.5).fillna(False)
         c3 = df['Squeeze'].fillna(False)
@@ -1127,7 +1446,7 @@ class IndicatorCalculator:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 8: CORE MOMENTUM LOGIC — v9.4 WITH ALL FIXES
+# PART 8: CORE MOMENTUM LOGIC — v10.0.3 with fixed partial exits & trade IDs
 # ═══════════════════════════════════════════════════════════════════════════
 
 class MomentumLogic:
@@ -1151,14 +1470,24 @@ class MomentumLogic:
         self.ai_data_available = False
 
         required_params = {
-            'trailing_activation_pct': 0.015, 'trailing_distance_pct': 0.01,
-            'trade_direction': 'long', 'only_tier2_entries': False,
-            'quality_tier2_min': 75, 'quality_tier1_min': 50,
-            'short_quality_tier2_min': 75, 'short_quality_tier1_min': 50,
-            'short_fixed_threshold': 75, 'fixed_threshold': 75,
-            'tier1_adx_hard_min': 18, 'short_tier1_adx_hard_min': 18,
-            'tier1_volume_min': 0.8, 'stop_loss_atr_mult': 1.5,
-            'max_position_units': 50,
+            'trailing_activation_pct': 0.03, 'trailing_distance_pct': 0.035,
+            'trade_direction': 'both',
+            'quality_tier1_min_long': 75, 'quality_tier2_min_long': 65,
+            'quality_tier1_min_short': 75, 'quality_tier2_min_short': 65,
+            'quality_tier1_min': 75, 'quality_tier2_min': 65,
+            'short_quality_tier1_min': 75, 'short_quality_tier2_min': 65,
+            'tier1_adx_hard_min': 25, 'short_tier1_adx_hard_min': 30,
+            'tier1_volume_min': 0.8, 'stop_loss_atr_mult': 2.5,
+            'max_position_units': 50, 'ml_weight': 0.20,
+            'risk_tier1': 0.025, 'risk_tier2': 0.015,
+            'tier1_size_multiplier': 1.0, 'tier2_size_multiplier': 0.70,
+            'tier1_stop_multiplier': 2.0, 'tier2_stop_multiplier': 2.5,
+            'exit_threshold_tier1': 60, 'exit_threshold_tier2': 50,
+            'min_bars_between_trades': 4,
+            'min_bars_between_trades_tier1': 4, 'min_bars_between_trades_tier2': 3,
+            'cooldown_tier2_enabled': True,
+            'tier1_confluence_min': 0.65, 'tier2_confluence_min': 0.70,
+            'only_tier1_entries': False,
         }
 
         for param_name, default_value in required_params.items():
@@ -1166,7 +1495,6 @@ class MomentumLogic:
                 setattr(self, param_name, default_value)
 
         self.risk_controller = ProfessionalRiskController()
-        # v9.4 FIX #3: sync hard cap from config
         self.risk_controller.max_position_units = getattr(self, 'max_position_units', 50)
         self.regime_detector = MacroRegimeDetector()
         self.exit_manager = ProfessionalExitManager(self.config)
@@ -1186,6 +1514,7 @@ class MomentumLogic:
         self.tier1_trades = 0
         self.tier2_trades = 0
         self._last_quality_score = 0
+        self._last_confluence_score = 0.0
         self._last_entry_tier = None
         self.near_miss_trades = []
         self._previous_fuzzy_lower = None
@@ -1215,23 +1544,32 @@ class MomentumLogic:
         }
         self._suggested_action = None
 
-        # v9.4 FIX #6: Track consecutive losses for extended cooldown
         self._consecutive_loss_count = 0
         self._last_loss_bar = -999
+
+        self._last_ml_prediction = 0
+        self._last_ml_confidence = 0.0
+        self._last_forecast = None
+
+        # NEW: Trade ID tracking
+        self._current_trade_id = 0
+        self._active_trade_ids = set()
 
         self._log_parameter_source()
 
     def _log_parameter_source(self):
         logging.info("=" * 70)
-        logging.info("📊 PARAMETER SOURCE v9.4 (SINGLE SOURCE OF TRUTH)")
+        logging.info("📊 PARAMETER SOURCE v10.0.3 (TWO-TIER SYSTEM + FIXED PARTIAL EXITS)")
         logging.info("=" * 70)
         logging.info(f"   Direction: {self.trade_direction.upper()}")
-        logging.info(f"   ATR Compression Filter: {getattr(self, 'atr_compression_enabled', True)}")
-        logging.info(f"   Extended Run Filter: max {getattr(self, 'extended_run_max_pct_long', 5.0)}%")
-        logging.info(f"   Max Position Units: {getattr(self, 'max_position_units', 50)}")
-        logging.info(f"   Short ADX Min: {getattr(self, 'short_tier1_adx_hard_min', 28)}")
-        logging.info(f"   Short Volume Min: {getattr(self, 'short_tier1_volume_min', 1.3)}")
-        logging.info(f"   Consecutive Loss Cooldown: {getattr(self, 'consecutive_loss_cooldown_bars', 48)} bars")
+        logging.info(f"   Tier 1 Pass (LONG): {getattr(self, 'quality_tier1_min_long', 75)}")
+        logging.info(f"   Tier 2 Pass (LONG): {getattr(self, 'quality_tier2_min_long', 65)}")
+        logging.info(f"   Tier 1 Pass (SHORT): {getattr(self, 'quality_tier1_min_short', 75)}")
+        logging.info(f"   Tier 2 Pass (SHORT): {getattr(self, 'quality_tier2_min_short', 65)}")
+        logging.info(f"   Tier 1 Risk: {getattr(self, 'risk_tier1', 0.025):.1%}")
+        logging.info(f"   Tier 2 Risk: {getattr(self, 'risk_tier2', 0.015):.1%}")
+        logging.info(f"   ML Weight: {getattr(self, 'ml_weight', 0.20):.0%}")
+        logging.info(f"   Only Tier 1 Entries: {getattr(self, 'only_tier1_entries', False)}")
         logging.info("=" * 70)
 
     def _log(self, message, color="white"):
@@ -1250,39 +1588,163 @@ class MomentumLogic:
         return True if a > b else (b > 0 and abs(a - b) / b <= tolerance)
 
     def _get_position_multiplier(self, quality_score):
-        if quality_score >= 90: return getattr(self, 'position_100_90', 1.5)
-        elif quality_score >= 80: return getattr(self, 'position_89_80', 1.3)
-        elif quality_score >= 70: return getattr(self, 'position_79_70', 1.1)
-        elif quality_score >= 60: return getattr(self, 'position_69_60', 0.9)
-        elif quality_score >= 50: return getattr(self, 'position_59_50', 0.6)
-        else: return getattr(self, 'position_below_50', 0.0)
+        # Legacy - not used for tier-based sizing
+        if quality_score >= 90:
+            return 1.5
+        elif quality_score >= 80:
+            return 1.3
+        elif quality_score >= 70:
+            return 1.1
+        elif quality_score >= 60:
+            return 0.9
+        elif quality_score >= 50:
+            return 0.6
+        else:
+            return 0.0
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # v9.4 FIX #1: ATR COMPRESSION FILTER
-    # ═══════════════════════════════════════════════════════════════════════
+    # ─── LAYER 1: DIRECTION GATE ──────────────────────────────────────────
+    def _confirm_direction(self, data, direction_hint='long') -> Tuple[bool, str]:
+        params = getattr(self, 'params', {})
+        ema_fast = data.get('EMA_Fast', 0)
+        ema_mid = data.get('EMA_Mid', 0)
+        ema_slow = data.get('EMA_Slow', 0)
+        macd = data.get('MACD', 0)
+        macd_signal = data.get('MACD_Signal', 0)
+        adx = data.get('ADX', 0)
+        rsi = data.get('RSI', 50)
 
+        if direction_hint == 'long':
+            ema_ok = ema_fast > ema_slow
+            macd_ok = macd > macd_signal
+            adx_ok = adx >= getattr(self, 'adx_min_trend', 25)
+            daily_ok = self._daily_trend_is_up(data)
+            if not ema_ok:
+                return False, "ema_not_bullish"
+            if not macd_ok:
+                return False, "macd_not_bullish"
+            if not adx_ok:
+                return False, f"adx_too_weak_{adx:.1f}"
+            if not daily_ok:
+                return False, "daily_trend_not_up"
+            return True, "long_direction_confirmed"
+        else:
+            ema_ok = ema_fast < ema_slow
+            macd_ok = macd < macd_signal
+            adx_ok = adx >= getattr(self, 'adx_min_trend', 25)
+            daily_ok = self._daily_trend_is_down(data)
+            if not ema_ok:
+                return False, "ema_not_bearish"
+            if not macd_ok:
+                return False, "macd_not_bearish"
+            if not adx_ok:
+                return False, f"adx_too_weak_{adx:.1f}"
+            if not daily_ok:
+                return False, "daily_trend_not_down"
+            return True, "short_direction_confirmed"
+
+    # ─── LAYER 2: POWER SCORE ─────────────────────────────────────────────
+    def _calculate_power_score(self, data, direction='long') -> Tuple[int, dict, str]:
+        if direction == 'long':
+            return self._calculate_quality_score(data)
+        else:
+            return self._calculate_quality_score_short(data)
+
+    # ─── LAYER 3: ML ADJUSTMENT ────────────────────────────────────────────
+    def _apply_ml_adjustment(self, power_score: int, ml_prediction: int,
+                             ml_confidence: float, direction: str) -> Tuple[int, float, str]:
+        if not self.trading_app or not getattr(self.trading_app, 'ml_enabled', False):
+            return power_score, 0.0, "ML_DISABLED"
+        if ml_prediction == 0:
+            return power_score, 0.0, "ML_NEUTRAL"
+
+        ml_weight = getattr(self, 'ml_weight', 0.20)
+        ml_conf_norm = ml_confidence / 100.0 if ml_confidence > 1.0 else ml_confidence
+
+        if direction == 'long':
+            agrees = (ml_prediction == 1)
+        else:
+            agrees = (ml_prediction == -1)
+
+        if agrees:
+            adjustment = ml_conf_norm * ml_weight * 100
+            adjusted = power_score + adjustment
+            adj_type = "BOOST"
+        else:
+            adjustment = ml_conf_norm * ml_weight * 100
+            adjusted = power_score - adjustment
+            adj_type = "PENALTY"
+
+        adjusted = max(0, min(100, int(adjusted)))
+        return adjusted, adjustment, adj_type
+
+    # ─── TIER DETERMINATION ────────────────────────────────────────────────
+    def _determine_tier(self, power_score: int, direction: str) -> int:
+        if direction == 'long':
+            tier1 = getattr(self, 'quality_tier1_min_long', 75)
+            tier2 = getattr(self, 'quality_tier2_min_long', 65)
+        else:
+            tier1 = getattr(self, 'quality_tier1_min_short', 75)
+            tier2 = getattr(self, 'quality_tier2_min_short', 65)
+
+        if power_score >= tier1:
+            return 1
+        elif power_score >= tier2:
+            return 2
+        return 0
+
+    def _get_tier_config(self, tier: int) -> dict:
+        if tier == 1:
+            return {
+                'risk_pct': getattr(self, 'risk_tier1', 0.025),
+                'size_mult': getattr(self, 'tier1_size_multiplier', 1.0),
+                'stop_mult': getattr(self, 'tier1_stop_multiplier', 2.0),
+                'exit_threshold': getattr(self, 'exit_threshold_tier1', 60),
+                'trailing_activation': getattr(self, 'trailing_activation_tier1', 0.03),
+                'trailing_distance': getattr(self, 'trailing_distance_tier1', 0.025),
+                'name': 'Tier 1 (Low Risk)',
+                'color': 'green'
+            }
+        elif tier == 2:
+            return {
+                'risk_pct': getattr(self, 'risk_tier2', 0.015),
+                'size_mult': getattr(self, 'tier2_size_multiplier', 0.70),
+                'stop_mult': getattr(self, 'tier2_stop_multiplier', 2.5),
+                'exit_threshold': getattr(self, 'exit_threshold_tier2', 50),
+                'trailing_activation': getattr(self, 'trailing_activation_tier2', 0.04),
+                'trailing_distance': getattr(self, 'trailing_distance_tier2', 0.035),
+                'name': 'Tier 2 (Medium Risk)',
+                'color': 'yellow'
+            }
+        return None
+
+    # ─── ATR COMPRESSION ───────────────────────────────────────────────────
     def _is_atr_compressed(self, data):
-        """Block ALL entries when ATR is compressed (chop/range)"""
         if not getattr(self, 'atr_compression_enabled', True):
             return False
-
         df = getattr(self, '_current_df', None)
         if df is None or len(df) < 50:
             return False
-
         try:
             atr_now = data.get('ATR', 0)
             if 'ATR_MA50' in df.columns:
                 atr_avg = float(df['ATR_MA50'].iloc[-1])
             else:
                 atr_avg = float(df['ATR'].iloc[-50:].mean())
-
             if atr_avg <= 0:
                 return False
-
-            threshold = getattr(self, 'atr_compression_threshold', 0.55)  # default updated in v9.4.1
+            threshold = getattr(self, 'atr_compression_threshold', 0.25)
             is_compressed = atr_now < (atr_avg * threshold)
-
+            if is_compressed and self._current_df is not None:
+                try:
+                    _row = self._current_df.iloc[-1]
+                    _ef = float(_row.get('EMA_Fast', 0))
+                    _em = float(_row.get('EMA_Mid', 0))
+                    _es = float(_row.get('EMA_Slow', 0))
+                    _ad = float(_row.get('ADX', 0))
+                    if _ef > _em > _es and _ad >= 25:
+                        return False
+                except Exception:
+                    pass
             if is_compressed:
                 ratio = atr_now / atr_avg if atr_avg > 0 else 0
                 self._log(f"🔴 ATR COMPRESSED: {atr_now:.4f} < {atr_avg:.4f} × {threshold} "
@@ -1291,16 +1753,11 @@ class MomentumLogic:
         except Exception:
             return False
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # v9.4 FIX #2: EXTENDED RUN FILTER
-    # ═══════════════════════════════════════════════════════════════════════
-
+    # ─── EXTENDED RUN ──────────────────────────────────────────────────────
     def _is_extended_run_long(self, data):
-        """Block longs when price has run >5% from recent swing low"""
         df = getattr(self, '_current_df', None)
         if df is None or len(df) < 20:
             return False
-
         try:
             close = data.get('Close', 0)
             if 'Swing_Low_20' in df.columns:
@@ -1308,13 +1765,10 @@ class MomentumLogic:
             else:
                 lookback = getattr(self, 'extended_run_lookback', 20)
                 swing_low = float(df['Low'].iloc[-lookback:].min())
-
             if swing_low <= 0:
                 return False
-
             run_pct = (close - swing_low) / swing_low * 100
-            max_run = getattr(self, 'extended_run_max_pct_long', 8.0)  # default updated in v9.4.1
-
+            max_run = getattr(self, 'extended_run_max_pct_long', 12.0)
             if run_pct > max_run:
                 self._log(f"🔴 EXTENDED RUN (LONG): Price ran {run_pct:.1f}% from swing low "
                           f"${swing_low:.2f} → ${close:.2f} (max={max_run}%)", "red")
@@ -1324,11 +1778,9 @@ class MomentumLogic:
             return False
 
     def _is_extended_run_short(self, data):
-        """Block shorts when price has dropped >5% from recent swing high"""
         df = getattr(self, '_current_df', None)
         if df is None or len(df) < 20:
             return False
-
         try:
             close = data.get('Close', 0)
             if 'Swing_High_20' in df.columns:
@@ -1336,13 +1788,10 @@ class MomentumLogic:
             else:
                 lookback = getattr(self, 'extended_run_lookback', 20)
                 swing_high = float(df['High'].iloc[-lookback:].max())
-
             if swing_high <= 0:
                 return False
-
             run_pct = (swing_high - close) / swing_high * 100
-            max_run = getattr(self, 'extended_run_max_pct_short', 8.0)  # default updated in v9.4.1
-
+            max_run = getattr(self, 'extended_run_max_pct_short', 12.0)
             if run_pct > max_run:
                 self._log(f"🔴 EXTENDED RUN (SHORT): Price dropped {run_pct:.1f}% from swing high "
                           f"${swing_high:.2f} → ${close:.2f} (max={max_run}%)", "red")
@@ -1351,196 +1800,91 @@ class MomentumLogic:
         except Exception:
             return False
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # v9.4 FIX #5: TREND AGE PENALTY FOR QUALITY SCORE
-    # ═══════════════════════════════════════════════════════════════════════
-
+    # ─── TREND AGE PENALTY ────────────────────────────────────────────────
     def _get_trend_age_penalty(self, data, direction='long'):
-        """Return quality score penalty if trend has been running too long"""
         if not getattr(self, 'trend_age_penalty_enabled', True):
             return 0
-
         df = getattr(self, '_current_df', None)
         if df is None or len(df) < 5:
             return 0
-
         try:
             max_bars = getattr(self, 'trend_age_max_bars', 20)
             penalty_pts = getattr(self, 'trend_age_penalty_pts', 10)
-
             if direction == 'long' and 'Trend_Age_Bullish' in df.columns:
                 age = int(df['Trend_Age_Bullish'].iloc[-1])
             elif direction == 'short' and 'Trend_Age_Bearish' in df.columns:
                 age = int(df['Trend_Age_Bearish'].iloc[-1])
             else:
-                # Fallback: count consecutive bars where EMA_Fast > EMA_Slow (long) or vice versa
-                ema_f = df['EMA_Fast'].iloc[-max_bars*2:] if len(df) > max_bars*2 else df['EMA_Fast']
-                ema_s = df['EMA_Slow'].iloc[-max_bars*2:] if len(df) > max_bars*2 else df['EMA_Slow']
+                ema_f = df['EMA_Fast'].iloc[-max_bars * 2:] if len(df) > max_bars * 2 else df['EMA_Fast']
+                ema_s = df['EMA_Slow'].iloc[-max_bars * 2:] if len(df) > max_bars * 2 else df['EMA_Slow']
                 if direction == 'long':
                     aligned = (ema_f > ema_s).astype(int)
                 else:
                     aligned = (ema_f < ema_s).astype(int)
-                # Count consecutive True from the end
                 age = 0
                 for v in reversed(aligned.values):
                     if v == 1:
                         age += 1
                     else:
                         break
-
             if age >= max_bars:
                 return penalty_pts
             return 0
         except Exception:
             return 0
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # v9.4 FIX #6: CONSECUTIVE LOSS COOLDOWN
-    # ═══════════════════════════════════════════════════════════════════════
-
+    # ─── CONSECUTIVE LOSS COOLDOWN ────────────────────────────────────────
     def _is_consecutive_loss_cooldown_active(self):
-        """Check if we should skip entries due to consecutive losses"""
         if not getattr(self, 'consecutive_loss_cooldown_enabled', True):
             return False
-
         threshold = getattr(self, 'consecutive_loss_threshold', 3)
-        cooldown_bars = getattr(self, 'consecutive_loss_cooldown_bars', 12)  # default updated in v9.4.1
-
+        cooldown_bars = getattr(self, 'consecutive_loss_cooldown_bars', 12)
         if self._consecutive_loss_count >= threshold:
             bars_since_loss = self.bar_count - self._last_loss_bar
             if bars_since_loss < cooldown_bars:
                 remaining = cooldown_bars - bars_since_loss
-                # BUG FIX v9.4.1: was hard-coded to 15-min bars; use actual bar interval
                 _bih = getattr(self, '_bar_interval_hours', 1.0)
                 self._log(f"🔴 CONSECUTIVE LOSS COOLDOWN: {self._consecutive_loss_count} losses, "
                           f"{remaining} bars remaining ({remaining * _bih:.1f}h)", "red")
                 return True
             else:
-                # Cooldown expired, reset
                 self._consecutive_loss_count = 0
         return False
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # v9.4 FIX #4: STRICTER SHORT PRICE STRUCTURE CHECK
-    # ═══════════════════════════════════════════════════════════════════════
-
+    # ─── SHORT PRICE STRUCTURE ────────────────────────────────────────────
     def _has_bearish_price_structure(self, data):
-        """Check for required lower highs AND lower lows for short entries"""
         df = getattr(self, '_current_df', None)
         if df is None or len(df) < 10:
-            return True  # Allow if no data
-
+            return True
         try:
-            required_lh = getattr(self, 'short_require_lower_highs_bars', 2)  # default updated in v9.4.1
+            required_lh = getattr(self, 'short_require_lower_highs_bars', 2)
             required_ll = getattr(self, 'short_require_lower_lows_bars', 2)
+            recent_highs = df['High'].iloc[-required_lh - 1:].values
+            recent_lows = df['Low'].iloc[-required_ll - 1:].values
 
-            recent_highs = df['High'].iloc[-required_lh-1:].values
-            recent_lows = df['Low'].iloc[-required_ll-1:].values
-
-            # Check lower highs
             lower_highs = True
             for i in range(1, len(recent_highs)):
-                if recent_highs[i] >= recent_highs[i-1]:
+                if recent_highs[i] >= recent_highs[i - 1]:
                     lower_highs = False
                     break
 
-            # Check lower lows
             lower_lows = True
             for i in range(1, len(recent_lows)):
-                if recent_lows[i] >= recent_lows[i-1]:
+                if recent_lows[i] >= recent_lows[i - 1]:
                     lower_lows = False
                     break
 
             if not lower_highs:
                 self._log(f"🔴 SHORT BLOCKED: No {required_lh} consecutive lower highs", "orange")
                 return False
-
             if not lower_lows:
                 self._log(f"🔴 SHORT BLOCKED: No {required_ll} consecutive lower lows", "orange")
                 return False
-
             return True
         except Exception:
             return True
 
-    def _momentum_is_sustainable(self, data):
-        df = getattr(self, '_current_df', None)
-        if df is None or len(df) < 15:
-            return True
-        try:
-            recent_closes = df['Close'].iloc[-6:-1].values
-            recent_highs = df['High'].iloc[-6:-1].values
-            recent_lows = df['Low'].iloc[-6:-1].values
-            recent_volumes = df['Volume'].iloc[-6:-1].values if 'Volume' in df.columns else None
-            if len(recent_closes) < 3:
-                return True
-            score = 0
-            if len(recent_highs) >= 3 and len(recent_lows) >= 3:
-                higher_highs = all(recent_highs[i] > recent_highs[i - 1] for i in range(1, len(recent_highs)))
-                higher_lows = all(recent_lows[i] > recent_lows[i - 1] for i in range(1, len(recent_lows)))
-                if higher_highs and higher_lows: score += 3
-                elif higher_highs: score += 2
-                elif higher_lows: score += 1
-            if recent_volumes is not None and len(recent_volumes) >= 3:
-                avg_volume = df['Volume'].iloc[-21:-1].mean() if 'Volume' in df.columns and len(df) >= 20 else recent_volumes.mean()
-                if avg_volume > 0:
-                    latest_volume_ratio = recent_volumes[-1] / avg_volume
-                    if latest_volume_ratio > 1.8: score += 3
-                    elif latest_volume_ratio > 1.4: score += 2
-                    elif latest_volume_ratio > 1.1: score += 1
-            if len(recent_closes) >= 3:
-                pct_changes = [(recent_closes[i] - recent_closes[i-1]) / recent_closes[i-1] * 100 for i in range(1, len(recent_closes))]
-                latest_pct = pct_changes[-1] if pct_changes else 0
-                if latest_pct > 1.5: score += 3
-                elif latest_pct > 0.8: score += 2
-                elif latest_pct > 0.3: score += 1
-            adx = data.get('ADX', 0)
-            if adx >= 30: score += 2
-            elif adx >= 25: score += 1
-            elif adx < 20: score -= 1
-            return score >= 3
-        except Exception:
-            return True
-
-    def _momentum_is_sustainable_down(self, data):
-        df = getattr(self, '_current_df', None)
-        if df is None or len(df) < 15:
-            return True
-        try:
-            recent_closes = df['Close'].iloc[-6:-1].values
-            recent_highs = df['High'].iloc[-6:-1].values
-            recent_lows = df['Low'].iloc[-6:-1].values
-            recent_volumes = df['Volume'].iloc[-6:-1].values if 'Volume' in df.columns else None
-            if len(recent_closes) < 3:
-                return True
-            score = 0
-            if len(recent_highs) >= 3 and len(recent_lows) >= 3:
-                lower_highs = all(recent_highs[i] < recent_highs[i-1] for i in range(1, len(recent_highs)))
-                lower_lows = all(recent_lows[i] < recent_lows[i-1] for i in range(1, len(recent_lows)))
-                if lower_highs and lower_lows: score += 3
-                elif lower_highs: score += 2
-                elif lower_lows: score += 1
-            if recent_volumes is not None and len(recent_volumes) >= 3:
-                avg_volume = df['Volume'].iloc[-21:-1].mean() if 'Volume' in df.columns and len(df) >= 20 else recent_volumes.mean()
-                if avg_volume > 0:
-                    latest_volume_ratio = recent_volumes[-1] / avg_volume
-                    if latest_volume_ratio > 1.8: score += 3
-                    elif latest_volume_ratio > 1.4: score += 2
-                    elif latest_volume_ratio > 1.1: score += 1
-            if len(recent_closes) >= 3:
-                pct_changes = [(recent_closes[i] - recent_closes[i-1]) / recent_closes[i-1] * 100 for i in range(1, len(recent_closes))]
-                latest_pct = pct_changes[-1] if pct_changes else 0
-                if latest_pct < -1.5: score += 3
-                elif latest_pct < -0.8: score += 2
-                elif latest_pct < -0.3: score += 1
-            adx = data.get('ADX', 0)
-            if adx >= 30: score += 2
-            elif adx >= 25: score += 1
-            elif adx < 20: score -= 1
-            return score >= 3
-        except Exception:
-            return True
-
+    # ─── DAILY TREND ──────────────────────────────────────────────────────
     def _daily_trend_is_up(self, data):
         if not getattr(self, 'daily_trend_filter_enabled', True):
             return True
@@ -1553,7 +1897,18 @@ class MomentumLogic:
                 return True
         if above_daily is None or (isinstance(above_daily, float) and np.isnan(above_daily)):
             return True
-        return bool(above_daily)
+        if bool(above_daily):
+            return True
+        ema_fast = data.get('EMA_Fast', 0)
+        ema_mid = data.get('EMA_Mid', 0)
+        ema_slow = data.get('EMA_Slow', 0)
+        if ema_fast > ema_mid > ema_slow:
+            return True
+        adx = data.get('ADX', 0)
+        adx_min_ov = getattr(self, 'daily_trend_adx_override', 20)
+        if ema_fast > ema_slow and adx >= adx_min_ov:
+            return True
+        return False
 
     def _daily_trend_is_down(self, data):
         if not getattr(self, 'daily_trend_down_filter_enabled', True):
@@ -1569,24 +1924,62 @@ class MomentumLogic:
             return True
         return not bool(above_daily)
 
+    def _price_above_ema200(self, data):
+        """Check if price is above EMA200 - critical trend filter"""
+        df = getattr(self, '_current_df', None)
+        if df is None:
+            return True  # Conservative: allow if unknown
+
+        try:
+            # Get EMA200 from current data
+            ema200 = data.get('EMA_200', None)
+            if ema200 is None and 'EMA_200' in df.columns and len(df) > 0:
+                ema200 = float(df['EMA_200'].iloc[-1])
+
+            if ema200 is None or np.isnan(ema200) or ema200 == 0:
+                return True  # Conservative: allow if data missing
+
+            close = data.get('Close', 0)
+            above = close > ema200
+
+            if not above:
+                self._log(f"🔴 PRICE BELOW EMA200: ${close:.2f} < ${ema200:.2f} — BLOCKING LONG", "red")
+
+            return above
+        except Exception:
+            return True  # Conservative: allow if error
+
+    # ─── MACD SCORING ──────────────────────────────────────────────────────
     def _score_macd_momentum(self, data):
         macd = data.get('MACD', 0) or 0
         signal = data.get('MACD_Signal', 0) or 0
         histogram = data.get('MACD_Histogram', 0) or 0
         hist_rising = data.get('MACD_Histogram_Rising', False)
-        score = 0; parts = []
-        pts_line = getattr(self, 'macd_score_line_vs_signal', 8)
-        if macd > signal: score += pts_line; parts.append(f"L>S+{pts_line}")
+        score = 0
+        parts = []
+        pts_line = getattr(self, 'macd_score_line_vs_signal', 7)
+        if macd > signal:
+            score += pts_line
+            parts.append(f"L>S+{pts_line}")
         elif signal != 0 and abs(macd - signal) / abs(signal) < 0.01:
-            p = round(pts_line * 0.5); score += p; parts.append(f"L~S+{p}")
-        else: parts.append("L<S+0")
-        pts_dir = getattr(self, 'macd_score_histogram_direction', 8)
-        if hist_rising: score += pts_dir; parts.append(f"H↑+{pts_dir}")
-        else: parts.append("H↓+0")
-        pts_zero = getattr(self, 'macd_score_zero_cross', 5)
-        if macd > 0: score += pts_zero; parts.append(f"Z>0+{pts_zero}")
-        else: parts.append("Z≤0+0")
-        pts_val = getattr(self, 'macd_score_histogram_value', 4)
+            p = round(pts_line * 0.5)
+            score += p
+            parts.append(f"L~S+{p}")
+        else:
+            parts.append("L<S+0")
+        pts_dir = getattr(self, 'macd_score_histogram_direction', 7)
+        if hist_rising:
+            score += pts_dir
+            parts.append(f"H↑+{pts_dir}")
+        else:
+            parts.append("H↓+0")
+        pts_zero = getattr(self, 'macd_score_zero_cross', 4)
+        if macd > 0:
+            score += pts_zero
+            parts.append(f"Z>0+{pts_zero}")
+        else:
+            parts.append("Z≤0+0")
+        pts_val = getattr(self, 'macd_score_histogram_value', 3)
         close_price = data.get('Close', 0) if isinstance(data, dict) else 0
         hist_prev = data.get('MACD_Histogram_prev', None) if isinstance(data, dict) else None
         hist_pct = abs(histogram) / close_price * 100 if close_price > 0 else 0
@@ -1594,16 +1987,26 @@ class MomentumLogic:
         hist_small = hist_pct < 0.25
         hist_large = hist_pct > 0.70
         if fresh_cross:
-            bonus = pts_val + 6; score += bonus; parts.append(f"H_FRESH+{bonus}")
+            bonus = pts_val + 6
+            score += bonus
+            parts.append(f"H_FRESH+{bonus}")
         elif histogram > 0 and hist_small:
-            score += pts_val; parts.append(f"H_SMALL+{pts_val}")
+            score += pts_val
+            parts.append(f"H_SMALL+{pts_val}")
         elif histogram > 0 and hist_large:
-            penalty = max(0, pts_val - 6); score += penalty; parts.append(f"H_EXHAUST+{penalty}")
+            penalty = max(0, pts_val - 6)
+            score += penalty
+            parts.append(f"H_EXHAUST+{penalty}")
         elif histogram > 0:
-            p = round(pts_val * 0.6); score += p; parts.append(f"H>0+{p}")
+            p = round(pts_val * 0.6)
+            score += p
+            parts.append(f"H>0+{p}")
         elif histogram > -0.001:
-            p = round(pts_val * 0.3); score += p; parts.append(f"H~0+{p}")
-        else: parts.append("H<0+0")
+            p = round(pts_val * 0.3)
+            score += p
+            parts.append(f"H~0+{p}")
+        else:
+            parts.append("H<0+0")
         return score, ",".join(parts)
 
     def _score_macd_momentum_short(self, data):
@@ -1611,19 +2014,31 @@ class MomentumLogic:
         signal = data.get('MACD_Signal', 0) or 0
         histogram = data.get('MACD_Histogram', 0) or 0
         hist_falling = not data.get('MACD_Histogram_Rising', False)
-        score = 0; parts = []
-        pts_line = getattr(self, 'macd_score_line_vs_signal', 8)
-        if macd < signal: score += pts_line; parts.append(f"L<S+{pts_line}")
+        score = 0
+        parts = []
+        pts_line = getattr(self, 'macd_score_line_vs_signal', 7)
+        if macd < signal:
+            score += pts_line
+            parts.append(f"L<S+{pts_line}")
         elif signal != 0 and abs(macd - signal) / abs(signal) < 0.01:
-            p = round(pts_line * 0.5); score += p; parts.append(f"L~S+{p}")
-        else: parts.append("L>S+0")
-        pts_dir = getattr(self, 'macd_score_histogram_direction', 8)
-        if hist_falling: score += pts_dir; parts.append(f"H↓+{pts_dir}")
-        else: parts.append("H↑+0")
-        pts_zero = getattr(self, 'macd_score_zero_cross', 5)
-        if macd < 0: score += pts_zero; parts.append(f"Z<0+{pts_zero}")
-        else: parts.append("Z≥0+0")
-        pts_val = getattr(self, 'macd_score_histogram_value', 4)
+            p = round(pts_line * 0.5)
+            score += p
+            parts.append(f"L~S+{p}")
+        else:
+            parts.append("L>S+0")
+        pts_dir = getattr(self, 'macd_score_histogram_direction', 7)
+        if hist_falling:
+            score += pts_dir
+            parts.append(f"H↓+{pts_dir}")
+        else:
+            parts.append("H↑+0")
+        pts_zero = getattr(self, 'macd_score_zero_cross', 4)
+        if macd < 0:
+            score += pts_zero
+            parts.append(f"Z<0+{pts_zero}")
+        else:
+            parts.append("Z≥0+0")
+        pts_val = getattr(self, 'macd_score_histogram_value', 3)
         close_price_s = data.get('Close', 0) if isinstance(data, dict) else 0
         hist_prev_s = data.get('MACD_Histogram_prev', None) if isinstance(data, dict) else None
         hist_pct_s = abs(histogram) / close_price_s * 100 if close_price_s > 0 else 0
@@ -1631,143 +2046,234 @@ class MomentumLogic:
         hist_small_s = hist_pct_s < 0.25
         hist_large_s = hist_pct_s > 0.70
         if fresh_cross_s:
-            bonus_s = pts_val + 6; score += bonus_s; parts.append(f"H_FRESH_S+{bonus_s}")
+            bonus_s = pts_val + 6
+            score += bonus_s
+            parts.append(f"H_FRESH_S+{bonus_s}")
         elif histogram < 0 and hist_small_s:
-            score += pts_val; parts.append(f"H_SMALL_S+{pts_val}")
+            score += pts_val
+            parts.append(f"H_SMALL_S+{pts_val}")
         elif histogram < 0 and hist_large_s:
-            penalty_s = max(0, pts_val - 6); score += penalty_s; parts.append(f"H_EXHAUST_S+{penalty_s}")
+            penalty_s = max(0, pts_val - 6)
+            score += penalty_s
+            parts.append(f"H_EXHAUST_S+{penalty_s}")
         elif histogram < 0:
-            p = round(pts_val * 0.6); score += p; parts.append(f"H<0+{p}")
+            p = round(pts_val * 0.6)
+            score += p
+            parts.append(f"H<0+{p}")
         elif histogram < 0.001:
-            p = round(pts_val * 0.3); score += p; parts.append(f"H~0+{p}")
-        else: parts.append("H>0+0")
+            p = round(pts_val * 0.3)
+            score += p
+            parts.append(f"H~0+{p}")
+        else:
+            parts.append("H>0+0")
         return score, ",".join(parts)
 
+    # ─── QUALITY SCORE (LONG) ─────────────────────────────────────────────
     def _calculate_quality_score(self, data):
-        """
-        v9.4.2 FIX: Score range now spreads ~16-95 instead of 68-81.
-        Changes from v9.4:
-        - EMA partial credit floors reduced (fast>slow alone: 60%→25%, partial: 40%→10%)
-        - Added intermediate EMA tier: all three ordered but close below fast = 50%
-        - RSI overbought zone (>75) now scores 0 (was missing, allowing overbought entries)
-        - RSI 70-75 zone now scores 25% (was missing)
-        - Volume below 0.8x now near-zero (was 30-60%)
-        - ADX below 18 now scores 0, 18-22 scores 15% (new tier)
-        - ADX extended (>40) penalty increased: 50%→40%
-        """
         if self.strategy_state != StrategyState.SEEKING_ENTRY:
             raise RuntimeError("_calculate_quality_score() called while IN_TRADE")
 
         component_scores = {}
         breakdown_parts = []
 
-        close        = data.get('Close', 0)
-        ema_fast     = data.get('EMA_Fast', 0)
-        ema_mid      = data.get('EMA_Mid', 0)
-        ema_slow     = data.get('EMA_Slow', 0)
-        adx          = data.get('ADX', 0)
-        rsi          = data.get('RSI', 50)
+        close = data.get('Close', 0)
+        ema_fast = data.get('EMA_Fast', 0)
+        ema_mid = data.get('EMA_Mid', 0)
+        ema_slow = data.get('EMA_Slow', 0)
+        adx = data.get('ADX', 0)
+        rsi = data.get('RSI', 50)
         volume_ratio = data.get('Volume_Ratio', 1.0)
-        price_pct    = data.get('Price_Percentile_20bar', 50)
+        price_pct = data.get('Price_Percentile_20bar', 50)
 
-        # ── EMA ALIGNMENT ────────────────────────────────────────────────
-        tolerance  = getattr(self, 'ema_near_tolerance', 0.005) or 0.005
-        weight_ema = getattr(self, 'weight_ema', 20)
+        # EMA ALIGNMENT
+        tolerance = getattr(self, 'ema_near_tolerance', 0.005) or 0.005
+        weight_ema = getattr(self, 'weight_ema', 22)
 
         if close > ema_fast > ema_mid > ema_slow:
             ema_score = weight_ema
-            breakdown_parts.append(f"EMA={ema_score}/20(Perfect)")
+            breakdown_parts.append(f"EMA={ema_score}/22(Perfect)")
         elif (self._near_or_above(ema_fast, ema_mid, tolerance) and
               self._near_or_above(ema_mid, ema_slow, tolerance) and
               close > ema_fast * (1 - tolerance)):
             ema_score = round(weight_ema * 0.75)
-            breakdown_parts.append(f"EMA={ema_score}/20(Near)")
+            breakdown_parts.append(f"EMA={ema_score}/22(Near)")
         elif ema_fast > ema_mid > ema_slow:
-            # Trend structure intact but close below fast EMA — bad timing
             ema_score = round(weight_ema * 0.50)
-            breakdown_parts.append(f"EMA={ema_score}/20(Ordered,BadTiming)")
+            breakdown_parts.append(f"EMA={ema_score}/22(Ordered,BadTiming)")
         elif ema_fast > ema_slow:
-            # Only fast>slow — weak signal, was 60% (now 25%)
             ema_score = round(weight_ema * 0.25)
-            breakdown_parts.append(f"EMA={ema_score}/20(Fast>Slow_Only)")
+            breakdown_parts.append(f"EMA={ema_score}/22(Fast>Slow_Only)")
         elif ema_fast > ema_mid:
-            # Was 40%, now 10% — very partial alignment
             ema_score = round(weight_ema * 0.10)
-            breakdown_parts.append(f"EMA={ema_score}/20(Partial)")
+            breakdown_parts.append(f"EMA={ema_score}/22(Partial)")
         else:
             ema_score = 0
-            breakdown_parts.append("EMA=0/20")
-
+            breakdown_parts.append("EMA=0/22")
         component_scores['ema'] = ema_score
 
-        # ── ADX STRENGTH ─────────────────────────────────────────────────
-        weight_adx = getattr(self, 'weight_adx', 20)
-
-        if   adx < 18:  adx_score = 0;                          adx_label = "NoTrend"
-        elif adx < 22:  adx_score = round(weight_adx * 0.15);   adx_label = "VeryWeak"
-        elif adx < 26:  adx_score = round(weight_adx * 0.40);   adx_label = "Forming"
-        elif adx < 30:  adx_score = round(weight_adx * 0.70);   adx_label = "Good"
-        elif adx < 35:  adx_score = round(weight_adx * 0.90);   adx_label = "Strong"
-        elif adx < 40:  adx_score = round(weight_adx * 0.75);   adx_label = "PeakCaution"
-        else:           adx_score = round(weight_adx * 0.40);   adx_label = "Extended"
-
+        # ADX STRENGTH
+        weight_adx = getattr(self, 'weight_adx', 13)
+        if adx < 18:
+            adx_score = 0
+            adx_label = "NoTrend"
+        elif adx < 22:
+            adx_score = round(weight_adx * 0.15)
+            adx_label = "VeryWeak"
+        elif adx < 26:
+            adx_score = round(weight_adx * 0.40)
+            adx_label = "Forming"
+        elif adx < 30:
+            adx_score = round(weight_adx * 0.70)
+            adx_label = "Good"
+        elif adx < 35:
+            adx_score = round(weight_adx * 0.90)
+            adx_label = "Strong"
+        elif adx < 40:
+            adx_score = round(weight_adx * 0.75)
+            adx_label = "PeakCaution"
+        else:
+            adx_score = round(weight_adx * 0.40)
+            adx_label = "Extended"
         breakdown_parts.append(f"ADX={adx_score}/{weight_adx}({adx:.1f},{adx_label})")
         component_scores['adx'] = adx_score
 
-        # ── MACD MOMENTUM ────────────────────────────────────────────────
-        weight_macd = getattr(self, 'weight_macd', 25)
+        # MACD MOMENTUM
+        weight_macd = getattr(self, 'weight_macd', 24)
         macd_score, macd_breakdown = self._score_macd_momentum(data)
         if weight_macd != 25:
             macd_score = round(macd_score * weight_macd / 25)
         component_scores['macd'] = macd_score
         breakdown_parts.append(f"MACD={macd_score}/{weight_macd}({macd_breakdown})")
 
-        # ── RSI ZONE ─────────────────────────────────────────────────────
-        weight_rsi = getattr(self, 'weight_rsi', 20)
+        # RSI ZONE
+        weight_rsi = getattr(self, 'weight_rsi', 16)
+        if 60 <= rsi <= 67:
+            rsi_score = weight_rsi
+            rsi_label = "PrimeLong"
+        elif 55 <= rsi < 60:
+            rsi_score = round(weight_rsi * 0.80)
+            rsi_label = "StrongLong"
+        elif 67 < rsi <= 70:
+            rsi_score = round(weight_rsi * 0.55)
+            rsi_label = "NearPeak"
+        elif 70 < rsi <= 75:
+            rsi_score = round(weight_rsi * 0.25)
+            rsi_label = "Overbought"
+        elif rsi > 75:
+            rsi_score = 0
+            rsi_label = "TooHigh"
+        elif 48 <= rsi < 55:
+            rsi_score = round(weight_rsi * 0.45)
+            rsi_label = "EarlyLong"
+        elif 42 <= rsi < 48:
+            rsi_score = round(weight_rsi * 0.20)
+            rsi_label = "Borderline"
+        else:
+            rsi_score = 0
+            rsi_label = "OutOfRange"
 
-        if   60 <= rsi <= 67:  rsi_score = weight_rsi;               rsi_label = "PrimeLong"
-        elif 55 <= rsi <  60:  rsi_score = round(weight_rsi * 0.80); rsi_label = "StrongLong"
-        elif 67 <  rsi <= 70:  rsi_score = round(weight_rsi * 0.55); rsi_label = "NearPeak"
-        elif 70 <  rsi <= 75:  rsi_score = round(weight_rsi * 0.25); rsi_label = "Overbought"
-        elif rsi  > 75:        rsi_score = 0;                        rsi_label = "TooHigh"
-        elif 48 <= rsi <  55:  rsi_score = round(weight_rsi * 0.45); rsi_label = "EarlyLong"
-        elif 42 <= rsi <  48:  rsi_score = round(weight_rsi * 0.20); rsi_label = "Borderline"
-        else:                  rsi_score = 0;                        rsi_label = "OutOfRange"
+        rsi_trend_aware = getattr(self, 'rsi_trend_aware_enabled', True)
+        if rsi_trend_aware and adx >= 25 and ema_fast > ema_slow:
+            if 70 < rsi <= 80:
+                rsi_score = round(weight_rsi * 0.65)
+                rsi_label = "OverboughtTrending"
+            elif rsi > 80:
+                rsi_score = round(weight_rsi * 0.30)
+                rsi_label = "ExtendedTrending"
 
         _rdb = getattr(self, 'rsi_direction_bars', 3)
         _rdm = getattr(self, 'rsi_direction_min_move', 1.0)
         _dfr = getattr(self, '_current_df', None)
         if _dfr is not None and 'RSI' in _dfr.columns and len(_dfr) > _rdb + 1:
             _delta = float(_dfr['RSI'].iloc[-1]) - float(_dfr['RSI'].iloc[-(_rdb + 1)])
-            if   _delta >=  _rdm: rsi_score = min(rsi_score + 5, weight_rsi); rsi_label += "+Rising"
-            elif _delta <= -_rdm: rsi_score = max(rsi_score - 5, 0);           rsi_label += "-Falling"
+            if _delta >= _rdm:
+                rsi_score = min(rsi_score + 5, weight_rsi)
+                rsi_label += "+Rising"
+            elif _delta <= -_rdm:
+                rsi_score = max(rsi_score - 5, 0)
+                rsi_label += "-Falling"
 
         component_scores['rsi'] = rsi_score
         breakdown_parts.append(f"RSI={rsi_score}/{weight_rsi}({rsi:.1f},{rsi_label})")
 
-        # ── VOLUME ───────────────────────────────────────────────────────
-        weight_volume = getattr(self, 'weight_volume', 12)
-
-        if   volume_ratio >= 2.0:  volume_score = weight_volume
-        elif volume_ratio >= 1.5:  volume_score = round(weight_volume * 0.85)
-        elif volume_ratio >= 1.2:  volume_score = round(weight_volume * 0.70)
-        elif volume_ratio >= 1.0:  volume_score = round(weight_volume * 0.50)
-        elif volume_ratio >= 0.8:  volume_score = round(weight_volume * 0.30)
-        elif volume_ratio >= 0.6:  volume_score = round(weight_volume * 0.15)
-        else:                      volume_score = 0
-
+        # VOLUME
+        weight_volume = getattr(self, 'weight_volume', 15)
+        if volume_ratio >= 2.0:
+            volume_score = weight_volume
+        elif volume_ratio >= 1.5:
+            volume_score = round(weight_volume * 0.85)
+        elif volume_ratio >= 1.2:
+            volume_score = round(weight_volume * 0.70)
+        elif volume_ratio >= 1.0:
+            volume_score = round(weight_volume * 0.50)
+        elif volume_ratio >= 0.8:
+            volume_score = round(weight_volume * 0.30)
+        elif volume_ratio >= 0.6:
+            volume_score = round(weight_volume * 0.15)
+        else:
+            volume_score = 0
         component_scores['volume'] = volume_score
         breakdown_parts.append(f"Vol={volume_score}/{weight_volume}({volume_ratio:.2f}x)")
 
-        # ── PRICE PERCENTILE ADJUSTMENT ──────────────────────────────────
-        if   price_pct < 20:  adj, txt = 15,  "EarlyEntry+15"
-        elif price_pct < 40:  adj, txt = 8,   "EarlyEntry+8"
-        elif price_pct < 60:  adj, txt = 0,   "MidRange+0"
-        elif price_pct < 80:  adj, txt = -5,  "LateEntry-5"
-        else:                 adj, txt = -15, "PeakEntry-15"
+        # CCI
+        weight_cci = getattr(self, 'weight_cci', 5)
+        cci = data.get('CCI', 0)
+        if 50 <= cci <= 150:
+            cci_score = weight_cci
+            cci_label = "BullishZone"
+        elif 20 <= cci < 50:
+            cci_score = round(weight_cci * 0.60)
+            cci_label = "BuildingMomentum"
+        elif 150 < cci <= 200:
+            cci_score = round(weight_cci * 0.50)
+            cci_label = "Extended"
+        elif 0 <= cci < 20:
+            cci_score = round(weight_cci * 0.25)
+            cci_label = "Neutral"
+        elif cci > 200:
+            cci_score = 0
+            cci_label = "Overextended"
+        else:
+            cci_score = 0
+            cci_label = "Bearish"
+        component_scores['cci'] = cci_score
+        breakdown_parts.append(f"CCI={cci_score}/{weight_cci}({cci:.1f},{cci_label})")
+
+        # KALMAN
+        weight_kalman = getattr(self, 'weight_kalman', 5)
+        kalman_strength = data.get('Kalman_Strength', 0)
+        if kalman_strength >= 0.60:
+            kalman_score = weight_kalman
+            kalman_label = "StrongTrend"
+        elif kalman_strength >= 0.40:
+            kalman_score = round(weight_kalman * 0.80)
+            kalman_label = "GoodTrend"
+        elif kalman_strength >= 0.25:
+            kalman_score = round(weight_kalman * 0.50)
+            kalman_label = "Forming"
+        elif kalman_strength >= 0.15:
+            kalman_score = round(weight_kalman * 0.25)
+            kalman_label = "Weak"
+        else:
+            kalman_score = 0
+            kalman_label = "Flat"
+        component_scores['kalman'] = kalman_score
+        breakdown_parts.append(f"Kalman={kalman_score}/{weight_kalman}({kalman_strength:.2f},{kalman_label})")
+
+        # PRICE PERCENTILE ADJUSTMENT
+        if price_pct < 20:
+            adj, txt = 15, "EarlyEntry+15"
+        elif price_pct < 40:
+            adj, txt = 8, "EarlyEntry+8"
+        elif price_pct < 60:
+            adj, txt = 0, "MidRange+0"
+        elif price_pct < 80:
+            adj, txt = -5, "LateEntry-5"
+        else:
+            adj, txt = -15, "PeakEntry-15"
         breakdown_parts.append(txt)
 
-        # ── TREND AGE PENALTY (v9.4) ──────────────────────────────────────
+        # TREND AGE PENALTY
         trend_penalty = self._get_trend_age_penalty(data, direction='long')
         if trend_penalty > 0:
             adj -= trend_penalty
@@ -1776,121 +2282,209 @@ class MomentumLogic:
         total_score = max(0, min(sum(component_scores.values()) + adj, 100))
         return int(total_score), component_scores, " | ".join(breakdown_parts)
 
+    # ─── QUALITY SCORE (SHORT) ─────────────────────────────────────────────
     def _calculate_quality_score_short(self, data):
-        """
-        v9.4.2 FIX: Mirror of _calculate_quality_score — same floor reductions applied.
-        Score range now spreads ~16-95 instead of compressed 68-81.
-        """
         if self.strategy_state != StrategyState.SEEKING_ENTRY:
             raise RuntimeError("_calculate_quality_score_short() called while IN_TRADE")
 
         component_scores = {}
         breakdown_parts = []
 
-        close        = data.get('Close', 0)
-        ema_fast     = data.get('EMA_Fast', 0)
-        ema_mid      = data.get('EMA_Mid', 0)
-        ema_slow     = data.get('EMA_Slow', 0)
-        adx          = data.get('ADX', 0)
-        rsi          = data.get('RSI', 50)
+        close = data.get('Close', 0)
+        ema_fast = data.get('EMA_Fast', 0)
+        ema_mid = data.get('EMA_Mid', 0)
+        ema_slow = data.get('EMA_Slow', 0)
+        adx = data.get('ADX', 0)
+        rsi = data.get('RSI', 50)
         volume_ratio = data.get('Volume_Ratio', 1.0)
-        price_pct    = data.get('Price_Percentile_20bar', 50)
+        price_pct = data.get('Price_Percentile_20bar', 50)
 
-        # ── EMA ALIGNMENT (BEARISH) ──────────────────────────────────────
-        tolerance  = getattr(self, 'ema_near_tolerance', 0.005) or 0.005
-        weight_ema = getattr(self, 'weight_ema', 20)
+        # EMA ALIGNMENT (BEARISH)
+        tolerance = getattr(self, 'ema_near_tolerance', 0.005) or 0.005
+        weight_ema = getattr(self, 'weight_ema', 22)
 
         if close < ema_fast < ema_mid < ema_slow:
             ema_score = weight_ema
-            breakdown_parts.append(f"EMA={ema_score}/20(PerfectBearish)")
+            breakdown_parts.append(f"EMA={ema_score}/22(PerfectBearish)")
         elif (self._near_or_above(ema_mid, ema_fast, tolerance) and
               self._near_or_above(ema_slow, ema_mid, tolerance) and
               close < ema_fast * (1 + tolerance)):
             ema_score = round(weight_ema * 0.75)
-            breakdown_parts.append(f"EMA={ema_score}/20(NearBearish)")
+            breakdown_parts.append(f"EMA={ema_score}/22(NearBearish)")
         elif ema_fast < ema_mid < ema_slow:
-            # All three ordered bearish but close above fast — bad timing
             ema_score = round(weight_ema * 0.50)
-            breakdown_parts.append(f"EMA={ema_score}/20(Ordered,BadTiming)")
+            breakdown_parts.append(f"EMA={ema_score}/22(Ordered,BadTiming)")
         elif ema_fast < ema_slow:
             ema_score = round(weight_ema * 0.25)
-            breakdown_parts.append(f"EMA={ema_score}/20(Fast<Slow_Only)")
+            breakdown_parts.append(f"EMA={ema_score}/22(Fast<Slow_Only)")
         elif ema_fast < ema_mid:
             ema_score = round(weight_ema * 0.10)
-            breakdown_parts.append(f"EMA={ema_score}/20(PartialBearish)")
+            breakdown_parts.append(f"EMA={ema_score}/22(PartialBearish)")
         else:
             ema_score = 0
-            breakdown_parts.append("EMA=0/20")
-
+            breakdown_parts.append("EMA=0/22")
         component_scores['ema'] = ema_score
 
-        # ── ADX STRENGTH ─────────────────────────────────────────────────
-        weight_adx = getattr(self, 'weight_adx', 20)
-
-        if   adx < 18:  adx_score = 0;                          adx_label = "NoTrend"
-        elif adx < 22:  adx_score = round(weight_adx * 0.15);   adx_label = "VeryWeak"
-        elif adx < 26:  adx_score = round(weight_adx * 0.40);   adx_label = "Forming"
-        elif adx < 30:  adx_score = round(weight_adx * 0.70);   adx_label = "Good"
-        elif adx < 35:  adx_score = round(weight_adx * 0.90);   adx_label = "Strong"
-        elif adx < 40:  adx_score = round(weight_adx * 0.75);   adx_label = "PeakCaution"
-        else:           adx_score = round(weight_adx * 0.40);   adx_label = "Extended"
-
+        # ADX STRENGTH
+        weight_adx = getattr(self, 'weight_adx', 13)
+        if adx < 18:
+            adx_score = 0
+            adx_label = "NoTrend"
+        elif adx < 22:
+            adx_score = round(weight_adx * 0.15)
+            adx_label = "VeryWeak"
+        elif adx < 26:
+            adx_score = round(weight_adx * 0.40)
+            adx_label = "Forming"
+        elif adx < 30:
+            adx_score = round(weight_adx * 0.70)
+            adx_label = "Good"
+        elif adx < 35:
+            adx_score = round(weight_adx * 0.90)
+            adx_label = "Strong"
+        elif adx < 40:
+            adx_score = round(weight_adx * 0.75)
+            adx_label = "PeakCaution"
+        else:
+            adx_score = round(weight_adx * 0.40)
+            adx_label = "Extended"
         breakdown_parts.append(f"ADX={adx_score}/{weight_adx}({adx:.1f},{adx_label})")
         component_scores['adx'] = adx_score
 
-        # ── MACD MOMENTUM (SHORT) ────────────────────────────────────────
-        weight_macd = getattr(self, 'weight_macd', 25)
+        # MACD MOMENTUM (SHORT)
+        weight_macd = getattr(self, 'weight_macd', 24)
         macd_score, macd_breakdown = self._score_macd_momentum_short(data)
         if weight_macd != 25:
             macd_score = round(macd_score * weight_macd / 25)
         component_scores['macd'] = macd_score
         breakdown_parts.append(f"MACD={macd_score}/{weight_macd}({macd_breakdown})")
 
-        # ── RSI ZONE (SHORT) ─────────────────────────────────────────────
-        weight_rsi = getattr(self, 'weight_rsi', 20)
+        # RSI ZONE (SHORT)
+        weight_rsi = getattr(self, 'weight_rsi', 16)
+        if 38 <= rsi <= 45:
+            rsi_score = weight_rsi
+            rsi_label = "PrimeShort"
+        elif 45 < rsi <= 52:
+            rsi_score = round(weight_rsi * 0.75)
+            rsi_label = "ShortMomentum"
+        elif 52 < rsi <= 57:
+            rsi_score = round(weight_rsi * 0.45)
+            rsi_label = "WeakeningShort"
+        elif 34 <= rsi < 38:
+            rsi_score = round(weight_rsi * 0.45)
+            rsi_label = "ShortEarly"
+        elif 30 <= rsi < 34:
+            rsi_score = round(weight_rsi * 0.20)
+            rsi_label = "Borderline"
+        elif rsi < 30:
+            rsi_score = 0
+            rsi_label = "Oversold"
+        else:
+            rsi_score = 0
+            rsi_label = "OutOfRange"
 
-        if   38 <= rsi <= 45:  rsi_score = weight_rsi;               rsi_label = "PrimeShort"
-        elif 45 <  rsi <= 52:  rsi_score = round(weight_rsi * 0.75); rsi_label = "ShortMomentum"
-        elif 52 <  rsi <= 57:  rsi_score = round(weight_rsi * 0.45); rsi_label = "WeakeningShort"
-        elif 34 <= rsi <  38:  rsi_score = round(weight_rsi * 0.45); rsi_label = "ShortEarly"
-        elif 30 <= rsi <  34:  rsi_score = round(weight_rsi * 0.20); rsi_label = "Borderline"
-        elif rsi  < 30:        rsi_score = 0;                        rsi_label = "Oversold"
-        else:                  rsi_score = 0;                        rsi_label = "OutOfRange"
+        rsi_trend_aware = getattr(self, 'rsi_trend_aware_enabled', True)
+        if rsi_trend_aware and adx >= 25 and ema_fast < ema_slow:
+            if 20 <= rsi < 30:
+                rsi_score = round(weight_rsi * 0.65)
+                rsi_label = "OversoldTrending"
+            elif rsi < 20:
+                rsi_score = round(weight_rsi * 0.30)
+                rsi_label = "ExtendedTrending"
 
         _rdb = getattr(self, 'rsi_direction_bars', 3)
         _rdm = getattr(self, 'rsi_direction_min_move', 1.0)
         _dfr = getattr(self, '_current_df', None)
         if _dfr is not None and 'RSI' in _dfr.columns and len(_dfr) > _rdb + 1:
             _fall = float(_dfr['RSI'].iloc[-(_rdb + 1)]) - float(_dfr['RSI'].iloc[-1])
-            if   _fall >=  _rdm: rsi_score = min(rsi_score + 5, weight_rsi); rsi_label += "+Falling"
-            elif _fall <= -_rdm: rsi_score = max(rsi_score - 5, 0);           rsi_label += "-Rising"
+            if _fall >= _rdm:
+                rsi_score = min(rsi_score + 5, weight_rsi)
+                rsi_label += "+Falling"
+            elif _fall <= -_rdm:
+                rsi_score = max(rsi_score - 5, 0)
+                rsi_label += "-Rising"
 
         component_scores['rsi'] = rsi_score
         breakdown_parts.append(f"RSI={rsi_score}/{weight_rsi}({rsi:.1f},{rsi_label})")
 
-        # ── VOLUME ───────────────────────────────────────────────────────
-        weight_volume = getattr(self, 'weight_volume', 12)
-
-        if   volume_ratio >= 2.0:  volume_score = weight_volume
-        elif volume_ratio >= 1.5:  volume_score = round(weight_volume * 0.85)
-        elif volume_ratio >= 1.2:  volume_score = round(weight_volume * 0.70)
-        elif volume_ratio >= 1.0:  volume_score = round(weight_volume * 0.50)
-        elif volume_ratio >= 0.8:  volume_score = round(weight_volume * 0.30)
-        elif volume_ratio >= 0.6:  volume_score = round(weight_volume * 0.15)
-        else:                      volume_score = 0
-
+        # VOLUME
+        weight_volume = getattr(self, 'weight_volume', 15)
+        if volume_ratio >= 2.0:
+            volume_score = weight_volume
+        elif volume_ratio >= 1.5:
+            volume_score = round(weight_volume * 0.85)
+        elif volume_ratio >= 1.2:
+            volume_score = round(weight_volume * 0.70)
+        elif volume_ratio >= 1.0:
+            volume_score = round(weight_volume * 0.50)
+        elif volume_ratio >= 0.8:
+            volume_score = round(weight_volume * 0.30)
+        elif volume_ratio >= 0.6:
+            volume_score = round(weight_volume * 0.15)
+        else:
+            volume_score = 0
         component_scores['volume'] = volume_score
         breakdown_parts.append(f"Vol={volume_score}/{weight_volume}({volume_ratio:.2f}x)")
 
-        # ── PRICE PERCENTILE ADJUSTMENT (SHORT — inverted) ───────────────
-        if   price_pct > 80:  adj, txt = 15,  "LateEntryShort+15"
-        elif price_pct > 60:  adj, txt = 8,   "LateEntryShort+8"
-        elif price_pct > 40:  adj, txt = 0,   "MidRange+0"
-        elif price_pct > 20:  adj, txt = -5,  "EarlyEntry-5"
-        else:                 adj, txt = -15, "EarlyEntry-15"
+        # CCI (SHORT)
+        weight_cci = getattr(self, 'weight_cci', 5)
+        cci = data.get('CCI', 0)
+        if -150 <= cci <= -50:
+            cci_score = weight_cci
+            cci_label = "BearishZone"
+        elif -50 < cci <= -20:
+            cci_score = round(weight_cci * 0.60)
+            cci_label = "BuildingMomentum"
+        elif -200 <= cci < -150:
+            cci_score = round(weight_cci * 0.50)
+            cci_label = "Extended"
+        elif -20 < cci <= 0:
+            cci_score = round(weight_cci * 0.25)
+            cci_label = "Neutral"
+        elif cci < -200:
+            cci_score = 0
+            cci_label = "Overextended"
+        else:
+            cci_score = 0
+            cci_label = "Bullish"
+        component_scores['cci'] = cci_score
+        breakdown_parts.append(f"CCI={cci_score}/{weight_cci}({cci:.1f},{cci_label})")
+
+        # KALMAN
+        weight_kalman = getattr(self, 'weight_kalman', 5)
+        kalman_strength = data.get('Kalman_Strength', 0)
+        if kalman_strength >= 0.60:
+            kalman_score = weight_kalman
+            kalman_label = "StrongTrend"
+        elif kalman_strength >= 0.40:
+            kalman_score = round(weight_kalman * 0.80)
+            kalman_label = "GoodTrend"
+        elif kalman_strength >= 0.25:
+            kalman_score = round(weight_kalman * 0.50)
+            kalman_label = "Forming"
+        elif kalman_strength >= 0.15:
+            kalman_score = round(weight_kalman * 0.25)
+            kalman_label = "Weak"
+        else:
+            kalman_score = 0
+            kalman_label = "Flat"
+        component_scores['kalman'] = kalman_score
+        breakdown_parts.append(f"Kalman={kalman_score}/{weight_kalman}({kalman_strength:.2f},{kalman_label})")
+
+        # PRICE PERCENTILE (SHORT)
+        if price_pct > 80:
+            adj, txt = 15, "LateEntryShort+15"
+        elif price_pct > 60:
+            adj, txt = 8, "LateEntryShort+8"
+        elif price_pct > 40:
+            adj, txt = 0, "MidRange+0"
+        elif price_pct > 20:
+            adj, txt = -5, "EarlyEntry-5"
+        else:
+            adj, txt = -15, "EarlyEntry-15"
         breakdown_parts.append(txt)
 
-        # ── TREND AGE PENALTY (v9.4) ──────────────────────────────────────
+        # TREND AGE PENALTY
         trend_penalty = self._get_trend_age_penalty(data, direction='short')
         if trend_penalty > 0:
             adj -= trend_penalty
@@ -1899,192 +2493,277 @@ class MomentumLogic:
         total_score = max(0, min(sum(component_scores.values()) + adj, 100))
         return int(total_score), component_scores, " | ".join(breakdown_parts)
 
-    def _check_tier1_filters(self, data):
-        ema_fast = data.get('EMA_Fast', 0); ema_slow = data.get('EMA_Slow', 0)
-        adx = data.get('ADX', 0); rsi = data.get('RSI', 50)
-        momentum = data.get('Momentum', 0)
-        macd = data.get('MACD', 0); macd_signal = data.get('MACD_Signal', 0)
-        if hasattr(self, 'trading_app') and hasattr(self.trading_app, 'get_volume_ratio'):
-            volume_ratio = self.trading_app.get_volume_ratio(df=None, current_data=data, default=1.0)
+    # ─── BREAKOUT SCORING ──────────────────────────────────────────────────
+    def _calculate_breakout_score(self, data):
+        component_scores = {}
+        breakdown_parts = []
+
+        close = data.get('Close', 0)
+        atr = data.get('ATR', 0)
+        box_high = data.get('Box_High', close)
+        consolidation_bars = data.get('Consolidation_Bars', 0)
+        volume_ratio = data.get('Volume_Ratio', 1.0)
+        ema_fast = data.get('EMA_Fast', 0)
+        ema_slow = data.get('EMA_Slow', 0)
+        adx = data.get('ADX', 0)
+
+        weight_breakout = getattr(self, 'weight_breakout_strength', 30)
+        breakout_dist_atr = ((close - box_high) / atr) if atr > 0 else 0
+        if breakout_dist_atr >= 0.5:
+            breakout_score = weight_breakout
+            b_label = "StrongBreak"
+        elif breakout_dist_atr >= 0.25:
+            breakout_score = round(weight_breakout * 0.70)
+            b_label = "GoodBreak"
+        elif breakout_dist_atr >= 0.10:
+            breakout_score = round(weight_breakout * 0.40)
+            b_label = "WeakBreak"
+        elif breakout_dist_atr > 0:
+            breakout_score = round(weight_breakout * 0.15)
+            b_label = "MarginalBreak"
         else:
-            volume_ratio = float(data.get('Volume_Ratio', 1.0))
-            volume_ratio = max(0.01, min(10.0, volume_ratio))
+            breakout_score = 0
+            b_label = "NoBreak"
+        component_scores['breakout_strength'] = breakout_score
+        breakdown_parts.append(f"Break={breakout_score}/{weight_breakout}({breakout_dist_atr:.2f}ATR,{b_label})")
 
-        if not (ema_fast > ema_slow):
-            return "tier1_ema_not_trending"
-        adx_hard_min = getattr(self, 'tier1_adx_hard_min', 25)
-        if adx < adx_hard_min:
-            return f"tier1_adx_too_weak_{adx:.1f}_need_{adx_hard_min}"
-        t1_rsi_min = getattr(self, 'tier1_rsi_min', 45)
-        t1_rsi_max = getattr(self, 'tier1_rsi_max', 58)
-        if not (t1_rsi_min <= rsi <= t1_rsi_max):
-            return f"tier1_rsi_out_{rsi:.1f}_need_{t1_rsi_min}-{t1_rsi_max}"
-        t1_vol_min = getattr(self, 'tier1_volume_min', 1.2)
-        if volume_ratio < t1_vol_min:
-            return f"tier1_volume_low_{volume_ratio:.2f}_need_{t1_vol_min}"
-        t1_mom_min = getattr(self, 'tier1_momentum_min', 0.3)
-        if momentum < t1_mom_min:
-            return f"tier1_momentum_weak_{momentum:.2f}_need_{t1_mom_min}"
-        price_ext_max = getattr(self, 'tier1_price_ema_max_pct', 1.5)
-        if price_ext_max is None: price_ext_max = 1.5
-        ema_fast_val = data.get('EMA_Fast', 0); close_val = data.get('Close', 0)
-        if ema_fast_val > 0 and close_val > 0:
-            ext_pct = (close_val - ema_fast_val) / ema_fast_val * 100
-            if ext_pct > price_ext_max:
-                return f"tier1_price_too_extended_{ext_pct:.1f}pct_above_ema"
-        if getattr(self, 'tier1_macd_gate', True):
-            if macd <= macd_signal:
-                return f"tier1_macd_below_signal_{macd:.3f}_vs_{macd_signal:.3f}"
-
-        dmi_spread = getattr(self, 'dmi_spread_min_long', 0.0)
-        if dmi_spread > 0:
-            _df = getattr(self, '_current_df', None)
-            if _df is not None and 'DMP' in _df.columns and len(_df) > 0:
-                try:
-                    dmp = float(_df['DMP'].iloc[-1]); dmm = float(_df['DMM'].iloc[-1])
-                    if (dmp - dmm) < dmi_spread:
-                        return f"tier1_dmi_spread_{dmp-dmm:.1f}<{dmi_spread}"
-                except Exception: pass
-
-        if getattr(self, 'macd_hist_rising_bars', 0) >= 2:
-            _df = getattr(self, '_current_df', None)
-            if _df is not None and 'MACD_Histogram' in _df.columns and len(_df) > 2:
-                h = _df['MACD_Histogram']
-                if not (float(h.iloc[-1]) > float(h.iloc[-2]) > float(h.iloc[-3])):
-                    return "tier1_macd_hist_not_rising_2bars"
-
-        if getattr(self, 'bb_expand_required', False):
-            _df = getattr(self, '_current_df', None)
-            if _df is not None and 'BB_Width' in _df.columns and len(_df) > 40:
-                if float(_df['BB_Width'].iloc[-1]) < float(_df['BB_Width'].iloc[-40:].mean()):
-                    return "tier1_bb_squeeze"
-
-        if getattr(self, 'time_filter_enabled', False):
-            _df = getattr(self, '_current_df', None)
-            if _df is not None and 'timestamp' in _df.columns and len(_df) > 0:
-                import pandas as _pd
-                try:
-                    hour = _pd.to_datetime(_df['timestamp'].iloc[-1]).hour
-                    if not (getattr(self,'time_filter_start_utc',6) <= hour <= getattr(self,'time_filter_end_utc',23)):
-                        return f"tier1_dead_hour_{hour}utc"
-                except Exception: pass
-
-        adx_now = data.get('ADX', 0)
-        adx_prev_val = data.get('ADX_prev', adx_now)
-        if (adx_now - adx_prev_val) < 0.1:
-            return f"v9_adx_not_rising_slope_{adx_now - adx_prev_val:.3f}"
-
-        ema_fast_val2 = data.get('EMA_Fast', 0); close_val2 = data.get('Close', 0)
-        if ema_fast_val2 > 0 and close_val2 > 0:
-            dist_pct = (close_val2 - ema_fast_val2) / ema_fast_val2 * 100
-            if not (-2.5 <= dist_pct <= 1.5):
-                return f"v9_not_in_pullback_zone_dist_{dist_pct:.2f}pct"
-
-        if not self._daily_trend_is_up(data):
-            return "tier1_daily_trend_not_up_price_below_50day_ema"
-        return "pass"
-
-    def _check_tier1_filters_short(self, data):
-        ema_fast = data.get('EMA_Fast', 0); ema_slow = data.get('EMA_Slow', 0)
-        adx = data.get('ADX', 0); rsi = data.get('RSI', 50)
-        momentum = data.get('Momentum', 0)
-        macd = data.get('MACD', 0); macd_signal = data.get('MACD_Signal', 0)
-        if hasattr(self, 'trading_app') and hasattr(self.trading_app, 'get_volume_ratio'):
-            volume_ratio = self.trading_app.get_volume_ratio(df=None, current_data=data, default=1.0)
+        weight_coil = getattr(self, 'weight_consolidation_quality', 20)
+        coil_min_bars = getattr(self, 'breakout_min_coil_bars', 10)
+        if consolidation_bars >= coil_min_bars:
+            coil_score = weight_coil
+            c_label = "TightCoil"
+        elif consolidation_bars >= coil_min_bars * 0.5:
+            coil_score = round(weight_coil * 0.55)
+            c_label = "PartialCoil"
+        elif consolidation_bars > 0:
+            coil_score = round(weight_coil * 0.20)
+            c_label = "BriefCoil"
         else:
-            volume_ratio = float(data.get('Volume_Ratio', 1.0))
-            volume_ratio = max(0.01, min(10.0, volume_ratio))
+            coil_score = 0
+            c_label = "NoCoil"
+        component_scores['consolidation_quality'] = coil_score
+        breakdown_parts.append(f"Coil={coil_score}/{weight_coil}({int(consolidation_bars)}bars,{c_label})")
 
-        if not (ema_fast < ema_slow):
-            return "short_tier1_ema_not_trending_bearish"
+        weight_vol_confirm = getattr(self, 'weight_breakout_volume', 25)
+        if volume_ratio >= 2.0:
+            vol_score = weight_vol_confirm
+            v_label = "Surge"
+        elif volume_ratio >= 1.5:
+            vol_score = round(weight_vol_confirm * 0.75)
+            v_label = "Strong"
+        elif volume_ratio >= 1.2:
+            vol_score = round(weight_vol_confirm * 0.45)
+            v_label = "Adequate"
+        else:
+            vol_score = 0
+            v_label = "ThinTrap"
+        component_scores['volume_confirm'] = vol_score
+        breakdown_parts.append(f"Vol={vol_score}/{weight_vol_confirm}({volume_ratio:.2f}x,{v_label})")
 
-        # v9.4 FIX #4: Stricter short ADX minimum
-        adx_hard_min = getattr(self, 'short_tier1_adx_hard_min', 28)
-        if adx < adx_hard_min:
-            return f"short_tier1_adx_too_weak_{adx:.1f}_need_{adx_hard_min}"
+        weight_ema_trend = getattr(self, 'weight_breakout_ema_trend', 15)
+        ema_score = weight_ema_trend if ema_fast > ema_slow else 0
+        component_scores['ema_trend'] = ema_score
+        breakdown_parts.append(f"EMA={ema_score}/{weight_ema_trend}({'aligned' if ema_score else 'against'})")
 
-        t1_rsi_min = getattr(self, 'short_tier1_rsi_min', 30)
-        t1_rsi_max = getattr(self, 'short_tier1_rsi_max', 70)
-        if not (t1_rsi_min <= rsi <= t1_rsi_max):
-            return f"short_tier1_rsi_out_{rsi:.1f}_need_{t1_rsi_min}-{t1_rsi_max}"
+        weight_adx_confirm = getattr(self, 'weight_breakout_adx', 10)
+        if adx >= 30:
+            adx_score = weight_adx_confirm
+            a_label = "Strong"
+        elif adx >= 20:
+            adx_score = round(weight_adx_confirm * 0.6)
+            a_label = "Building"
+        else:
+            adx_score = 0
+            a_label = "Weak"
+        component_scores['adx_confirm'] = adx_score
+        breakdown_parts.append(f"ADX={adx_score}/{weight_adx_confirm}({adx:.0f},{a_label})")
 
-        # v9.4 FIX #4: Stricter short volume minimum
-        t1_vol_min = getattr(self, 'short_tier1_volume_min', 1.3)
-        if volume_ratio < t1_vol_min:
-            return f"short_tier1_volume_low_{volume_ratio:.2f}_need_{t1_vol_min}"
+        total_score = max(0, min(sum(component_scores.values()), 100))
+        return int(total_score), component_scores, " | ".join(breakdown_parts)
 
-        # v9.4 FIX #4: Stricter short momentum
-        t1_mom_min = getattr(self, 'short_tier1_momentum_min', 0.05)
-        if momentum > -t1_mom_min:
-            return f"short_tier1_momentum_not_bearish_{momentum:.2f}_need_negative"
+    def _calculate_breakout_score_short(self, data):
+        component_scores = {}
+        breakdown_parts = []
 
-        if getattr(self, 'short_tier1_macd_gate', True):
-            if macd >= macd_signal:
-                return f"short_tier1_macd_above_signal_{macd:.3f}_vs_{macd_signal:.3f}"
+        close = data.get('Close', 0)
+        atr = data.get('ATR', 0)
+        box_low = data.get('Box_Low', close)
+        consolidation_bars = data.get('Consolidation_Bars', 0)
+        volume_ratio = data.get('Volume_Ratio', 1.0)
+        ema_fast = data.get('EMA_Fast', 0)
+        ema_slow = data.get('EMA_Slow', 0)
+        adx = data.get('ADX', 0)
 
-        dmi_spread = getattr(self, 'dmi_spread_min_short', 0.0)
-        if dmi_spread > 0:
-            _df = getattr(self, '_current_df', None)
-            if _df is not None and 'DMM' in _df.columns and len(_df) > 0:
-                try:
-                    dmp = float(_df['DMP'].iloc[-1]); dmm = float(_df['DMM'].iloc[-1])
-                    if (dmm - dmp) < dmi_spread:
-                        return f"short_tier1_dmi_spread_{dmm-dmp:.1f}<{dmi_spread}"
-                except Exception: pass
+        weight_breakout = getattr(self, 'weight_breakout_strength', 30)
+        breakout_dist_atr = ((box_low - close) / atr) if atr > 0 else 0
+        if breakout_dist_atr >= 0.5:
+            breakout_score = weight_breakout
+            b_label = "StrongBreak"
+        elif breakout_dist_atr >= 0.25:
+            breakout_score = round(weight_breakout * 0.70)
+            b_label = "GoodBreak"
+        elif breakout_dist_atr >= 0.10:
+            breakout_score = round(weight_breakout * 0.40)
+            b_label = "WeakBreak"
+        elif breakout_dist_atr > 0:
+            breakout_score = round(weight_breakout * 0.15)
+            b_label = "MarginalBreak"
+        else:
+            breakout_score = 0
+            b_label = "NoBreak"
+        component_scores['breakout_strength'] = breakout_score
+        breakdown_parts.append(f"Break={breakout_score}/{weight_breakout}({breakout_dist_atr:.2f}ATR,{b_label})")
 
-        if getattr(self, 'macd_hist_rising_bars', 0) >= 2:
-            _df = getattr(self, '_current_df', None)
-            if _df is not None and 'MACD_Histogram' in _df.columns and len(_df) > 2:
-                h = _df['MACD_Histogram']
-                if not (float(h.iloc[-1]) < float(h.iloc[-2]) < float(h.iloc[-3])):
-                    return "short_tier1_macd_hist_not_falling_2bars"
+        weight_coil = getattr(self, 'weight_consolidation_quality', 20)
+        coil_min_bars = getattr(self, 'breakout_min_coil_bars', 10)
+        if consolidation_bars >= coil_min_bars:
+            coil_score = weight_coil
+            c_label = "TightCoil"
+        elif consolidation_bars >= coil_min_bars * 0.5:
+            coil_score = round(weight_coil * 0.55)
+            c_label = "PartialCoil"
+        elif consolidation_bars > 0:
+            coil_score = round(weight_coil * 0.20)
+            c_label = "BriefCoil"
+        else:
+            coil_score = 0
+            c_label = "NoCoil"
+        component_scores['consolidation_quality'] = coil_score
+        breakdown_parts.append(f"Coil={coil_score}/{weight_coil}({int(consolidation_bars)}bars,{c_label})")
 
-        if getattr(self, 'bb_expand_required', False):
-            _df = getattr(self, '_current_df', None)
-            if _df is not None and 'BB_Width' in _df.columns and len(_df) > 40:
-                if float(_df['BB_Width'].iloc[-1]) < float(_df['BB_Width'].iloc[-40:].mean()):
-                    return "short_tier1_bb_squeeze"
+        weight_vol_confirm = getattr(self, 'weight_breakout_volume', 25)
+        if volume_ratio >= 2.0:
+            vol_score = weight_vol_confirm
+            v_label = "Surge"
+        elif volume_ratio >= 1.5:
+            vol_score = round(weight_vol_confirm * 0.75)
+            v_label = "Strong"
+        elif volume_ratio >= 1.2:
+            vol_score = round(weight_vol_confirm * 0.45)
+            v_label = "Adequate"
+        else:
+            vol_score = 0
+            v_label = "ThinTrap"
+        component_scores['volume_confirm'] = vol_score
+        breakdown_parts.append(f"Vol={vol_score}/{weight_vol_confirm}({volume_ratio:.2f}x,{v_label})")
 
-        if getattr(self, 'time_filter_enabled', False):
-            _df = getattr(self, '_current_df', None)
-            if _df is not None and 'timestamp' in _df.columns and len(_df) > 0:
-                import pandas as _pd2
-                try:
-                    hour = _pd2.to_datetime(_df['timestamp'].iloc[-1]).hour
-                    if not (getattr(self,'time_filter_start_utc',6) <= hour <= getattr(self,'time_filter_end_utc',23)):
-                        return f"short_tier1_dead_hour_{hour}utc"
-                except Exception: pass
+        weight_ema_trend = getattr(self, 'weight_breakout_ema_trend', 15)
+        ema_score = weight_ema_trend if ema_fast < ema_slow else 0
+        component_scores['ema_trend'] = ema_score
+        breakdown_parts.append(f"EMA={ema_score}/{weight_ema_trend}({'aligned' if ema_score else 'against'})")
 
-        adx_now_s = data.get('ADX', 0)
-        adx_prev_s = data.get('ADX_prev', adx_now_s)
-        if (adx_now_s - adx_prev_s) < 0.1:
-            return f"v9_short_adx_not_rising_slope_{adx_now_s - adx_prev_s:.3f}"
+        weight_adx_confirm = getattr(self, 'weight_breakout_adx', 10)
+        if adx >= 30:
+            adx_score = weight_adx_confirm
+            a_label = "Strong"
+        elif adx >= 20:
+            adx_score = round(weight_adx_confirm * 0.6)
+            a_label = "Building"
+        else:
+            adx_score = 0
+            a_label = "Weak"
+        component_scores['adx_confirm'] = adx_score
+        breakdown_parts.append(f"ADX={adx_score}/{weight_adx_confirm}({adx:.0f},{a_label})")
 
-        ema_fast_s = data.get('EMA_Fast', 0); close_s = data.get('Close', 0)
-        if ema_fast_s > 0 and close_s > 0:
-            dist_s = (close_s - ema_fast_s) / ema_fast_s * 100
-            if not (-2.5 <= dist_s <= 0.5):
-                return f"v9_short_not_in_bounce_zone_dist_{dist_s:.2f}pct"
+        total_score = max(0, min(sum(component_scores.values()), 100))
+        return int(total_score), component_scores, " | ".join(breakdown_parts)
 
-        if not self._daily_trend_is_down(data):
-            return "short_tier1_daily_trend_not_down_price_above_50day_ema"
+    # ─── TIER CONDITION VALIDATION ─────────────────────────────────────────
+    def _calculate_direction_confluence(self, data, direction='long') -> float:
+        """Fraction (0.0-1.0) of independent confirming signals."""
+        ema_fast = data.get('EMA_Fast', 0)
+        ema_mid = data.get('EMA_Mid', ema_fast)
+        ema_slow = data.get('EMA_Slow', 0)
+        macd_hist = data.get('MACD_Histogram', 0)
+        macd_hist_prev = data.get('MACD_Histogram_prev', macd_hist)
+        macd_hist_rising = data.get('MACD_Histogram_Rising', None)
+        rsi = data.get('RSI', 50)
+        vol_ratio = data.get('Volume_Ratio', data.get('Vol_Regime_Ratio', 1.0))
+        cci = data.get('CCI', 0)
+        kalman_strength = data.get('Kalman_Strength', 0)
 
-        # v9.4 FIX #4: Require bearish price structure (lower highs + lower lows)
-        if not self._has_bearish_price_structure(data):
-            return "v94_short_no_bearish_price_structure"
+        if direction == 'long':
+            rising = macd_hist_rising if macd_hist_rising is not None else (macd_hist > macd_hist_prev)
+            checks = [
+                ema_fast > ema_mid > ema_slow,
+                macd_hist > 0,
+                rising,
+                50 < rsi < 80,
+                vol_ratio >= 1.0,
+                cci > 0,
+                kalman_strength > 0,
+            ]
+        else:
+            falling = (not macd_hist_rising) if macd_hist_rising is not None else (macd_hist < macd_hist_prev)
+            checks = [
+                ema_fast < ema_mid < ema_slow,
+                macd_hist < 0,
+                falling,
+                20 < rsi < 50,
+                vol_ratio >= 1.0,
+                cci < 0,
+                kalman_strength < 0,
+            ]
 
-        return "pass"
+        if not checks:
+            return 0.0
+        return sum(1 for c in checks if c) / len(checks)
+
+    def _tier_cooldown_ok(self, tier: int) -> bool:
+        bars_since_last = self.bar_count - self.last_trade_bar
+        blanket_min = getattr(self, 'min_bars_between_trades', 4)
+
+        if tier == 1:
+            tier_min = getattr(self, 'min_bars_between_trades_tier1', blanket_min)
+        elif tier == 2:
+            if not getattr(self, 'cooldown_tier2_enabled', True):
+                return True
+            tier_min = getattr(self, 'min_bars_between_trades_tier2', blanket_min)
+        else:
+            tier_min = blanket_min
+
+        required = max(blanket_min, tier_min)
+        return bars_since_last >= required
+
+    def _validate_tier1_conditions(self, data) -> bool:
+        if not self._tier_cooldown_ok(1):
+            return False
+        confluence_min = getattr(self, 'tier1_confluence_min', 0.65)
+        confluence = self._calculate_direction_confluence(data, 'long')
+        self._last_confluence_score = confluence
+        if confluence < confluence_min:
+            return False
+        return True
+
+    def _validate_tier1_conditions_short(self, data) -> bool:
+        if not self._tier_cooldown_ok(1):
+            return False
+        confluence_min = getattr(self, 'tier1_confluence_min', 0.65)
+        confluence = self._calculate_direction_confluence(data, 'short')
+        self._last_confluence_score = confluence
+        if confluence < confluence_min:
+            return False
+        return True
 
     def _validate_tier2_conditions(self, data):
         if getattr(self, 'regime_filter_enabled', True) and data.get('Ranging', False):
             return False
         rsi = data.get('RSI', 50)
-        if rsi > 90: return False
+        if rsi > 90:
+            return False
         macd_hist = data.get('MACD_Histogram', 0)
-        if macd_hist <= 0: return False
+        if macd_hist <= 0:
+            return False
         bars_since = self.bar_count - self.last_trade_bar
-        cooldown_bars = getattr(self, 'cooldown_after_loss_bars', 2)
+        cooldown_bars = getattr(self, 'cooldown_after_loss_bars', 12)
         if (bars_since < cooldown_bars and self.trade_history and self.trade_history[-1]['profit'] < 0):
+            return False
+        if not self._tier_cooldown_ok(2):
+            return False
+        confluence_min = getattr(self, 'tier2_confluence_min', 0.70)
+        confluence = self._calculate_direction_confluence(data, 'long')
+        self._last_confluence_score = confluence
+        if confluence < confluence_min:
             return False
         return True
 
@@ -2092,19 +2771,29 @@ class MomentumLogic:
         if getattr(self, 'regime_filter_enabled', True) and data.get('Ranging', False):
             return False
         rsi = data.get('RSI', 50)
-        if rsi < 30: return False
+        if rsi < 30:
+            return False
         macd_hist = data.get('MACD_Histogram', 0)
-        if macd_hist >= 0: return False
+        if macd_hist >= 0:
+            return False
         bars_since = self.bar_count - self.last_trade_bar
-        cooldown_bars = getattr(self, 'cooldown_after_loss_bars', 2)
+        cooldown_bars = getattr(self, 'cooldown_after_loss_bars', 12)
         if (bars_since < cooldown_bars and self.trade_history and self.trade_history[-1]['profit'] < 0):
+            return False
+        if not self._tier_cooldown_ok(2):
+            return False
+        confluence_min = getattr(self, 'tier2_confluence_min', 0.70)
+        confluence = self._calculate_direction_confluence(data, 'short')
+        self._last_confluence_score = confluence
+        if confluence < confluence_min:
             return False
         return True
 
+    # ─── FUZZY LEARNING ────────────────────────────────────────────────────
     def _calculate_dynamic_fuzzy_threshold(self):
         safety_config = {
-            'absolute_minimum': getattr(self, 'fuzzy_absolute_min', 60),
-            'absolute_maximum': getattr(self, 'fuzzy_absolute_max', 74),
+            'absolute_minimum': getattr(self, 'fuzzy_absolute_min', 45),
+            'absolute_maximum': getattr(self, 'fuzzy_absolute_max', 65),
             'default_fuzzy': 75 * (1 - getattr(self, 'fuzzy_default_margin_pct', 10) / 100),
             'min_confidence': getattr(self, 'fuzzy_min_confidence', 0.6),
             'max_adjustment_pct': getattr(self, 'fuzzy_max_adjustment_pct', 15),
@@ -2132,7 +2821,7 @@ class MomentumLogic:
         if len(filtered) < safety_config['min_samples']:
             return {**default_cfg, 'reason': 'too_many_outliers'}
         fm = sum(filtered) / len(filtered)
-        fs = (sum((s - fm) ** 2 for s in filtered) / len(filtered)) ** 0.5
+        fs = (sum((filtered - fm) ** 2 for filtered in filtered) / len(filtered)) ** 0.5
         mult = 1.5 if safety_config['conservative_mode'] else 2.0
         candidate = fm - (mult * fs)
         if candidate < safety_config['absolute_minimum']:
@@ -2169,7 +2858,8 @@ class MomentumLogic:
         }
 
     def _track_near_miss(self, score, data, rejected_reason, market_context=None):
-        if not hasattr(self, 'near_miss_trades'): self.near_miss_trades = []
+        if not hasattr(self, 'near_miss_trades'):
+            self.near_miss_trades = []
         atr = data.get('ATR', 0)
         atr_pct = (atr / data.get('Close', 1)) * 100 if data.get('Close', 0) > 0 else 0
         entry = {
@@ -2183,98 +2873,22 @@ class MomentumLogic:
             'market_regime': self.current_regime,
             'price_percentile': data.get('Price_Percentile_20bar', 50),
         }
-        if market_context: entry.update(market_context)
+        if market_context:
+            entry.update(market_context)
         self.near_miss_trades.append(entry)
         if len(self.near_miss_trades) > 200:
             self.near_miss_trades = self.near_miss_trades[-200:]
 
-    def _validate_direction(self, data, direction_hint=None):
-        direction = getattr(self, 'trade_direction', 'long').lower()
-        effective_direction = direction_hint if direction_hint else direction
-
-        cached = self._last_direction_check
-        if (cached['bar'] == self.bar_count and cached.get('direction') == effective_direction):
-            return (cached['result'], cached['reason'], cached['action'])
-
-        close = data.get('Close', 0); ema_fast = data.get('EMA_Fast', 0)
-        ema_slow = data.get('EMA_Slow', 0); ema_mid = data.get('EMA_Mid', 0)
-        macd = data.get('MACD', 0); macd_signal = data.get('MACD_Signal', 0)
-        macd_hist = data.get('MACD_Histogram', 0)
-        rsi = data.get('RSI', 50); volume_ratio = data.get('Volume_Ratio', 1.0)
-        df = getattr(self, '_current_df', None)
-
-        def _cache(res, reason, action):
-            self._last_direction_check = {
-                'bar': self.bar_count, 'direction': effective_direction,
-                'result': res, 'reason': reason, 'action': action,
-            }
-            return (res, reason, action)
-
-        if effective_direction == 'long':
-            ema200 = data.get('EMA_200', 0)
-            if ema200 > 0 and close < ema200:
-                return _cache(False, f"LONG: Price below EMA200 — macro downtrend", "hold")
-            if ema_fast < ema_mid < ema_slow:
-                return _cache(False, f"LONG: Full bearish EMA stack", "hold")
-            if ema_fast <= ema_slow:
-                return _cache(False, f"LONG: Bearish EMA alignment", "hold")
-            if close <= ema_fast:
-                return _cache(False, f"LONG: Price below fast EMA", "hold")
-            if macd < macd_signal and macd_hist < 0:
-                return _cache(False, f"LONG: Bearish MACD", "hold")
-            if rsi < 40:
-                return _cache(False, f"LONG: RSI too weak ({rsi:.1f})", "hold")
-            if volume_ratio < 0.8 and close > ema_fast:
-                return _cache(False, f"LONG: Price up on low volume", "hold")
-            if df is not None and len(df) > 10:
-                recent_highs = df['High'].iloc[-5:].values
-                recent_lows = df['Low'].iloc[-5:].values
-                if len(recent_highs) >= 3 and recent_highs[-1] < recent_highs[-2] < recent_highs[-3]:
-                    return _cache(False, "LONG: Bearish lower highs pattern", "hold")
-                if len(recent_lows) >= 3 and recent_lows[-1] < recent_lows[-2] < recent_lows[-3]:
-                    return _cache(False, "LONG: Bearish lower lows pattern", "hold")
-            return _cache(True, "LONG: Valid bullish setup", "buy")
-
-        elif effective_direction == 'short':
-            ema200 = data.get('EMA_200', 0)
-            if ema200 > 0 and close > ema200:
-                return _cache(False, f"SHORT: Price above EMA200 — macro uptrend", "hold")
-            if ema_fast > ema_mid > ema_slow:
-                return _cache(False, f"SHORT: Full bullish EMA stack", "hold")
-            if ema_fast >= ema_slow:
-                return _cache(False, f"SHORT: Bullish EMA alignment", "hold")
-            if close >= ema_fast:
-                return _cache(False, f"SHORT: Price above fast EMA", "hold")
-            if macd > macd_signal and macd_hist > 0:
-                return _cache(False, f"SHORT: Bullish MACD", "hold")
-            if rsi > 65:
-                return _cache(False, f"SHORT: RSI too strong ({rsi:.1f})", "hold")
-            if volume_ratio < 0.8 and close < ema_fast:
-                return _cache(False, f"SHORT: Price down on low volume", "hold")
-            if df is not None and len(df) > 10:
-                recent_highs = df['High'].iloc[-5:].values
-                recent_lows = df['Low'].iloc[-5:].values
-                if len(recent_highs) >= 3 and recent_highs[-1] > recent_highs[-2] > recent_highs[-3]:
-                    return _cache(False, "SHORT: Bullish higher highs pattern", "hold")
-                if len(recent_lows) >= 3 and recent_lows[-1] > recent_lows[-2] > recent_lows[-3]:
-                    return _cache(False, "SHORT: Bullish higher lows pattern", "hold")
-            return _cache(True, "SHORT: Valid bearish setup", "sell")
-
-        else:
-            is_bullish = (ema_fast > ema_slow and close > ema_fast and macd > macd_signal)
-            is_bearish = (ema_fast < ema_slow and close < ema_fast and macd < macd_signal)
-            if is_bullish: return _cache(True, "BOTH: Bullish setup detected", "buy")
-            elif is_bearish: return _cache(True, "BOTH: Bearish setup detected", "sell")
-            else: return _cache(False, "BOTH: No clear direction", "hold")
-
-    def _create_pending_signal(self, direction, quality_score, tier,
-                               component_scores, breakdown, data):
+    # ─── ENTRY CONDITIONS ──────────────────────────────────────────────────
+    def _create_pending_signal(self, direction, power_score, tier,
+                               component_scores, breakdown, data, ml_prediction=0, ml_confidence=0.0):
         decision = 'buy' if direction == 'long' else 'sell'
         self._pending_signal = {
             'direction': direction, 'decision': decision,
-            'quality_score': quality_score, 'tier': tier,
+            'power_score': power_score, 'tier': tier,
             'position_mult': 1.0, 'breakdown': breakdown,
             'component_scores': component_scores,
+            'confluence_score': getattr(self, '_last_confluence_score', 0.0),
             'signal_price': data.get('Close', 0),
             'signal_adx': data.get('ADX', 0),
             'signal_rsi': data.get('RSI', 50),
@@ -2283,33 +2897,45 @@ class MomentumLogic:
             'signal_price_pct': data.get('Price_Percentile_20bar', 50),
             'signal_bar': self.bar_count,
             'signal_time': datetime.now(timezone.utc),
+            'ml_prediction': ml_prediction,
+            'ml_confidence': ml_confidence,
         }
         self._signal_bar = self.bar_count
         self._signal_price = data.get('Close', 0)
-        direction_emoji = "📈" if direction == 'long' else "📉"
-        self._log(f"{direction_emoji} TIER{tier} {direction.upper()} SIGNAL PENDING: Q={quality_score} "
-                  f"@ ${self._signal_price:.2f} (will execute next bar)", "purple")
-        return ("hold", quality_score, None,
+
+        tier_colors = {1: 'green', 2: 'yellow'}
+        tier_emojis = {1: '🟢', 2: '🟡'}
+        tier_names = {1: 'Low Risk', 2: 'Medium Risk'}
+
+        self._log(
+            f"{tier_emojis.get(tier, '📊')} TIER{tier} ({tier_names.get(tier, 'Unknown')}) {direction.upper()} SIGNAL PENDING: "
+            f"Power={power_score} @ ${self._signal_price:.2f} (execute next bar)",
+            tier_colors.get(tier, 'purple'))
+
+        return ("hold", power_score, None,
                 f"{direction.upper()}_TIER{tier}_SIGNAL_PENDING_execute_next_bar",
                 component_scores)
 
     def _check_entry_conditions(self, data):
-        cooldown_bars = getattr(self, 'cooldown_after_profit_target_bars', 8)
+        # Cooldown checks
+        cooldown_bars = getattr(self, 'cooldown_after_profit_target_bars', 2)
         bars_since_profit_target = self.bar_count - self._last_profit_target_bar
         if bars_since_profit_target < cooldown_bars:
             remaining = cooldown_bars - bars_since_profit_target
             return ("hold", 0, None, f"profit_target_cooldown_{remaining}_bars_remaining", {})
 
-        # ═══ v9.4 FIX #1: ATR COMPRESSION FILTER — blocks ALL directions ═══
+        min_bars = getattr(self, 'min_bars_between_trades', 4)
+        bars_since_last = self.bar_count - self.last_trade_bar
+        if bars_since_last < min_bars:
+            return ("hold", 0, None, f"min_bars_between_trades_{bars_since_last}_of_{min_bars}", {})
+
         if self._is_atr_compressed(data):
             return ("hold", 0, None, "v94_atr_compressed_no_entries", {})
 
-        # ═══ v9.4 FIX #6: CONSECUTIVE LOSS COOLDOWN ═══
         if self._is_consecutive_loss_cooldown_active():
             return ("hold", 0, None, "v94_consecutive_loss_cooldown", {})
 
         effective_direction = self.trade_direction
-
         if effective_direction == 'long':
             return self._check_long_entry_conditions(data)
         elif effective_direction == 'short':
@@ -2318,181 +2944,253 @@ class MomentumLogic:
             return self._check_both_entry_conditions(data)
 
     def _check_long_entry_conditions(self, data):
-        direction_valid, direction_reason, suggested_action = self._validate_direction(data, direction_hint='long')
-        if not direction_valid:
+        # LAYER 0: TREND FILTER (NEW)
+        # FIX: Block longs when price is below EMA200
+        if not self._price_above_ema200(data):
+            return ("hold", 0, None, "price_below_ema200_no_long", {})
+
+        # LAYER 1: DIRECTION GATE - STRICTER
+        direction_confirmed, direction_reason = self._confirm_direction(data, direction_hint='long')
+        if not direction_confirmed:
             return "hold", 0, None, direction_reason, {}
 
-        # v9.4 FIX #2: Extended run filter for longs
+        # LAYER 1.5: Regime gate - STRICT
+        regime, confidence = self.regime_detector.detect_regime(
+            ema_fast=data.get('EMA_Fast', 0),
+            ema_slow=data.get('EMA_Slow', 0),
+            adx=data.get('ADX', 0),
+            vol_ratio=data.get('Vol_Regime_Ratio', 1.0),
+            bb_width_percentile=data.get('BB_Width_Percentile', 50))
+        self.current_regime = regime
+
+        # FIX: BLOCK all bearish regimes entirely
+        if regime.startswith('BEARISH'):
+            return ("hold", 0, None, f"BEARISH_REGIME_BLOCKED_{regime}", {})
+
+        if getattr(self, 'regime_filter_enabled', True):
+            if data.get('Ranging', False) or not self.regime_detector.is_tradeable(regime):
+                return "hold", 0, None, f"long_regime_blocked_{regime}", {}
+
+        # Daily trend
+        if not self._daily_trend_is_up(data):
+            return "hold", 0, None, "long_daily_trend_not_up", {}
+
+        # Extended run
         if self._is_extended_run_long(data):
             return "hold", 0, None, "v94_extended_run_long_blocked", {}
 
+        # LAYER 2: POWER SCORE
         self._suggested_action = 'buy'
-        quality_score, component_scores, breakdown = self._calculate_quality_score(data)
-        self._last_quality_score = quality_score
-        min_for_signal = self.quality_tier2_min
-
-        regime, confidence = self.regime_detector.detect_regime(
-            ema_fast=data.get('EMA_Fast', 0), ema_slow=data.get('EMA_Slow', 0),
-            adx=data.get('ADX', 0), vix=20,
-            bb_width_percentile=data.get('BB_Width_Percentile', 50))
-        self.current_regime = regime
-
-        # BUG FIX v9.4.1 (#11): Regime filter was applied to shorts but silently omitted
-        # from longs. Ranging/untradeable markets could still produce long entries.
-        # This is symmetric with _check_short_entry_conditions (line ~2363).
-        if getattr(self, 'regime_filter_enabled', True):
-            if data.get('Ranging', False) or not self.regime_detector.is_tradeable(regime):
-                return "hold", quality_score, None, f"long_regime_blocked_{regime}", component_scores
-
-        if quality_score < min_for_signal:
-            return ("hold", quality_score, None,
-                    f"quality_too_low_{quality_score}_need_{min_for_signal}", component_scores)
-
-        only_tier2 = getattr(self, 'only_tier2_entries', False)
-
-        if only_tier2:
-            if quality_score >= self.quality_tier2_min:
-                if self._validate_tier2_conditions(data):
-                    return self._create_pending_signal('long', quality_score, 2, component_scores, breakdown, data)
-            return ("hold", quality_score, None,
-                    f"TIER1_BLOCKED_by_only_tier2_flag", component_scores)
+        if getattr(self, 'alpha_mode', 'indicator') == 'breakout':
+            power_score, component_scores, breakdown = self._calculate_breakout_score(data)
         else:
-            if quality_score >= self.fixed_threshold:
-                if self._validate_tier2_conditions(data):
-                    return self._create_pending_signal('long', quality_score, 1, component_scores, breakdown, data)
-                self._log(f"📉 TIER 1 strict filter failed, entering as Tier 2: Q={quality_score:.0f}", "yellow")
-                return self._create_pending_signal('long', quality_score, 2, component_scores, breakdown, data)
+            power_score, component_scores, breakdown = self._calculate_quality_score(data)
+        self._last_quality_score = power_score
 
-            if quality_score >= self.quality_tier2_min:
-                # BUG FIX v9.4.1 (#12): Both branches previously returned a Tier 2 signal,
-                # meaning _validate_tier2_conditions had zero effect for Tier 2 entries.
-                # Now, failing conditions (negative MACD histogram, ranging, loss cooldown)
-                # actually block the entry instead of silently entering anyway.
-                if self._validate_tier2_conditions(data):
-                    return self._create_pending_signal('long', quality_score, 2, component_scores, breakdown, data)
-                return ("hold", quality_score, None,
-                        "tier2_conditions_not_met_macd_histogram_or_ranging", component_scores)
+        # LAYER 3: ML ADJUSTMENT
+        ml_prediction = getattr(self, '_last_ml_prediction', 0)
+        ml_confidence = getattr(self, '_last_ml_confidence', 0.0)
+        adjusted_power, adjustment, adj_type = self._apply_ml_adjustment(
+            power_score, ml_prediction, ml_confidence, 'long'
+        )
 
-            elif getattr(self, 'fuzzy_learning_enabled', True) and 60 <= quality_score <= 74:
-                self._track_near_miss(quality_score, data, f"quality_below_75_{quality_score}")
+        # TIER DETERMINATION
+        tier = self._determine_tier(adjusted_power, 'long')
+        if tier == 0:
+            return ("hold", adjusted_power, None,
+                    f"power_below_tier2_{adjusted_power}_need_{getattr(self, 'quality_tier2_min_long', 65)}",
+                    component_scores)
 
-            return ("hold", quality_score, None,
-                    f"quality_too_low_{quality_score}_need_{self.quality_tier2_min}", component_scores)
+        # Validate tier-specific conditions
+        only_tier1 = getattr(self, 'only_tier1_entries', False)
+
+        if only_tier1:
+            if tier != 1:
+                return ("hold", adjusted_power, None, f"TIER{tier}_BLOCKED_by_only_tier1_flag", component_scores)
+            if not self._validate_tier1_conditions(data):
+                return ("hold", adjusted_power, None, "tier1_conditions_not_met", component_scores)
+        else:
+            if tier == 1:
+                if not self._validate_tier1_conditions(data):
+                    return ("hold", adjusted_power, None, "tier1_conditions_not_met", component_scores)
+            elif tier == 2:
+                if not self._validate_tier2_conditions(data):
+                    return ("hold", adjusted_power, None, "tier2_conditions_not_met", component_scores)
+
+        return self._create_pending_signal('long', adjusted_power, tier, component_scores, breakdown, data,
+                                           ml_prediction, ml_confidence)
 
     def _check_short_entry_conditions(self, data):
-        direction_valid, direction_reason, suggested_action = self._validate_direction(data, direction_hint='short')
-        if not direction_valid:
+        # LAYER 0: REGIME GATE - Allow shorts ONLY in bearish regimes
+        # FIX: Get regime from data (passed from backtest)
+        regime = data.get('_regime', getattr(self, 'current_regime', 'UNKNOWN'))
+        is_below_ema200 = data.get('_is_below_ema200', False)
+
+        # FIX: Allow shorts ONLY in bearish regimes or weak bullish
+        if not regime.startswith('BEARISH') and regime != 'BULLISH_WEAK':
+            return ("hold", 0, None, f"short_regime_not_bearish_{regime}", {})
+
+        # FIX: Additional validation - require price below EMA200 for shorts
+        if not is_below_ema200 and regime.startswith('BEARISH'):
+            # If price is above EMA200 but regime is bearish, may be a bounce
+            # Still allow but with caution
+            print(f"⚠️ SHORT in bearish regime but price above EMA200 - proceed with caution")
+
+        # LAYER 1: DIRECTION GATE
+        direction_confirmed, direction_reason = self._confirm_direction(data, direction_hint='short')
+        if not direction_confirmed:
             return "hold", 0, None, direction_reason, {}
 
-        # v9.4 FIX #2: Extended run filter for shorts
+        # Extended run
         if self._is_extended_run_short(data):
             return "hold", 0, None, "v94_extended_run_short_blocked", {}
 
+        # Daily trend down (strengthened)
+        if not self._daily_trend_is_down(data):
+            return "hold", 0, None, "short_daily_trend_not_down", {}
+
+        # Bearish price structure
+        if not self._has_bearish_price_structure(data):
+            return "hold", 0, None, "short_price_structure_weak", {}
+
+        # LAYER 2: POWER SCORE
         self._suggested_action = 'sell'
-        quality_score, component_scores, breakdown = self._calculate_quality_score_short(data)
-        self._last_quality_score = quality_score
-
-        if quality_score < self.short_quality_tier2_min:
-            return ("hold", quality_score, None,
-                    f"short_quality_too_low_{quality_score}_need_{self.short_quality_tier2_min}", component_scores)
-
-        tier1_result = self._check_tier1_filters_short(data)
-
-        regime, confidence = self.regime_detector.detect_regime(
-            ema_fast=data.get('EMA_Fast', 0), ema_slow=data.get('EMA_Slow', 0),
-            adx=data.get('ADX', 0), vix=20,
-            bb_width_percentile=data.get('BB_Width_Percentile', 50))
-        self.current_regime = regime
-
-        if getattr(self, 'regime_filter_enabled', True):
-            if data.get('Ranging', False) or not self.regime_detector.is_tradeable(regime):
-                return "hold", quality_score, None, f"regime_blocked_{regime}", component_scores
-
-        only_tier2 = getattr(self, 'only_tier2_entries', False)
-
-        if only_tier2:
-            if quality_score >= self.short_quality_tier2_min:
-                if self._validate_tier2_conditions_short(data):
-                    return self._create_pending_signal('short', quality_score, 2, component_scores, breakdown, data)
-            return ("hold", quality_score, None,
-                    f"SHORT_TIER1_BLOCKED_by_only_tier2_flag", component_scores)
+        if getattr(self, 'alpha_mode', 'indicator') == 'breakout':
+            power_score, component_scores, breakdown = self._calculate_breakout_score_short(data)
         else:
-            if quality_score >= self.short_fixed_threshold:
-                if self._validate_tier2_conditions_short(data):
-                    return self._create_pending_signal('short', quality_score, 1, component_scores, breakdown, data)
-                return self._create_pending_signal('short', quality_score, 2, component_scores, breakdown, data)
+            power_score, component_scores, breakdown = self._calculate_quality_score_short(data)
+        self._last_quality_score = power_score
 
-            if quality_score >= self.short_quality_tier2_min:
-                # BUG FIX v9.4.1 (#12): Mirror fix for short Tier 2 entries.
-                if self._validate_tier2_conditions_short(data):
-                    return self._create_pending_signal('short', quality_score, 2, component_scores, breakdown, data)
-                return ("hold", quality_score, None,
-                        "short_tier2_conditions_not_met_macd_histogram_or_ranging", component_scores)
+        # LAYER 3: ML ADJUSTMENT
+        ml_prediction = getattr(self, '_last_ml_prediction', 0)
+        ml_confidence = getattr(self, '_last_ml_confidence', 0.0)
+        adjusted_power, adjustment, adj_type = self._apply_ml_adjustment(
+            power_score, ml_prediction, ml_confidence, 'short'
+        )
 
-            elif getattr(self, 'fuzzy_learning_enabled', True) and 60 <= quality_score <= 74:
-                self._track_near_miss(quality_score, data, f"short_quality_below_{self.short_fixed_threshold}_{quality_score}")
+        # TIER DETERMINATION
+        tier = self._determine_tier(adjusted_power, 'short')
+        if tier == 0:
+            return ("hold", adjusted_power, None,
+                    f"power_below_tier2_{adjusted_power}_need_{getattr(self, 'quality_tier2_min_short', 65)}",
+                    component_scores)
 
-            return ("hold", quality_score, None,
-                    f"short_quality_too_low_{quality_score}_need_{self.short_quality_tier2_min}", component_scores)
+        # Validate tier-specific conditions
+        only_tier1 = getattr(self, 'only_tier1_entries', False)
+
+        # ─── FIX: Reduce tier requirements in bearish regimes ──────────────
+        # In strong bearish regimes, allow Tier 2 with lower threshold
+        if regime == 'BEARISH_DECLINING' or regime == 'BEARISH_SELLOFF':
+            # Allow Tier 2 even if slightly below threshold
+            if tier == 0 and adjusted_power >= 55:  # Lower threshold for bear markets
+                tier = 2
+                print(f"🐻 BEARISH REGIME: Allowing short with lower tier threshold (score={adjusted_power})")
+
+        if only_tier1:
+            if tier != 1:
+                return ("hold", adjusted_power, None, f"TIER{tier}_BLOCKED_by_only_tier1_flag", component_scores)
+            if not self._validate_tier1_conditions_short(data):
+                return ("hold", adjusted_power, None, "short_tier1_conditions_not_met", component_scores)
+        else:
+            if tier == 1:
+                if not self._validate_tier1_conditions_short(data):
+                    return ("hold", adjusted_power, None, "short_tier1_conditions_not_met", component_scores)
+            elif tier == 2:
+                if not self._validate_tier2_conditions_short(data):
+                    return ("hold", adjusted_power, None, "short_tier2_conditions_not_met", component_scores)
+
+        return self._create_pending_signal('short', adjusted_power, tier, component_scores, breakdown, data,
+                                           ml_prediction, ml_confidence)
 
     def _check_both_entry_conditions(self, data):
         long_result = self._check_long_entry_conditions(data)
-        long_decision = long_result[0] if long_result else "hold"
-
         short_result = self._check_short_entry_conditions(data)
+
+        long_decision = long_result[0] if long_result else "hold"
         short_decision = short_result[0] if short_result else "hold"
 
         if long_decision == "hold" and short_decision == "hold":
-            return "hold", 0, None, "no_valid_direction", {}
+            long_reason = long_result[3] if long_result and len(long_result) > 3 else "unknown"
+            short_reason = short_result[3] if short_result and len(short_result) > 3 else "unknown"
+            self._log(f"🚫 no_valid_direction | LONG: {long_reason} | SHORT: {short_reason}", "gray")
+            return "hold", 0, None, f"no_valid_direction (long={long_reason} | short={short_reason})", {}
 
         if long_decision != "hold" and short_decision != "hold":
-            long_quality = long_result[1] if len(long_result) > 1 else 0
-            short_quality = short_result[1] if len(short_result) > 1 else 0
+            long_power = long_result[1] if len(long_result) > 1 else 0
+            short_power = short_result[1] if len(short_result) > 1 else 0
 
-            if abs(long_quality - short_quality) > 5:
-                if long_quality > short_quality:
-                    return long_result
-                else:
-                    return short_result
+            if abs(long_power - short_power) > 5:
+                return long_result if long_power > short_power else short_result
 
             ema_fast_val = data.get('EMA_Fast', 0)
             ema_slow_val = data.get('EMA_Slow', 0)
             trend_is_up = ema_fast_val > ema_slow_val
 
-            if trend_is_up:
+            long_tier = long_result[2] if len(long_result) > 2 else 99
+            short_tier = short_result[2] if len(short_result) > 2 else 99
+
+            if long_tier < short_tier:
                 return long_result
-            else:
+            elif short_tier < long_tier:
                 return short_result
+
+            return long_result if trend_is_up else short_result
 
         return long_result if long_decision != "hold" else short_result
 
+    # ─── POSITION SIZING ───────────────────────────────────────────────────
     def calculate_position_size(self, equity, atr, price,
                                 quality_score=75, tier=1, position_mult=1.0):
-        stop_distance = atr * getattr(self, 'stop_loss_atr_mult', 1.5)
+        tier_config = self._get_tier_config(tier)
+        if tier_config is None:
+            tier_config = self._get_tier_config(1)
+
+        stop_mult = tier_config.get('stop_mult', 2.5)
+        stop_distance = atr * stop_mult
         stop_loss = price - stop_distance
+
         win_rate = (self.winning_trades / self.total_trades * 100) if self.total_trades > 0 else 50
         pf = (self.risk_controller.risk_metrics.profit_factor
               if self.risk_controller.risk_metrics.profit_factor > 0 else 1.0)
+
         adx = 25
         if hasattr(self, '_current_df') and self._current_df is not None:
-            try: adx = float(self._current_df['ADX'].iloc[-1])
-            except: pass
+            try:
+                adx = float(self._current_df['ADX'].iloc[-1])
+            except:
+                pass
+
         base_size = self.risk_controller.calculate_position_size(
             entry_price=price, stop_loss_price=stop_loss,
             win_rate=win_rate / 100, profit_factor=pf,
-            quality_score=quality_score, tier=tier, adx=adx)
+            quality_score=quality_score, tier=tier, adx=adx,
+            tier1_risk_pct=getattr(self, 'risk_tier1', None),
+            tier2_risk_pct=getattr(self, 'risk_tier2', None))
+
         regime_mult = self.regime_detector.get_position_multiplier(self.current_regime)
-        size = max(1, int(base_size * regime_mult * position_mult))
-        # v9.4 FIX #3: Hard cap enforced at logic level too
+        raw_size = base_size * regime_mult * position_mult
+
+        min_notional_units = (equity * 0.001) / price if price > 0 else 0
+        size = max(min_notional_units, raw_size)
+
+        if price >= 1000:
+            size = round(size, 6)
+        elif price >= 100:
+            size = round(size, 4)
+        else:
+            size = max(0, int(size))
+
         max_units = getattr(self, 'max_position_units', 50)
         return min(size, max_units)
 
+    # ─── TRADE RECORDING ──────────────────────────────────────────────────
     def record_trade(self, profit, exit_reason="unknown", tier=None, size=None,
                      direction=None, entry_quality=None, entry_price=None,
                      exit_price=None, hold_duration=None, entry_bar=None, exit_bar=None,
                      signal_adx=None, signal_rsi=None, signal_macd=None,
                      signal_volume=None, signal_price_pct=None, signal_price=None,
-                     signal_time=None, signal_bar=None):
+                     signal_time=None, signal_bar=None, confluence_score=None,
+                     entry_time=None, exit_time=None, trade_id=None):
         corrected_size = size
         trade_direction = direction or self.trade_direction
 
@@ -2503,16 +3201,28 @@ class MomentumLogic:
         self.total_profit += profit
         if profit > 0:
             self.winning_trades += 1
-            self._consecutive_loss_count = 0  # v9.4: reset on win
+            self._consecutive_loss_count = 0
         else:
             self.losing_trades += 1
-            self._consecutive_loss_count += 1  # v9.4: increment on loss
-            self._last_loss_bar = self.bar_count  # v9.4: track last loss bar
+            self._consecutive_loss_count += 1
+            self._last_loss_bar = self.bar_count
 
-        if tier == 1: self.tier1_trades += 1
-        elif tier == 2: self.tier2_trades += 1
+        if tier == 1:
+            self.tier1_trades += 1
+        elif tier == 2:
+            self.tier2_trades += 1
+
+        self.last_trade_bar = self.bar_count
+
+        # Use provided trade_id or generate one
+        if trade_id is None:
+            self.trade_counter += 1
+            trade_id = self.trade_counter
+        elif trade_id > self.trade_counter:
+            self.trade_counter = trade_id
 
         trade_record = {
+            'trade_id': trade_id,
             'profit': profit, 'exit_reason': exit_reason, 'tier': tier,
             'size': corrected_size, 'original_size': size,
             'direction': trade_direction, 'entry_quality': entry_quality,
@@ -2523,6 +3233,8 @@ class MomentumLogic:
             'signal_macd': signal_macd, 'signal_volume': signal_volume,
             'signal_price_pct': signal_price_pct, 'signal_price': signal_price,
             'signal_time': signal_time, 'signal_bar': signal_bar,
+            'confluence_score': confluence_score,
+            'entry_time': entry_time, 'exit_time': exit_time,
             'timestamp': datetime.now(timezone.utc)
         }
 
@@ -2533,29 +3245,12 @@ class MomentumLogic:
         if exit_reason and 'profit_target' in exit_reason:
             self._last_profit_target_bar = self.bar_count
 
-    def validate_trade_log(self, trades_df=None):
-        if trades_df is None and hasattr(self, 'trade_history'):
-            trades_df = pd.DataFrame(self.trade_history)
-        if trades_df is None or len(trades_df) == 0:
-            return True
-        if self.trade_direction == 'long':
-            if 'size' in trades_df.columns:
-                negative_sizes = trades_df[trades_df['size'] < 0]
-                if len(negative_sizes) > 0: return False
-        elif self.trade_direction == 'short':
-            if 'size' in trades_df.columns:
-                positive_sizes = trades_df[trades_df['size'] > 0]
-                if len(positive_sizes) > 0: return False
-        elif self.trade_direction == 'both':
-            if 'direction' in trades_df.columns:
-                invalid = trades_df[~trades_df['direction'].isin(['long', 'short', 'both'])]
-                if len(invalid) > 0: return False
-        return True
-
+    # ─── PERFORMANCE STATS ─────────────────────────────────────────────────
     def get_performance_stats(self):
         if self.total_trades == 0:
             return {'total_trades': 0, 'win_rate': 0, 'total_profit': 0,
-                    'avg_win': 0, 'avg_loss': 0, 'tier1_trades': 0, 'tier2_trades': 0}
+                    'avg_win': 0, 'avg_loss': 0, 'tier1_trades': 0,
+                    'tier2_trades': 0}
         wr = (self.winning_trades / self.total_trades) * 100
         wins = [t['profit'] for t in self.trade_history if t['profit'] > 0]
         losses = [t['profit'] for t in self.trade_history if t['profit'] < 0]
@@ -2571,9 +3266,11 @@ class MomentumLogic:
             'tier2_pct': (self.tier2_trades / self.total_trades * 100) if self.total_trades > 0 else 0,
         }
 
+    # ─── FUZZY METHODS ─────────────────────────────────────────────────────
     def log_fuzzy_threshold_stats(self):
         if not self.fuzzy_mode_enabled:
-            self._log("RIGID MODE ACTIVE", "blue"); return
+            self._log("RIGID MODE ACTIVE", "blue")
+            return
         config = self._calculate_dynamic_fuzzy_threshold()
         self._log("FUZZY MODE STATS", "cyan")
         if config.get('using_default', False):
@@ -2589,13 +3286,14 @@ class MomentumLogic:
         self._suggested_action = None
         self._last_direction_check['bar'] = -999
 
+    # ─── PARAMETER UPDATE ──────────────────────────────────────────────────
     def update_params(self, new_params, is_custom_mode=False):
-        if not new_params: return
+        if not new_params:
+            return
         self.config.update(new_params)
         for key, value in new_params.items():
             setattr(self, key, value)
         self.exit_manager = ProfessionalExitManager(self.config)
-        # v9.4: sync hard cap
         self.risk_controller.max_position_units = getattr(self, 'max_position_units', 50)
 
         if 'trade_direction' in new_params:
@@ -2618,8 +3316,6 @@ class MomentumLogic:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class MomentumStrategy(BaseStrategy, MomentumLogic):
-    """v9.4 Live trading — WITH ALL FIXES"""
-
     def __init__(self, trading_app=None):
         BaseStrategy.__init__(self, trading_app)
         momentum_params = None
@@ -2628,7 +3324,8 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
         params = MomentumConfig.get_config(momentum_params)
         MomentumLogic.__init__(self, config=params, trading_app=trading_app)
 
-        self.name = "Professional Momentum Strategy v9.4 — ATR_FILTER | EXTENDED_RUN | SIZE_CAP"
+        self.trade_counter = 0
+        self.name = "Professional Momentum Strategy v10.0.3 — TWO-TIER SYSTEM + FIXED PARTIAL EXITS"
 
         self.position = {
             'type': None, 'entry_price': None, 'quantity': None,
@@ -2641,23 +3338,25 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
             'signal_adx': None, 'signal_rsi': None, 'signal_macd': None,
             'signal_volume': None, 'signal_price_pct': None, 'signal_price': None,
             'signal_time': None, 'signal_bar': None,
+            'ml_prediction': 0, 'ml_confidence': 0.0,
         }
         self.bars_held = 0
         self.last_signal = None
         self.signal_history = []
         self._account_quantity = 0
         self.trade_counter = 0
+        self._current_trade_id = 0
 
         if self.trading_app:
             self._log("=" * 70, "cyan")
-            self._log("MOMENTUM STRATEGY v9.4.1 — ATR_FILTER | EXTENDED_RUN | SIZE_CAP | STRICT_SHORTS", "bold green")
-            self._log(f"✅ ATR Compression Filter: ENABLED (threshold={getattr(self, 'atr_compression_threshold', 0.55)})", "green")
-            self._log(f"✅ Extended Run Filter: max {getattr(self, 'extended_run_max_pct_long', 8.0)}% from swing", "green")
-            self._log(f"✅ Position Size Cap: {getattr(self, 'max_position_units', 50)} units max", "green")
-            self._log(f"✅ Short ADX Min: {getattr(self, 'short_tier1_adx_hard_min', 28)}", "green")
-            self._log(f"✅ Short Volume Min: {getattr(self, 'short_tier1_volume_min', 1.3)}x", "green")
-            self._log(f"✅ Trend Age Penalty: -{getattr(self, 'trend_age_penalty_pts', 10)}pts after {getattr(self, 'trend_age_max_bars', 20)} bars", "green")
-            self._log(f"✅ Consecutive Loss Cooldown: {getattr(self, 'consecutive_loss_cooldown_bars', 12)} bars after {getattr(self, 'consecutive_loss_threshold', 3)} losses", "green")
+            self._log("MOMENTUM STRATEGY v10.0.3 — TWO-TIER RISK SYSTEM + FIXED PARTIAL EXITS", "bold green")
+            self._log(
+                f"✅ Tier 1 (Low Risk):  Pass={getattr(self, 'quality_tier1_min_long', 75)} | Risk={getattr(self, 'risk_tier1', 0.025):.1%}",
+                "green")
+            self._log(
+                f"✅ Tier 2 (Medium Risk): Pass={getattr(self, 'quality_tier2_min_long', 65)} | Risk={getattr(self, 'risk_tier2', 0.015):.1%}",
+                "yellow")
+            self._log(f"✅ ML Weight: {getattr(self, 'ml_weight', 0.20):.0%}", "purple")
             self._log("=" * 70, "cyan")
 
     def run_analysis_cycle(self, current_data, current_price, df=None):
@@ -2692,9 +3391,17 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
         if not atr or atr <= 0:
             raise ValueError(f"Invalid ATR at bar {self.bars_held}: {atr}")
 
+        tier = self.position.get('tier', 1)
+        tier_config = self._get_tier_config(tier)
+        if tier_config is None:
+            tier_config = self._get_tier_config(1)
+
+        trail_activation = tier_config.get('trailing_activation', 0.03)
+        trail_distance = tier_config.get('trailing_distance', 0.035)
+
         atr_pct = (atr / current_price) * 100 if current_price > 0 else 0.01
-        activation_threshold = max(atr_pct * 1.5, 0.015)
-        trailing_distance_pct = max(atr_pct * 0.5, 0.01)
+        activation_threshold = max(atr_pct * 1.5, trail_activation)
+        trailing_distance_pct = max(atr_pct * 0.5, trail_distance)
 
         if self.position['type'] == 'long':
             if not self.position.get('trailing_activated', False):
@@ -2717,6 +3424,9 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                 if new_stop < (self.position.get('trailing_stop') or float('inf')):
                     self.position['trailing_stop'] = new_stop
 
+        exit_power = self._calculate_exit_power(current_data, self.position['type'])
+        exit_threshold = tier_config.get('exit_threshold', 50)
+
         return self.exit_manager.evaluate_exit(
             current_price=current_price,
             entry_price=self.position['entry_price'],
@@ -2736,17 +3446,68 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
             atr=atr,
             position_type=self.position['type'],
             trailing_activated=self.position.get('trailing_activated', False),
-            trailing_stop=self.position.get('trailing_stop'))
+            trailing_stop=self.position.get('trailing_stop'),
+            tier=tier,
+            exit_power=exit_power)
+
+    def _calculate_exit_power(self, current_data, position_type):
+        score = 0
+        macd = current_data.get('MACD', 0)
+        macd_signal = current_data.get('MACD_Signal', 0)
+        ema_fast = current_data.get('EMA_Fast', 0)
+        ema_slow = current_data.get('EMA_Slow', 0)
+        adx = current_data.get('ADX', 0)
+        rsi = current_data.get('RSI', 50)
+        volume_ratio = current_data.get('Volume_Ratio', 1.0)
+
+        if position_type == 'long':
+            if macd < macd_signal:
+                cross_strength = min(30, (macd_signal - macd) * 100)
+                score += cross_strength
+            if ema_fast < ema_slow:
+                ema_diff_pct = ((ema_slow - ema_fast) / ema_slow) * 100
+                ema_score = min(25, ema_diff_pct * 5)
+                score += ema_score
+            if adx < 20:
+                adx_decline = (20 - adx) / 20 * 15
+                score += adx_decline
+            if rsi < 50:
+                rsi_drop = (50 - rsi) / 50 * 15
+                score += rsi_drop
+            if volume_ratio > 1.5:
+                vol_score = min(15, (volume_ratio - 1.5) * 10)
+                score += vol_score
+        else:
+            if macd > macd_signal:
+                cross_strength = min(30, (macd - macd_signal) * 100)
+                score += cross_strength
+            if ema_fast > ema_slow:
+                ema_diff_pct = ((ema_fast - ema_slow) / ema_slow) * 100
+                ema_score = min(25, ema_diff_pct * 5)
+                score += ema_score
+            if adx < 20:
+                adx_decline = (20 - adx) / 20 * 15
+                score += adx_decline
+            if rsi > 50:
+                rsi_rise = (rsi - 50) / 50 * 15
+                score += rsi_rise
+            if volume_ratio > 1.5:
+                vol_score = min(15, (volume_ratio - 1.5) * 10)
+                score += vol_score
+
+        return min(100, int(score))
 
     def sync_position_with_account(self):
-        if not self.trading_app: return
+        if not self.trading_app:
+            return
         try:
             if hasattr(self.trading_app, 'get_account_balance'):
                 bal = self.trading_app.get_account_balance()
                 actual_qty = float(bal.get('quantity', 0))
             elif hasattr(self.trading_app, 'account_balance'):
                 actual_qty = float(getattr(self.trading_app.account_balance, 'quantity', 0))
-            else: return
+            else:
+                return
             self._account_quantity = actual_qty
             if self.position['type'] is not None:
                 tracked = self.position.get('quantity', 0)
@@ -2773,29 +3534,36 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                     if ema_fast <= ema_slow:
                         return False, 0, None
 
-            # v9.4 FIX #3: Cap shares
-            max_units = getattr(self, 'max_position_units', 50)
-            shares = min(shares, max_units)
+            tier_config = self._get_tier_config(tier)
+            if tier_config is None:
+                tier_config = self._get_tier_config(1)
+            stop_mult = tier_config.get('stop_mult', 2.5)
 
-            stop_loss_price = price - (atr * getattr(self, 'stop_loss_atr_mult', 1.5))
+            stop_loss_price = price - (atr * stop_mult)
             if stop_loss_price >= price:
                 return False, 0, None
+
+            max_units = getattr(self, 'max_position_units', 50)
+            shares = min(shares, max_units)
 
             if self.trading_app and hasattr(self.trading_app, 'place_order'):
                 order_result = self.trading_app.place_order(
                     side='buy', quantity=shares, price=price,
                     confidence=quality_score, atr=atr)
                 if isinstance(order_result, dict):
-                    if not order_result.get('success', False): return False, 0, None
+                    if not order_result.get('success', False):
+                        return False, 0, None
                     filled_qty = order_result.get('filled_quantity', shares)
                     actual_price = order_result.get('filled_price', price)
                 else:
                     filled_qty, actual_price = (shares, price) if order_result else (0, price)
-                    if not order_result: return False, 0, None
+                    if not order_result:
+                        return False, 0, None
             else:
                 filled_qty, actual_price = shares, price
 
             self.trade_counter = getattr(self, 'trade_counter', 0) + 1
+            self._current_trade_id = self.trade_counter
 
             signal_data = {}
             if hasattr(self, '_pending_signal') and self._pending_signal:
@@ -2808,6 +3576,10 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                     'signal_price': self._pending_signal.get('signal_price', 0),
                     'signal_time': self._pending_signal.get('signal_time', datetime.now(timezone.utc)),
                     'signal_bar': self._pending_signal.get('signal_bar', getattr(self, 'bar_count', 0) - 1),
+                    'ml_prediction': self._pending_signal.get('ml_prediction', 0),
+                    'ml_confidence': self._pending_signal.get('ml_confidence', 0.0),
+                    'confluence_score': self._pending_signal.get('confluence_score',
+                                                                 getattr(self, '_last_confluence_score', 0.0)),
                 }
 
             self.position = {
@@ -2819,7 +3591,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                 'partial_exits': 0, 'tier': tier,
                 'entry_time': datetime.now(timezone.utc),
                 'entry_quality_score': quality_score,
-                'entry_reason': '', 'trade_id': self.trade_counter,
+                'entry_reason': '', 'trade_id': self._current_trade_id,
                 'partial_pnl_realised': 0.0, **signal_data,
             }
             self.bars_held = 0
@@ -2854,10 +3626,17 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
             else:
                 filled_qty, exit_price = exit_qty, current_price
 
-            leg_profit = (exit_price - self.position['entry_price']) * filled_qty
-            profit_pct = (exit_price - self.position['entry_price']) / self.position['entry_price'] * 100
-            stop_dist = self.position['stop_loss'] - self.position['entry_price']
-            profit_r = (exit_price - self.position['entry_price']) / abs(stop_dist) if stop_dist != 0 else 0
+            is_short = self.position.get('type') == 'short'
+            if is_short:
+                leg_profit = (self.position['entry_price'] - exit_price) * filled_qty
+                profit_pct = (self.position['entry_price'] - exit_price) / self.position['entry_price'] * 100
+            else:
+                leg_profit = (exit_price - self.position['entry_price']) * filled_qty
+                profit_pct = (exit_price - self.position['entry_price']) / self.position['entry_price'] * 100
+
+            stop_dist = abs(self.position['entry_price'] - self.position['stop_loss'])
+            profit_r = (abs(exit_price - self.position['entry_price'])) / stop_dist if stop_dist != 0 else 0
+            profit_r = profit_r if leg_profit >= 0 else -profit_r
 
             if exit_percentage >= 0.99:
                 total_pnl = leg_profit + self.position.get('partial_pnl_realised', 0.0)
@@ -2878,10 +3657,13 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                     signal_price_pct=self.position.get('signal_price_pct'),
                     signal_price=self.position.get('signal_price'),
                     signal_time=self.position.get('signal_time'),
-                    signal_bar=self.position.get('signal_bar'))
+                    signal_bar=self.position.get('signal_bar'),
+                    confluence_score=self.position.get('confluence_score'),
+                    trade_id=self.position.get('trade_id'))
 
                 trade_rec = TradeRecord(
-                    trade_id=self.position['trade_id'], symbol="SOL/USD",
+                    trade_id=self.position['trade_id'],
+                    symbol=getattr(self, 'symbol', GlobalConfig.DEFAULT_SYMBOL),
                     entry_time=self.position['entry_time'],
                     entry_price=self.position['entry_price'],
                     entry_size=self.position['original_quantity'],
@@ -2896,7 +3678,8 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                     market_regime=self.current_regime,
                     partial_exits_taken=self.position.get('partial_exits', 0),
                     partial_pnl_realised=self.position.get('partial_pnl_realised', 0.0),
-                    original_size=self.position['original_quantity'])
+                    original_size=self.position['original_quantity'],
+                    partial_exit_details=self.position.get('partial_exit_details', []))
                 self.risk_controller.record_trade(trade_rec)
 
                 self.position = {
@@ -2910,14 +3693,50 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                     'signal_adx': None, 'signal_rsi': None, 'signal_macd': None,
                     'signal_volume': None, 'signal_price_pct': None, 'signal_price': None,
                     'signal_time': None, 'signal_bar': None,
+                    'ml_prediction': 0, 'ml_confidence': 0.0,
                 }
                 self._account_quantity = 0
                 self.bars_held = 0
                 self._transition_to_seeking_entry()
             else:
+                # PARTIAL EXIT - RECORD WITH SAME TRADE ID
                 self.position['quantity'] -= filled_qty
                 self.position['partial_exits'] = self.position.get('partial_exits', 0) + 1
                 self.position['partial_pnl_realised'] = self.position.get('partial_pnl_realised', 0.0) + leg_profit
+
+                # Store partial exit details
+                if 'partial_exit_details' not in self.position:
+                    self.position['partial_exit_details'] = []
+                self.position['partial_exit_details'].append({
+                    'exit_time': datetime.now(timezone.utc),
+                    'exit_price': exit_price,
+                    'exit_size': filled_qty,
+                    'exit_reason': reason,
+                    'profit': leg_profit,
+                    'profit_pct': profit_pct,
+                })
+
+                # Record partial exit with same trade ID
+                self.record_trade(
+                    profit=leg_profit, exit_reason=f"{reason}_partial",
+                    tier=self.position.get('tier'), size=filled_qty,
+                    direction=self.trade_direction,
+                    entry_quality=self.position.get('entry_quality_score'),
+                    entry_price=self.position['entry_price'],
+                    exit_price=exit_price,
+                    hold_duration=(datetime.now(timezone.utc) - self.position['entry_time']).total_seconds() / 60,
+                    entry_bar=self.position.get('entry_bar'),
+                    exit_bar=getattr(self, 'bar_count', 0),
+                    signal_adx=self.position.get('signal_adx'),
+                    signal_rsi=self.position.get('signal_rsi'),
+                    signal_macd=self.position.get('signal_macd'),
+                    signal_volume=self.position.get('signal_volume'),
+                    signal_price_pct=self.position.get('signal_price_pct'),
+                    signal_price=self.position.get('signal_price'),
+                    signal_time=self.position.get('signal_time'),
+                    signal_bar=self.position.get('signal_bar'),
+                    confluence_score=self.position.get('confluence_score'),
+                    trade_id=self.position.get('trade_id'))
             return True, leg_profit, exit_price
         except Exception as e:
             self._log(f"ERROR execute_sell: {e}", "bold red")
@@ -2955,7 +3774,8 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
 
     def set_fuzzy_mode(self, enabled):
         self.fuzzy_mode_enabled = enabled
-        if enabled: self.log_fuzzy_threshold_stats()
+        if enabled:
+            self.log_fuzzy_threshold_stats()
 
     def reset_fuzzy_learning(self):
         super().reset_fuzzy_learning()
@@ -2978,17 +3798,17 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                 'MACD_Histogram_prev': last_row.get('MACD_Histogram_closed', 0),
                 'EMA_200': last_row.get('EMA_200', 0),
                 'Above_EMA200': last_row.get('Above_EMA200', True),
+                'Above_Daily_50': last_row.get('Above_Daily_50', None),
+                'EMA_Daily_50': last_row.get('EMA_Daily_50', 0),
             }
         return {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 10: BACKTEST STRATEGY — v9.4
+# PART 10: BACKTEST STRATEGY — v10.0.3 with fixed partial exits
 # ═══════════════════════════════════════════════════════════════════════════
 
 class BacktestMomentumStrategy(Strategy, MomentumLogic):
-    """v9.4 Backtest — with ALL FIXES"""
-
     _use_updated_params = False
     _updated_params = {}
 
@@ -3042,13 +3862,11 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
     backtest_weight_volume_active = True
     backtest_weight_volume_values = [10, 12, 15, 18]
     backtest_risk_tier1_active = True
-    backtest_risk_tier1_values = [0.010, 0.012, 0.015, 0.018]
+    backtest_risk_tier1_values = [0.015, 0.020, 0.025, 0.030]
     backtest_risk_tier2_active = True
-    backtest_risk_tier2_values = [0.012, 0.015, 0.018, 0.022]
+    backtest_risk_tier2_values = [0.010, 0.015, 0.018, 0.022]
     backtest_stop_loss_mult_active = True
-    backtest_stop_loss_mult_values = [2.0, 2.5, 3.0, 3.5]
-    backtest_only_tier2_active = True
-    backtest_only_tier2_values = [True, False]
+    backtest_stop_loss_mult_values = [2.0, 2.5, 3.0, 3.5, 4.0]
 
     def __init__(self, broker, data, params):
         Strategy.__init__(self, broker, data, params)
@@ -3067,13 +3885,24 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             setattr(self, key, value)
 
         critical_defaults = {
-            'trailing_activation_pct': 0.015, 'trailing_distance_pct': 0.01,
-            'trade_direction': 'long', 'stop_loss_atr_mult': 1.5,
-            'only_tier2_entries': False, 'quality_tier1_min': 60,
-            'quality_tier2_min': 75, 'short_quality_tier2_min': 75,
-            'short_fixed_threshold': 75, 'fixed_threshold': 75,
-            'tier1_adx_hard_min': 18, 'short_tier1_adx_hard_min': 18,
+            'trailing_activation_pct': 0.03, 'trailing_distance_pct': 0.035,
+            'trade_direction': 'both', 'stop_loss_atr_mult': 2.5,
+            'quality_tier1_min_long': 75, 'quality_tier2_min_long': 65,
+            'quality_tier1_min_short': 75, 'quality_tier2_min_short': 65,
+            'quality_tier1_min': 75, 'quality_tier2_min': 65,
+            'short_quality_tier1_min': 75, 'short_quality_tier2_min': 65,
+            'tier1_adx_hard_min': 25, 'short_tier1_adx_hard_min': 30,
             'tier1_volume_min': 0.8, 'max_position_units': 50,
+            'risk_tier1': 0.025, 'risk_tier2': 0.015,
+            'tier1_size_multiplier': 1.0, 'tier2_size_multiplier': 0.70,
+            'tier1_stop_multiplier': 2.0, 'tier2_stop_multiplier': 2.5,
+            'exit_threshold_tier1': 60, 'exit_threshold_tier2': 50,
+            'ml_weight': 0.20,
+            'min_bars_between_trades': 4,
+            'min_bars_between_trades_tier1': 4, 'min_bars_between_trades_tier2': 3,
+            'cooldown_tier2_enabled': True,
+            'tier1_confluence_min': 0.65, 'tier2_confluence_min': 0.70,
+            'only_tier1_entries': False,
         }
         for attr, default_val in critical_defaults.items():
             if not hasattr(self, attr) or getattr(self, attr) is None:
@@ -3081,15 +3910,28 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
         MomentumLogic.__init__(self, config=config, trading_app=None)
 
+        # ── DIRECTION-SEPARATED COOLDOWN ───────────────────────────────────────────
+        self._exit_bar_long = -999
+        self._exit_bar_short = -999
+        self._last_exit_time_long = None
+        self._last_exit_time_short = None
+        self._exit_cooldown_bars_long = 3
+        self._exit_cooldown_bars_short = 3
+        self._pending_signal_long = None
+        self._pending_signal_short = None
+
         print(f"\n{'=' * 70}")
-        print(f"BACKTEST v9.4 CONFIGURATION LOADED")
+        print(f"BACKTEST v10.0.3 CONFIGURATION LOADED — TWO-TIER SYSTEM + FIXED PARTIAL EXITS")
         print(f"{'=' * 70}")
         print(f"Direction: {self.trade_direction.upper()}")
-        print(f"ATR Compression Filter: {getattr(self, 'atr_compression_enabled', True)}")
-        print(f"Extended Run Filter: max {getattr(self, 'extended_run_max_pct_long', 5.0)}%")
-        print(f"Max Position Units: {getattr(self, 'max_position_units', 50)}")
-        print(f"Short ADX Min: {getattr(self, 'short_tier1_adx_hard_min', 28)}")
-        print(f"Trend Age Penalty: -{getattr(self, 'trend_age_penalty_pts', 10)}pts after {getattr(self, 'trend_age_max_bars', 20)} bars")
+        print(
+            f"Tier 1 (Low Risk):  Pass={getattr(self, 'quality_tier1_min_long', 75)} | Risk={getattr(self, 'risk_tier1', 0.025):.1%}")
+        print(
+            f"Tier 2 (Medium Risk): Pass={getattr(self, 'quality_tier2_min_long', 65)} | Risk={getattr(self, 'risk_tier2', 0.015):.1%}")
+        print(f"ML Weight: {getattr(self, 'ml_weight', 0.20):.0%}")
+        print(f"Only Tier 1 Entries: {getattr(self, 'only_tier1_entries', False)}")
+        print(
+            f"LONG Cooldown: {self._exit_cooldown_bars_long} bars | SHORT Cooldown: {self._exit_cooldown_bars_short} bars")
         print(f"{'=' * 70}\n")
 
         self._entry_price = np.nan
@@ -3103,6 +3945,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self._entry_bar = -999
         self._entry_tier = None
         self._entry_quality = 0
+        self._entry_confluence_score = 0.0
         self._entry_reason = ""
         self._params_dict = params
         self._partial_pnl_realised = 0.0
@@ -3118,9 +3961,14 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self._signal_volume = None
         self._signal_price_pct = None
         self._signal_time = None
+        self._signal_ml_prediction = 0
+        self._signal_ml_confidence = 0.0
 
-        # v9.4.1 FIX: Store bar interval in hours for correct cooldown display.
-        # Detect from data if available, default to 1.0 (1H bars).
+        # NEW: Trade ID tracking for backtest
+        self._current_trade_id = 0
+        self._active_trade_ids = set()
+        self.trade_counter = 0
+
         try:
             idx_freq = data.df.index.freq
             if idx_freq is not None:
@@ -3129,12 +3977,12 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 delta = (data.df.index[1] - data.df.index[0]).total_seconds() / 3600
                 self._bar_interval_hours = delta
         except Exception:
-            self._bar_interval_hours = 1.0  # default 1H
+            self._bar_interval_hours = 1.0
 
     def _get_optimization_ranges(self):
         ranges = {}
         optimization_map = {
-            'backtest_quality_values': ['quality_minimum_score', 'quality_tier1_min'],
+            'backtest_quality_values': ['quality_tier1_min_long', 'quality_tier2_min_long'],
             'backtest_adx_values': ['tier1_adx_hard_min', 'adx_min'],
             'backtest_rsi_values': ['tier1_rsi_min', 'rsi_entry_min'],
             'backtest_volume_values': ['tier1_volume_min', 'volume_min_ratio'],
@@ -3150,7 +3998,6 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             'backtest_risk_tier1_values': ['risk_tier1'],
             'backtest_risk_tier2_values': ['risk_tier2'],
             'backtest_stop_loss_mult_values': ['stop_loss_atr_mult'],
-            'backtest_only_tier2_values': ['only_tier2_entries'],
         }
         for attr_name, param_names in optimization_map.items():
             active_attr = attr_name.replace('_values', '_active')
@@ -3160,10 +4007,78 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                     ranges[param_name] = values
         return ranges
 
+    def _bt_safe_size(self, units, price):
+        """
+        Convert a desired share count into a size backtesting.py will execute
+        as that exact number of shares.
+
+        BUG THIS FIXES: backtesting.py treats any size < 1 as "fraction of
+        equity", not "fractional shares". The old code only rounded to whole
+        shares when `units` was ALREADY an exact integer (units == round(units)).
+        Any partial-exit size like 15.18 (33% of a 46-share position) failed
+        that check and fell into the equity-fraction branch, silently selling
+        a tiny sliver of equity instead of ~15 shares. That drift between the
+        strategy's intended size and the engine's actual position is what
+        later let backtesting.py's own Trade.close() rounding overshoot and
+        flip the position into a spurious 1-share opposite trade.
+
+        FIX: always round to the nearest whole share first. Only fall back to
+        the equity-fraction interpretation if the position itself is
+        genuinely below 1 share even after rounding.
+        """
+        if units <= 0:
+            return 0
+
+        whole_shares = int(round(units))
+        if whole_shares >= 1:
+            return whole_shares
+
+        notional = units * price
+        fraction = notional / max(self.equity, 1.0)
+        return max(0.0001, min(fraction, 0.9999))
+
+    def _estimate_slippage_pct(self, size_units, current_data):
+        if not getattr(self, 'slippage_enabled', True):
+            return 0.0
+        base_bps = getattr(self, 'slippage_base_bps', 2.0)
+        impact_coef = getattr(self, 'slippage_impact_coef', 0.5)
+        max_bps = getattr(self, 'slippage_max_bps', 50.0)
+        bar_volume = current_data.get('Volume', 0) or 0
+        price = current_data.get('Close', 0) or 0
+        atr = current_data.get('ATR', 0) or 0
+        if bar_volume <= 0 or price <= 0 or size_units <= 0:
+            return base_bps / 10000.0
+        participation = size_units / max(bar_volume, 1e-9)
+        volatility_pct = (atr / price) if price > 0 else 0.0
+        impact_bps = impact_coef * participation * 10000 * (1 + volatility_pct * 10)
+        total_bps = min(base_bps + impact_bps, max_bps)
+        return total_bps / 10000.0
+
+    def _slippage_adjusted_price(self, price, size_units, current_data, adverse_direction):
+        slip_pct = self._estimate_slippage_pct(size_units, current_data)
+        return price * (1 + adverse_direction * slip_pct)
+
     def _bt_open_position(self, current_data, quality_score, tier, position_mult, current_price):
-        if self.only_tier2_entries and tier != 2:
-            print(f"❌ BLOCKED: Tier {tier} entry attempted but only_tier2_entries=True")
+        """Open a position in backtest mode with complete TradeRecord capture."""
+        if self.only_tier1_entries and tier != 1:
+            print(f"❌ BLOCKED: Tier {tier} entry attempted but only_tier1_entries=True")
             return
+
+        # Hard guard: these flags were being SET (see only_long_entries /
+        # only_short_entries assignments elsewhere) but never CHECKED
+        # anywhere, so a long-only backtest had no engine-level protection
+        # against an opposite-direction order slipping through.
+        if self._position_direction == 'long' and self.only_short_entries:
+            print("❌ BLOCKED: long entry attempted but only_short_entries=True")
+            return
+        if self._position_direction == 'short' and self.only_long_entries:
+            print("❌ BLOCKED: short entry attempted but only_long_entries=True")
+            return
+
+        tier_config = self._get_tier_config(tier)
+        if tier_config is None:
+            tier_config = self._get_tier_config(1)
+        stop_mult = tier_config.get('stop_mult', 2.5)
 
         size = self.calculate_position_size(
             self.equity, current_data['ATR'], current_price,
@@ -3171,18 +4086,22 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         if size <= 0:
             return
 
+        # Generate unique trade ID
+        self.trade_counter += 1
+        self._current_trade_id = self.trade_counter
+
         if self._position_direction == 'long':
-            stop = current_price - (self.stop_loss_atr_mult * current_data['ATR'])
+            stop = current_price - (stop_mult * current_data['ATR'])
             if stop >= current_price:
                 print(f"REJECTED: stop {stop:.4f} >= price {current_price:.4f}")
                 return
-            self.buy(size=size)
+            self.buy(size=self._bt_safe_size(size, current_price))
         else:
-            stop = current_price + (self.stop_loss_atr_mult * current_data['ATR'])
+            stop = current_price + (stop_mult * current_data['ATR'])
             if stop <= current_price:
                 print(f"REJECTED: stop {stop:.4f} <= price {current_price:.4f}")
                 return
-            self.sell(size=size)
+            self.sell(size=self._bt_safe_size(size, current_price))
 
         self._entry_price = current_price
         self._stop_loss = stop
@@ -3193,11 +4112,13 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self._entry_bar = len(self.data) - 1
         self._entry_tier = tier
         self._entry_quality = quality_score
+        self._entry_confluence_score = getattr(self, '_last_confluence_score', 0.0)
         self._partial_pnl_realised = 0.0
         self._trailing_activated = False
         self._trailing_stop = None
-        self._transition_to_in_trade()
+        self._be_stop_set = False
 
+        # ── Capture signal data from pending signal ──
         if self._pending_signal:
             self._signal_adx = self._pending_signal.get('signal_adx')
             self._signal_rsi = self._pending_signal.get('signal_rsi')
@@ -3207,22 +4128,74 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             self._signal_price = self._pending_signal.get('signal_price')
             self._signal_time = self._pending_signal.get('signal_time')
             self._signal_bar = self._pending_signal.get('signal_bar')
+            self._signal_ml_prediction = self._pending_signal.get('ml_prediction', 0)
+            self._signal_ml_confidence = self._pending_signal.get('ml_confidence', 0.0)
+            self._entry_confluence_score = self._pending_signal.get('confluence_score', self._entry_confluence_score)
 
+        # ─── CREATE COMPLETE TRADE RECORD ──────────────────────────────────────────
+        # Use the actual timestamp of the current bar being traded (from the
+        # backtest data index), NOT datetime.now() — the latter just records
+        # whatever wall-clock time the script happened to run, which is
+        # meaningless for a historical backtest.
+        bar_entry_time = self.data.index[-1]
+        self._entry_time = bar_entry_time
+        trade_record = TradeRecord(
+            trade_id=self._current_trade_id,
+            symbol=getattr(self, 'symbol', 'SOL-USDT'),
+            entry_time=bar_entry_time,
+            entry_price=current_price,
+            entry_size=size,
+            entry_tier=tier,
+            entry_quality_score=quality_score,
+            entry_reason="entry_signal",
+            entry_direction=self._position_direction,
+            entry_bar=self._entry_bar,
+            # Signal data
+            signal_adx=self._signal_adx or current_data.get('ADX', 0),
+            signal_rsi=self._signal_rsi or current_data.get('RSI', 50),
+            signal_macd=self._signal_macd or current_data.get('MACD', 0),
+            signal_volume=self._signal_volume or current_data.get('Volume_Ratio', 1.0),
+            signal_price_pct=self._signal_price_pct or current_data.get('Price_Percentile_20bar', 50),
+            signal_ml_prediction=self._signal_ml_prediction,
+            signal_ml_confidence=self._signal_ml_confidence,
+            confluence_score=self._entry_confluence_score,
+            market_regime=self.current_regime,
+            # These will be filled on exit
+            exit_time=None,
+            exit_price=None,
+            exit_size=None,
+            exit_reason=None,
+            profit=0.0,
+            profit_pct=0.0,
+            profit_r=0.0,
+            hold_duration=0.0,
+            partial_exits_taken=0,
+            partial_pnl_realised=0.0,
+            original_size=size,
+            partial_exit_details=[],
+        )
+
+        # Store the active record and append to history
+        self._active_trade_record = trade_record
+        if not hasattr(self, 'trade_records'):
+            self.trade_records = []
+        self.trade_records.append(trade_record)
+
+        self._transition_to_in_trade()
+
+        tier_names = {1: 'Low Risk', 2: 'Medium Risk'}
         direction_icon = "⬆️" if self._position_direction == 'long' else "⬇️"
-        print(f"{direction_icon} ENTER T{tier} Q={quality_score} @ ${current_price:.2f} "
-              f"ADX={current_data['ADX']:.1f} RSI={current_data['RSI']:.1f} "
+        print(f"{direction_icon} ENTER T{tier} ({tier_names.get(tier, 'Unknown')}) Q={quality_score} "
+              f"@ ${current_price:.2f} ADX={current_data['ADX']:.1f} RSI={current_data['RSI']:.1f} "
               f"Dir={self.trade_direction.upper()} → IN_TRADE")
 
     def _calculate_actual_tier(self, quality_score):
-        # BUG FIX v9.4.1: Must check the HIGHER threshold (Tier 1) first.
-        # Old code checked quality_tier2_min (68) first, making Tier 1 unreachable
-        # since any score >= 68 also satisfies >= 68 and returns 2 immediately.
-        if self.only_tier2_entries:
-            return 2 if quality_score >= self.quality_tier2_min else 0
+        if self.only_tier1_entries:
+            return 1 if quality_score >= self.quality_tier1_min_long else 0
         else:
-            if quality_score >= self.quality_tier1_min:   # >= 72 first
+            if quality_score >= self.quality_tier1_min_long:
                 return 1
-            elif quality_score >= self.quality_tier2_min: # 68-71 second
+            elif quality_score >= self.quality_tier2_min_long:
                 return 2
             else:
                 return 0
@@ -3234,7 +4207,8 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self.ema_mid = self.I(lambda: self.df_indicators['EMA_Mid'].values, name='EMA_Mid')
         self.ema_slow = self.I(lambda: self.df_indicators['EMA_Slow'].values, name='EMA_Slow')
         self.ema_daily_50 = self.I(lambda: self.df_indicators['EMA_Daily_50'].values, name='EMA_Daily_50')
-        self.above_daily_50 = self.I(lambda: self.df_indicators['Above_Daily_50'].astype(float).values, name='Above_Daily_50')
+        self.above_daily_50 = self.I(lambda: self.df_indicators['Above_Daily_50'].astype(float).values,
+                                     name='Above_Daily_50')
         self.macd_line = self.I(lambda: self.df_indicators['MACD'].values, name='MACD')
         self.macd_sig = self.I(lambda: self.df_indicators['MACD_Signal'].values, name='MACD_Signal')
         self.macd_hist = self.I(lambda: self.df_indicators['MACD_Histogram'].values, name='MACD_Histogram')
@@ -3243,7 +4217,9 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self.volume_ratio = self.I(lambda: self.df_indicators['Volume_Ratio'].values, name='Volume_Ratio')
         self.momentum = self.I(lambda: self.df_indicators['Momentum'].values, name='Momentum')
         self.atr = self.I(lambda: self.df_indicators['ATR'].values, name='ATR')
-        self.adx_prev = self.I(lambda: self.df_indicators['ADX_prev'].fillna(self.df_indicators['ADX_prev'].bfill()).values, name='ADX_prev')
+        self.adx_prev = self.I(
+            lambda: self.df_indicators['ADX_prev'].fillna(self.df_indicators['ADX_prev'].bfill()).values,
+            name='ADX_prev')
         self.ranging = self.I(lambda: self.df_indicators['Ranging'].astype(float).values, name='Ranging')
         self.price_pct = self.I(lambda: self.df_indicators['Price_Percentile_20bar'].values, name='Price_Pct')
         self.ema_200 = self.I(lambda: self.df_indicators['EMA_200'].values, name='EMA_200')
@@ -3254,14 +4230,16 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             try:
                 v = arr[-1]
                 return default if (v is None or (isinstance(v, float) and np.isnan(v))) else float(v)
-            except Exception: return default
+            except Exception:
+                return default
 
         def safe_bool(arr, default=True):
             try:
                 v = arr[-1]
                 if v is None or (isinstance(v, float) and np.isnan(v)): return default
                 return bool(v)
-            except Exception: return default
+            except Exception:
+                return default
 
         return {
             'Close': self.data.Close[-1],
@@ -3276,10 +4254,14 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             'MACD': safe(self.macd_line),
             'MACD_Signal': safe(self.macd_sig),
             'MACD_Histogram': safe(self.macd_hist),
-            'MACD_closed': float(self.macd_line[-2]) if len(self.macd_line) > 1 and not np.isnan(self.macd_line[-2]) else 0.0,
-            'MACD_Signal_closed': float(self.macd_sig[-2]) if len(self.macd_sig) > 1 and not np.isnan(self.macd_sig[-2]) else 0.0,
-            'MACD_Histogram_Rising': (float(self.macd_hist[-1]) > float(self.macd_hist[-2])) if len(self.macd_hist) > 1 else False,
-            'MACD_Histogram_prev': float(self.macd_hist[-2]) if len(self.macd_hist) > 1 and not np.isnan(self.macd_hist[-2]) else 0.0,
+            'MACD_closed': float(self.macd_line[-2]) if len(self.macd_line) > 1 and not np.isnan(
+                self.macd_line[-2]) else 0.0,
+            'MACD_Signal_closed': float(self.macd_sig[-2]) if len(self.macd_sig) > 1 and not np.isnan(
+                self.macd_sig[-2]) else 0.0,
+            'MACD_Histogram_Rising': (float(self.macd_hist[-1]) > float(self.macd_hist[-2])) if len(
+                self.macd_hist) > 1 else False,
+            'MACD_Histogram_prev': float(self.macd_hist[-2]) if len(self.macd_hist) > 1 and not np.isnan(
+                self.macd_hist[-2]) else 0.0,
             'Price_Percentile_20bar': safe(self.price_pct, 50.0),
             'EMA_Daily_50': safe(self.ema_daily_50),
             'Above_Daily_50': safe_bool(self.above_daily_50, True),
@@ -3287,56 +4269,278 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             'Above_EMA200': safe_bool(self.above_ema200, True),
         }
 
-    def _bt_close_position(self, current_price, exit_signal, profit_pct):
-        size_at_close = abs(self.position.size)
-        self._exit_reason_map[self._entry_bar] = exit_signal
-        self.position.close()
+    def _calculate_exit_power_bt(self, current_data, position_type):
+        score = 0
+        macd = current_data.get('MACD', 0)
+        macd_signal = current_data.get('MACD_Signal', 0)
+        ema_fast = current_data.get('EMA_Fast', 0)
+        ema_slow = current_data.get('EMA_Slow', 0)
+        adx = current_data.get('ADX', 0)
+        rsi = current_data.get('RSI', 50)
+        volume_ratio = current_data.get('Volume_Ratio', 1.0)
 
-        if self._position_direction == 'long':
-            final_leg = (current_price - self._entry_price) * size_at_close
-            profit_pct_calc = (current_price - self._entry_price) / self._entry_price * 100
+        if position_type == 'long':
+            if macd < macd_signal:
+                cross_strength = min(30, (macd_signal - macd) * 100)
+                score += cross_strength
+            if ema_fast < ema_slow:
+                ema_diff_pct = ((ema_slow - ema_fast) / ema_slow) * 100
+                ema_score = min(25, ema_diff_pct * 5)
+                score += ema_score
+            if adx < 20:
+                adx_decline = (20 - adx) / 20 * 15
+                score += adx_decline
+            if rsi < 50:
+                rsi_drop = (50 - rsi) / 50 * 15
+                score += rsi_drop
+            if volume_ratio > 1.5:
+                vol_score = min(15, (volume_ratio - 1.5) * 10)
+                score += vol_score
         else:
-            final_leg = (self._entry_price - current_price) * size_at_close
-            profit_pct_calc = (self._entry_price - current_price) / self._entry_price * 100
+            if macd > macd_signal:
+                cross_strength = min(30, (macd - macd_signal) * 100)
+                score += cross_strength
+            if ema_fast > ema_slow:
+                ema_diff_pct = ((ema_fast - ema_slow) / ema_slow) * 100
+                ema_score = min(25, ema_diff_pct * 5)
+                score += ema_score
+            if adx < 20:
+                adx_decline = (20 - adx) / 20 * 15
+                score += adx_decline
+            if rsi > 50:
+                rsi_rise = (rsi - 50) / 50 * 15
+                score += rsi_rise
+            if volume_ratio > 1.5:
+                vol_score = min(15, (volume_ratio - 1.5) * 10)
+                score += vol_score
 
-        total_profit = final_leg + self._partial_pnl_realised
+        return min(100, int(score))
+
+    def _record_partial_exit_row(self, partial_size, partial_fill_price, partial_profit, exit_signal):
+        """
+        Log a partial exit as its own complete TradeRecord row — entry
+        inherited from the original position, exit at this partial fill.
+        This is what makes each scale-out show up as its own line in the
+        trade log instead of being folded silently into the final row's PnL.
+        """
+        exit_bar = len(self.data) - 1
+        bar_exit_time = self.data.index[-1]
+
+        # Keyed by (entry_bar, exit_bar) — NOT just entry_bar — because
+        # every partial leg AND the final leg share the same entry_bar. A
+        # single-key map would have each new leg silently overwrite the
+        # previous one's reason.
+        self._exit_reason_map[(self._entry_bar, exit_bar)] = f"{exit_signal}_partial"
+
+        profit_pct_calc = (
+            (partial_fill_price - self._entry_price) / self._entry_price * 100
+            if self._position_direction == 'long'
+            else (self._entry_price - partial_fill_price) / self._entry_price * 100
+        )
+
+        # Use SAME trade ID as the parent trade
+        trade_id = self._current_trade_id
+
+        partial_record = TradeRecord(
+            trade_id=trade_id,
+            symbol=getattr(self, 'symbol', 'SOL-USDT'),
+            entry_time=self._entry_time,
+            entry_price=self._entry_price,
+            entry_size=partial_size,
+            entry_tier=self._entry_tier,
+            entry_quality_score=self._entry_quality,
+            entry_reason="entry_signal",
+            entry_direction=self._position_direction,
+            entry_bar=self._entry_bar,
+            signal_adx=self._signal_adx or 0,
+            signal_rsi=self._signal_rsi or 50,
+            signal_macd=self._signal_macd or 0,
+            signal_volume=self._signal_volume or 1.0,
+            signal_price_pct=self._signal_price_pct or 50,
+            signal_ml_prediction=getattr(self, '_signal_ml_prediction', 0),
+            signal_ml_confidence=getattr(self, '_signal_ml_confidence', 0.0),
+            confluence_score=self._entry_confluence_score,
+            market_regime=self.current_regime,
+            exit_time=bar_exit_time,
+            exit_price=partial_fill_price,
+            exit_size=partial_size,
+            exit_reason=f"{exit_signal}_partial",
+            profit=partial_profit,
+            profit_pct=profit_pct_calc,
+            hold_duration=self._bars_held,
+            partial_exits_taken=self._partial_exits,
+            partial_pnl_realised=partial_profit,
+            original_size=partial_size,
+            partial_exit_details=[],
+        )
+        self.trade_records.append(partial_record)
+
+        # Update the active trade record's partial exit details
+        if hasattr(self, '_active_trade_record') and self._active_trade_record:
+            self._active_trade_record.partial_exits_taken = self._partial_exits
+            self._active_trade_record.partial_pnl_realised = self._partial_pnl_realised
+            if not hasattr(self._active_trade_record, 'partial_exit_details'):
+                self._active_trade_record.partial_exit_details = []
+            self._active_trade_record.partial_exit_details.append({
+                'exit_time': bar_exit_time,
+                'exit_price': partial_fill_price,
+                'exit_size': partial_size,
+                'exit_reason': f"{exit_signal}_partial",
+                'profit': partial_profit,
+                'profit_pct': profit_pct_calc,
+            })
 
         self.record_trade(
-            profit=total_profit, exit_reason=exit_signal,
-            tier=self._entry_tier, size=size_at_close,
+            profit=partial_profit, exit_reason=f"{exit_signal}_partial",
+            tier=self._entry_tier, size=partial_size,
             direction=self._position_direction,
             entry_quality=self._entry_quality,
-            entry_price=self._entry_price, exit_price=current_price,
+            entry_price=self._entry_price, exit_price=partial_fill_price,
             hold_duration=self._bars_held,
-            entry_bar=self._entry_bar, exit_bar=len(self.data) - 1,
+            entry_bar=self._entry_bar, exit_bar=exit_bar,
             signal_adx=self._signal_adx, signal_rsi=self._signal_rsi,
             signal_macd=self._signal_macd, signal_volume=self._signal_volume,
             signal_price_pct=self._signal_price_pct,
             signal_price=self._signal_price,
-            signal_time=self._signal_time, signal_bar=self._signal_bar)
+            signal_time=self._signal_time, signal_bar=self._signal_bar,
+            confluence_score=getattr(self, '_entry_confluence_score', None),
+            entry_time=self._entry_time, exit_time=bar_exit_time,
+            trade_id=trade_id)
 
+    def _bt_close_position(self, current_price, exit_signal, profit_pct):
+        size_at_close = abs(self.position.size)
+        exit_bar = len(self.data) - 1
+
+        # Keyed by (entry_bar, exit_bar) — NOT just entry_bar — because
+        # every partial leg AND this final leg share the same entry_bar.
+        # A single-key map would have each new leg silently overwrite the
+        # previous one's recorded reason.
+        self._exit_reason_map[(self._entry_bar, exit_bar)] = exit_signal
+        self.position.close()
+
+        # SAFETY NET: backtesting.py's own Trade.close() rounds any small
+        # leftover trade fragment up to at least 1 whole share. If size
+        # tracking ever drifts, this can overshoot and leave residual size
+        # on the position.
+        #
+        # FIX: this used to flatten the leftover with self.sell()/self.buy().
+        # Under exclusive_orders=True (see the identical bug already fixed
+        # in the partial-exit handler above), ANY new self.buy()/self.sell()
+        # order submitted here first closes whatever is left, THEN opens a
+        # brand-new position in the requested direction and size. If the
+        # "leftover" was ever the full remaining size (not just a 1-share
+        # rounding artifact), this reopened a full opposite-direction
+        # position at the same price/bar as the exit — exactly the
+        # long-only-still-shows-shorts pattern (e.g. LONG stop_loss_hard
+        # immediately followed by a same-size, same-bar, same-price SHORT).
+        # Use position.close() again instead: it builds its closing order
+        # directly and bypasses order submission (and thus exclusive_orders)
+        # entirely, so it can never flip direction.
+        if self.position.size != 0:
+            leftover = self.position.size
+            print(f"⚠️ POSITION DRIFT DETECTED after close(): leftover={leftover} "
+                  f"at {self.data.index[-1]} — force-flattening via position.close() "
+                  f"(never a new order) now.")
+            self.position.close()
+            if self.position.size != 0:
+                print(f"❌ POSITION STILL NOT FLAT after second close(): "
+                      f"size={self.position.size} at {self.data.index[-1]} — "
+                      f"investigate, NOT auto-reversing.")
+
+        current_data = self._build_current_data()
+        exit_fill_price = self._slippage_adjusted_price(
+            current_price, size_at_close, current_data,
+            adverse_direction=(-1 if self._position_direction == 'long' else +1))
+
+        if self._position_direction == 'long':
+            final_leg = (exit_fill_price - self._entry_price) * size_at_close
+            profit_pct_calc = (exit_fill_price - self._entry_price) / self._entry_price * 100
+        else:
+            final_leg = (self._entry_price - exit_fill_price) * size_at_close
+            profit_pct_calc = (self._entry_price - exit_fill_price) / self._entry_price * 100
+
+        # This row reports ONLY the final leg's own PnL. Any partial legs
+        # were already logged as their own rows in _record_partial_exit_row,
+        # each carrying their own PnL. total_profit_for_whole_trade below is
+        # only used for the console summary line — it is never re-logged as
+        # a row, so nothing gets double-counted in the exported sheet. Sum
+        # every row sharing this trade's entry_time/entry_price to see the
+        # whole trade's total P&L.
+        total_profit_for_whole_trade = final_leg + self._partial_pnl_realised
+
+        # Real timestamp of the bar on which the position is being closed.
+        bar_exit_time = self.data.index[-1]
+        bar_entry_time = getattr(self, '_entry_time', None)
+
+        trade_id = self._current_trade_id
+
+        self.record_trade(
+            profit=final_leg, exit_reason=exit_signal,
+            tier=self._entry_tier, size=size_at_close,
+            direction=self._position_direction,
+            entry_quality=self._entry_quality,
+            entry_price=self._entry_price, exit_price=exit_fill_price,
+            hold_duration=self._bars_held,
+            entry_bar=self._entry_bar, exit_bar=exit_bar,
+            signal_adx=self._signal_adx, signal_rsi=self._signal_rsi,
+            signal_macd=self._signal_macd, signal_volume=self._signal_volume,
+            signal_price_pct=self._signal_price_pct,
+            signal_price=self._signal_price,
+            signal_time=self._signal_time, signal_bar=self._signal_bar,
+            confluence_score=getattr(self, '_entry_confluence_score', None),
+            entry_time=bar_entry_time, exit_time=bar_exit_time,
+            trade_id=trade_id)
+
+        # Also fill in the exit fields on the matching TradeRecord object
+        # (self.trade_records), which was previously left with exit_time=None
+        # forever since nothing ever wrote back to it after the entry.
+        active_record = getattr(self, '_active_trade_record', None)
+        if active_record is not None:
+            active_record.exit_time = bar_exit_time
+            active_record.exit_price = exit_fill_price
+            active_record.exit_reason = exit_signal
+            active_record.profit = final_leg
+            active_record.profit_pct = profit_pct_calc
+            active_record.hold_duration = self._bars_held
+            active_record.partial_exits_taken = self._partial_exits
+            active_record.partial_pnl_realised = self._partial_pnl_realised
+
+        tier_names = {1: 'Low Risk', 2: 'Medium Risk'}
         direction_icon = "⬆️" if self._position_direction == 'long' else "⬇️"
-        win_loss_icon = "✅" if total_profit > 0 else "❌"
-        print(f"{win_loss_icon} {direction_icon} EXIT @ ${current_price:.2f} {profit_pct_calc:+.2f}% "
-              f"hold={self._bars_held}bars reason={exit_signal} → SEEKING_ENTRY")
+        win_loss_icon = "✅" if total_profit_for_whole_trade > 0 else "❌"
+        print(f"{win_loss_icon} {direction_icon} EXIT @ ${exit_fill_price:.2f} {profit_pct_calc:+.2f}% "
+              f"hold={self._bars_held}bars tier={self._entry_tier} ({tier_names.get(self._entry_tier, 'Unknown')}) "
+              f"reason={exit_signal} final_leg=${final_leg:.2f} "
+              f"whole_trade_total=${total_profit_for_whole_trade:.2f} → SEEKING_ENTRY")
 
-        self._entry_price = np.nan; self._stop_loss = np.nan
-        self._highest_price = np.nan; self._lowest_price = np.nan
-        self._bars_held = 0; self._partial_exits = 0
-        self._partial_pnl_realised = 0.0; self._entry_tier = None
-        # BUG FIX v9.4.1 (STRAT BUG 10): self.trade_direction can be 'both', which is
-        # not a valid position direction. Reset to 'long' as a safe neutral sentinel.
-        # _position_direction will be properly set from the next pending signal.
+        self._entry_price = np.nan
+        self._stop_loss = np.nan
+        self._highest_price = np.nan
+        self._lowest_price = np.nan
+        self._bars_held = 0
+        self._partial_exits = 0
+        self._partial_pnl_realised = 0.0
+        self._entry_tier = None
+        self._entry_confluence_score = 0.0
         self._position_direction = 'long'
-        self._trailing_activated = False; self._trailing_stop = None
+        self._trailing_activated = False
+        self._trailing_stop = None
         self._be_stop_set = False
-        self._signal_adx = None; self._signal_rsi = None
-        self._signal_macd = None; self._signal_volume = None
-        self._signal_price_pct = None; self._signal_price = None
-        self._signal_time = None; self._signal_bar = None
+        self._signal_adx = None
+        self._signal_rsi = None
+        self._signal_macd = None
+        self._signal_volume = None
+        self._signal_price_pct = None
+        self._signal_price = None
+        self._signal_time = None
+        self._signal_bar = None
+        self._signal_ml_prediction = 0
+        self._signal_ml_confidence = 0.0
         self._transition_to_seeking_entry()
 
-    def _extract_exit_reason(self, entry_bar):
+    def _extract_exit_reason(self, entry_bar, exit_bar=None):
+        if exit_bar is not None and (entry_bar, exit_bar) in self._exit_reason_map:
+            return self._exit_reason_map[(entry_bar, exit_bar)]
         return self._exit_reason_map.get(entry_bar, "unknown")
 
     def get_trade_records_for_export(self):
@@ -3352,8 +4556,10 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 return_pct = ((entry_price - trade.get('exit_price', 0)) / entry_price) * 100 if entry_price > 0 else 0
 
             trade_record = {
-                'Trade_#': i + 1, 'Tier': f"Tier {actual_tier}",
-                'Tier_Number': actual_tier,
+                'Trade_#': trade.get('trade_id', i + 1),  # Use trade_id if available
+                'Tier': f"Tier {actual_tier}" if actual_tier > 0 else "Unknown",
+                'Tier_Number': actual_tier if actual_tier > 0 else -1,
+                'Direction': trade.get('direction', 'UNKNOWN').upper(),
                 'Signal_Bar': trade.get('signal_bar', trade.get('entry_bar', 0) - 1),
                 'Signal_Time': trade.get('signal_time', ''),
                 'Signal_Price': trade.get('signal_price', 0),
@@ -3363,6 +4569,8 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 'Signal_MACD': trade.get('signal_macd', 0),
                 'Signal_Volume_Ratio': trade.get('signal_volume', 1.0),
                 'Signal_Price_Percentile': trade.get('signal_price_pct', 50),
+                'ML_Prediction': trade.get('signal_ml_prediction', 0),
+                'ML_Confidence': trade.get('signal_ml_confidence', 0.0),
                 'Entry_Bar': trade.get('entry_bar', 0),
                 'Entry_Time': trade.get('entry_time', ''),
                 'Entry_Price': entry_price,
@@ -3382,6 +4590,15 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         return trades
 
     def next(self):
+        # ─── FINALIZE PENDING TRADE-RECORD ENTRY TIME ───────────────────────
+        if getattr(self, '_entry_time_pending', False):
+            true_entry_time = self.data.index[-1]
+            self._entry_time = true_entry_time
+            active_record = getattr(self, '_active_trade_record', None)
+            if active_record is not None:
+                active_record.entry_time = true_entry_time
+            self._entry_time_pending = False
+
         try:
             if any(np.isnan(x[-1]) for x in [
                 self.ema_fast, self.adx, self.rsi, self.macd_line, self.atr, self.ema_daily_50
@@ -3396,42 +4613,122 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self._current_df = self.df_enhanced.iloc[:idx + 1]
         self.bar_count = idx
 
+        # ─── ENHANCED REGIME DETECTION ──────────────────────────────────────
+        # FIX: Proper regime detection with bearish state
+        ema_fast_val = current_data.get('EMA_Fast', 0)
+        ema_slow_val = current_data.get('EMA_Slow', 0)
+        adx_val = current_data.get('ADX', 0)
+        vol_ratio_val = current_data.get('Vol_Regime_Ratio', 1.0)
+        bb_width_pct = current_data.get('BB_Width_Percentile', 50)
+        close_val = current_data.get('Close', 0)
+
+        # Get EMA200 from indicators
+        ema200_val = float(self.ema_200[-1]) if len(self.ema_200) > 0 and not np.isnan(self.ema_200[-1]) else 0
+
+        # Detect regime using enhanced logic
+        regime, confidence = self.regime_detector.detect_regime(
+            ema_fast=ema_fast_val,
+            ema_slow=ema_slow_val,
+            adx=adx_val,
+            vol_ratio=vol_ratio_val,
+            bb_width_percentile=bb_width_pct
+        )
+        self.current_regime = regime
+
+        # ─── FIX: Log bearish regime detection ──────────────────────────────
+        if regime.startswith('BEARISH'):
+            print(f"🐻 BEARISH REGIME DETECTED: {regime} (conf={confidence:.2f}) | "
+                  f"Price=${close_val:.2f} EMA200=${ema200_val:.2f} ADX={adx_val:.1f}")
+
+        # ─── Check for price below EMA200 (additional bearish signal) ──────
+        is_below_ema200 = False
+        if ema200_val > 0 and close_val > 0:
+            is_below_ema200 = close_val < ema200_val
+            if is_below_ema200 and not regime.startswith('BEARISH'):
+                print(f"⚠️ PRICE BELOW EMA200: ${close_val:.2f} < ${ema200_val:.2f} — Bearish signal detected")
+
         # Check for pending signal from previous bar
         if self._pending_signal is not None and self.bar_count > self._signal_bar:
             signal = self._pending_signal
             execution_price = self.data.Open[-1]
 
+            # ─── FIX: Re-validate signal based on current regime ────────────
+            # If we're in a BEARISH regime and signal is LONG, block it
+            if regime.startswith('BEARISH') and signal['decision'] == "buy":
+                print(f"❌ BLOCKED: LONG signal in BEARISH regime ({regime})")
+                self._pending_signal = None
+                self._signal_bar = -999
+                self._signal_price = None
+                return
+
+            # If we're in a BULLISH regime and signal is SHORT, block it
+            if regime.startswith('BULLISH') and signal['decision'] == "sell":
+                print(f"❌ BLOCKED: SHORT signal in BULLISH regime ({regime})")
+                self._pending_signal = None
+                self._signal_bar = -999
+                self._signal_price = None
+                return
+
+            # If price is below EMA200 and signal is LONG, block it
+            if is_below_ema200 and signal['decision'] == "buy":
+                print(f"❌ BLOCKED: LONG signal with price below EMA200")
+                self._pending_signal = None
+                self._signal_bar = -999
+                self._signal_price = None
+                return
+
             self._position_direction = 'long' if signal['decision'] == "buy" else 'short'
+            tier = signal['tier']
+
+            tier_config = self._get_tier_config(tier)
+            if tier_config is None:
+                tier_config = self._get_tier_config(1)
+            stop_mult = tier_config.get('stop_mult', 2.5)
+
+            # ─── FIX: Reduce position size in bearish regimes ──────────────
+            position_mult = signal.get('position_mult', 1.0)
+            if regime.startswith('BEARISH'):
+                position_mult *= 0.25  # 75% reduction in bear markets
+                print(f"⚠️ BEARISH REGIME: Position size reduced to {position_mult:.2f}x")
 
             size = self.calculate_position_size(
                 self.equity, current_data['ATR'], execution_price,
-                signal['quality_score'], signal['tier'], signal['position_mult'])
+                signal['power_score'], tier, position_mult)
 
             if size > 0:
+                # Generate unique trade ID
+                self.trade_counter += 1
+                self._current_trade_id = self.trade_counter
+
                 if signal['decision'] == "buy":
-                    stop = execution_price - (self.stop_loss_atr_mult * current_data['ATR'])
+                    stop = execution_price - (stop_mult * current_data['ATR'])
                     if stop < execution_price:
-                        self.buy(size=size)
+                        self.buy(size=self._bt_safe_size(size, execution_price))
+                        fill_price = self._slippage_adjusted_price(
+                            execution_price, size, current_data, adverse_direction=+1)
                     else:
                         self._pending_signal = None
                         return
                 else:
-                    stop = execution_price + (self.stop_loss_atr_mult * current_data['ATR'])
+                    stop = execution_price + (stop_mult * current_data['ATR'])
                     if stop > execution_price:
-                        self.sell(size=size)
+                        self.sell(size=self._bt_safe_size(size, execution_price))
+                        fill_price = self._slippage_adjusted_price(
+                            execution_price, size, current_data, adverse_direction=-1)
                     else:
                         self._pending_signal = None
                         return
 
-                self._entry_price = execution_price
+                self._entry_price = fill_price
                 self._stop_loss = stop
-                self._highest_price = execution_price if self._position_direction == 'long' else None
-                self._lowest_price = execution_price if self._position_direction == 'short' else None
+                self._highest_price = fill_price if self._position_direction == 'long' else None
+                self._lowest_price = fill_price if self._position_direction == 'short' else None
                 self._bars_held = 0
                 self._partial_exits = 0
                 self._entry_bar = idx
-                self._entry_tier = signal['tier']
-                self._entry_quality = signal['quality_score']
+                self._entry_tier = tier
+                self._entry_quality = signal['power_score']
+                self._entry_confluence_score = signal.get('confluence_score', 0.0)
                 self._partial_pnl_realised = 0.0
                 self._trailing_activated = False
                 self._trailing_stop = None
@@ -3444,36 +4741,71 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 self._signal_price = signal.get('signal_price')
                 self._signal_time = signal.get('signal_time')
                 self._signal_bar = signal.get('signal_bar')
+                self._signal_ml_prediction = signal.get('ml_prediction', 0)
+                self._signal_ml_confidence = signal.get('ml_confidence', 0.0)
                 self._transition_to_in_trade()
 
+                tier_names = {1: 'Low Risk', 2: 'Medium Risk'}
                 direction_icon = "⬆️" if self._position_direction == 'long' else "⬇️"
-                print(f"{direction_icon} ENTER T{signal['tier']} Q={signal['quality_score']} "
-                      f"@ ${execution_price:.2f} Size={size} Stop=${stop:.2f}")
+                regime_icon = "🐻" if regime.startswith('BEARISH') else "🐂"
+                print(f"{direction_icon} ENTER T{tier} ({tier_names.get(tier, 'Unknown')}) "
+                      f"Q={signal['power_score']} @ ${execution_price:.2f} Size={size} Stop=${stop:.2f} "
+                      f"{regime_icon} {regime}")
+
+                # ─── LOG THE ACTUAL TRADE RECORD ───────────────────────────────
+                bar_entry_time = self.data.index[-1]
+                self._entry_time = bar_entry_time
+                self._entry_time_pending = True
+                trade_record = TradeRecord(
+                    trade_id=self._current_trade_id,
+                    symbol=getattr(self, 'symbol', 'SOL-USDT'),
+                    entry_time=bar_entry_time,
+                    entry_price=fill_price,
+                    entry_size=size,
+                    entry_tier=tier,
+                    entry_quality_score=signal['power_score'],
+                    entry_reason="entry_signal",
+                    entry_direction=self._position_direction,
+                    entry_bar=self._entry_bar,
+                    signal_adx=self._signal_adx or current_data.get('ADX', 0),
+                    signal_rsi=self._signal_rsi or current_data.get('RSI', 50),
+                    signal_macd=self._signal_macd or current_data.get('MACD', 0),
+                    signal_volume=self._signal_volume or current_data.get('Volume_Ratio', 1.0),
+                    signal_price_pct=self._signal_price_pct or current_data.get('Price_Percentile_20bar', 50),
+                    signal_ml_prediction=self._signal_ml_prediction,
+                    signal_ml_confidence=self._signal_ml_confidence,
+                    confluence_score=self._entry_confluence_score,
+                    market_regime=regime,  # Store actual regime
+                    original_size=size,
+                    partial_exit_details=[],
+                )
+                if not hasattr(self, 'trade_records'):
+                    self.trade_records = []
+                self.trade_records.append(trade_record)
+                self._active_trade_record = trade_record
 
             self._pending_signal = None
             self._signal_bar = -999
             self._signal_price = None
             return
 
-        # =========================================================
         # SEEKING ENTRY STATE
-        # =========================================================
         if self.strategy_state == StrategyState.SEEKING_ENTRY:
-            result = self._check_entry_conditions(current_data)
+            # ─── FIX: Pass regime to entry check ────────────────────────────
+            # Add regime data to current_data for entry validation
+            current_data['_regime'] = regime
+            current_data['_is_below_ema200'] = is_below_ema200
+            current_data['_ema200'] = ema200_val
 
-            # Check if we got a pending signal
+            result = self._check_entry_conditions(current_data)
             if hasattr(self, '_pending_signal') and self._pending_signal is not None:
-                # Signal will execute on next bar
                 return
             return
 
-        # =========================================================
         # IN_TRADE STATE - MANAGE EXITS
-        # =========================================================
         if self.strategy_state == StrategyState.IN_TRADE:
             self._bars_held += 1
 
-            # Update highest/lowest prices for trailing
             if self._position_direction == 'long':
                 if current_price > self._highest_price:
                     self._highest_price = current_price
@@ -3485,97 +4817,75 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             if atr <= 0:
                 return
 
-            # =========================================================
-            # FIXED: CORRECT VOLATILITY-BASED THRESHOLDS
-            # =========================================================
-            # Calculate ATR as percentage of price (keep as decimal, NOT multiplied by 100)
+            tier = self._entry_tier or 1
+            tier_config = self._get_tier_config(tier)
+            if tier_config is None:
+                tier_config = self._get_tier_config(1)
+            trail_activation = tier_config.get('trailing_activation', 0.03)
+            trail_distance = tier_config.get('trailing_distance', 0.035)
+
             atr_pct = (atr / current_price) if current_price > 0 else 0.001
+            activation_threshold = max(atr_pct * 1.5, trail_activation)
+            distance_threshold = max(atr_pct * 0.5, trail_distance)
 
-            # Get configured thresholds (already as decimals)
-            trailing_activation = getattr(self, 'trailing_activation_pct', 0.04)
-            trailing_distance = getattr(self, 'trailing_distance_pct', 0.035)
-
-            # Use max of ATR-based or configured values (both as decimals)
-            activation_threshold = max(atr_pct * 1.5, trailing_activation)
-            distance_threshold = max(atr_pct * 0.5, trailing_distance)
-
-            # Debug output for first few bars
-            if self._bars_held <= 3:
-                print(f"🔧 VOLATILITY DEBUG: ATR={atr:.4f}, ATR%={atr_pct:.2%}, "
-                      f"Activation={activation_threshold:.2%}, Distance={distance_threshold:.2%}")
-
-            # =========================================================
-            # TRAILING STOP LOGIC (FIXED)
-            # =========================================================
+            # TRAILING STOP LOGIC
             if self._position_direction == 'long':
-                # Check if we should activate trailing stop
                 if not self._trailing_activated:
                     profit_pct = (current_price - self._entry_price) / self._entry_price
                     if profit_pct >= activation_threshold:
                         self._trailing_activated = True
                         self._trailing_stop = current_price * (1 - distance_threshold)
-                        print(f"🔒 TRAILING ACTIVATED @ {profit_pct:.2%} "
-                              f"(threshold={activation_threshold:.2%}) Stop=${self._trailing_stop:.2f}")
 
-                # Update trailing stop if activated
                 if self._trailing_activated:
                     new_stop = self._highest_price * (1 - distance_threshold)
                     if new_stop > (self._trailing_stop or 0):
                         self._trailing_stop = new_stop
 
-            else:  # short position
-                # Check if we should activate trailing stop
+            else:
                 if not self._trailing_activated:
                     profit_pct = (self._entry_price - current_price) / self._entry_price
                     if profit_pct >= activation_threshold:
                         self._trailing_activated = True
                         self._trailing_stop = current_price * (1 + distance_threshold)
-                        print(f"🔒 TRAILING ACTIVATED (SHORT) @ {profit_pct:.2%} "
-                              f"Stop=${self._trailing_stop:.2f}")
 
-                # Update trailing stop if activated
                 if self._trailing_activated:
                     new_stop = self._lowest_price * (1 + distance_threshold)
                     if new_stop < (self._trailing_stop or float('inf')):
                         self._trailing_stop = new_stop
 
-            # =========================================================
-            # BREAKEVEN STOP LOGIC
-            # =========================================================
+            # BREAKEVEN STOP
             if getattr(self, 'be_stop_enabled', True) and not getattr(self, '_be_stop_set', False):
                 stop_distance = abs(self._entry_price - self._stop_loss)
                 if stop_distance > 0:
                     if self._position_direction == 'long':
                         profit_amount = current_price - self._entry_price
-                        be_trigger_r = getattr(self, 'be_stop_r_trigger', 1.5)
-                        no_progress_bars = getattr(self, 'be_stop_no_progress_bars', 30)
+                        be_trigger_r = getattr(self, 'be_stop_r_trigger', 2.0)
+                        no_progress_bars = getattr(self, 'be_stop_no_progress_bars', 50)
 
                         if profit_amount >= be_trigger_r * stop_distance:
                             self._stop_loss = self._entry_price
                             self._be_stop_set = True
-                            print(f"🔒 BREAKEVEN STOP ACTIVATED @ {profit_amount / stop_distance:.1f}R")
                         elif self._bars_held >= no_progress_bars and profit_amount / self._entry_price < 0.003:
                             self._stop_loss = self._entry_price
                             self._be_stop_set = True
-                            print(f"🔒 BREAKEVEN STOP (NO PROGRESS) after {self._bars_held} bars")
 
-                    else:  # short
+                    else:
                         profit_amount = self._entry_price - current_price
-                        be_trigger_r = getattr(self, 'be_stop_r_trigger', 1.5)
-                        no_progress_bars = getattr(self, 'be_stop_no_progress_bars', 30)
+                        be_trigger_r = getattr(self, 'be_stop_r_trigger', 2.0)
+                        no_progress_bars = getattr(self, 'be_stop_no_progress_bars', 50)
 
                         if profit_amount >= be_trigger_r * stop_distance:
                             self._stop_loss = self._entry_price
                             self._be_stop_set = True
-                            print(f"🔒 BREAKEVEN STOP ACTIVATED (SHORT) @ {profit_amount / stop_distance:.1f}R")
                         elif self._bars_held >= no_progress_bars and profit_amount / self._entry_price < 0.003:
                             self._stop_loss = self._entry_price
                             self._be_stop_set = True
-                            print(f"🔒 BREAKEVEN STOP (NO PROGRESS) after {self._bars_held} bars")
 
-            # =========================================================
-            # EVALUATE EXIT CONDITIONS
-            # =========================================================
+            # Calculate exit power
+            exit_power = self._calculate_exit_power_bt(current_data, self._position_direction)
+            exit_threshold = tier_config.get('exit_threshold', 50)
+
+            # EVALUATE EXIT
             exit_signal, exit_pct = self.exit_manager.evaluate_exit(
                 current_price=current_price,
                 entry_price=self._entry_price,
@@ -3595,43 +4905,32 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 atr=atr,
                 position_type=self._position_direction,
                 trailing_activated=self._trailing_activated,
-                trailing_stop=self._trailing_stop
+                trailing_stop=self._trailing_stop,
+                tier=tier,
+                exit_power=exit_power
             )
 
-            # =========================================================
-            # HARD STOP CHECK (additional safety)
-            # =========================================================
+            # HARD STOP CHECK
             if exit_signal is None:
                 if self._position_direction == 'long':
                     if current_price <= self._stop_loss:
                         exit_signal = "stop_loss_hard"
                         exit_pct = 1.0
-                        print(f"🛑 HARD STOP HIT: ${current_price:.2f} <= ${self._stop_loss:.2f}")
                 else:
                     if current_price >= self._stop_loss:
                         exit_signal = "stop_loss_hard"
                         exit_pct = 1.0
-                        print(f"🛑 HARD STOP HIT (SHORT): ${current_price:.2f} >= ${self._stop_loss:.2f}")
 
-            # =========================================================
-            # TRAILING STOP CHECK (additional safety)
-            # =========================================================
+            # TRAILING STOP CHECK
             if exit_signal is None and self._trailing_activated and self._trailing_stop is not None:
                 if self._position_direction == 'long' and current_price <= self._trailing_stop:
                     exit_signal = "trailing_stop_hit"
                     exit_pct = 1.0
-                    print(f"🎯 TRAILING STOP HIT: ${current_price:.2f} <= ${self._trailing_stop:.2f}")
                 elif self._position_direction == 'short' and current_price >= self._trailing_stop:
                     exit_signal = "trailing_stop_hit"
                     exit_pct = 1.0
-                    print(f"🎯 TRAILING STOP HIT (SHORT): ${current_price:.2f} >= ${self._trailing_stop:.2f}")
 
-            # =========================================================
-            # FORCE EXIT AT END OF BACKTEST (CRITICAL FIX v9.4.1)
-            # =========================================================
-            # BUG FIX: idx IS already len(self.data)-1, so the old check
-            # was ALWAYS True, closing every trade after exactly 1 bar.
-            # Correct approach: compare against the full df_enhanced length.
+            # FORCE EXIT AT END OF BACKTEST
             total_bars = len(self.df_enhanced)
             is_last_bar = (idx == total_bars - 1)
             if exit_signal is None and is_last_bar and self._bars_held > 0:
@@ -3643,33 +4942,191 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 exit_pct = 1.0
                 print(f"🏁 FORCED EXIT AT END OF BACKTEST: Profit={profit_pct:.2f}%")
 
-            # =========================================================
             # EXECUTE EXIT
-            # =========================================================
             if exit_signal:
                 if self._position_direction == 'long':
                     profit_pct = (current_price - self._entry_price) / self._entry_price * 100
                 else:
                     profit_pct = (self._entry_price - current_price) / self._entry_price * 100
 
-                # Handle partial exits
+                # Handle partial exits - FIXED: use position.close(portion)
                 if exit_pct < 1.0 and self._partial_exits < 4:
                     self._partial_exits += 1
-                    partial_size = int(abs(self.position.size) * exit_pct)
-                    if partial_size > 0 and partial_size <= abs(self.position.size):
+
+                    # CRITICAL FIX: use self.position.close(portion=...), NOT
+                    # self.sell()/self.buy(). This Backtest is configured
+                    # with exclusive_orders=True, which makes ANY brand-new
+                    # order (self.buy()/self.sell()) submitted while a
+                    # position is open FIRST close the ENTIRE existing
+                    # position, THEN open a new opposite-direction position
+                    # sized at whatever was requested. That is exactly how a
+                    # 33% partial take-profit on a LONG was silently turning
+                    # into "close the whole long, then open a brand-new
+                    # SHORT" — every time, in every mode, including
+                    # long-only. position.close(portion) builds its closing
+                    # order directly and bypasses order submission (and thus
+                    # exclusive_orders) entirely, so it can never flip
+                    # direction.
+                    #
+                    # Compute the closed size with the SAME formula
+                    # backtesting.py's own Trade.close() uses internally
+                    # (max(1, round(size * portion))), so our bookkeeping
+                    # can never drift from what the engine actually closes.
+                    current_position_size = abs(self.position.size)
+                    if current_position_size > 0:
+                        partial_size = max(1, int(round(current_position_size * exit_pct)))
+                        portion = min(1.0, partial_size / current_position_size)
+
+                        partial_fill_price = self._slippage_adjusted_price(
+                            current_price, partial_size, current_data,
+                            adverse_direction=(-1 if self._position_direction == 'long' else +1))
+
+                        # FIX: use position.close(portion) - NO new order, NO direction flip
+                        self.position.close(portion=portion)
+
                         if self._position_direction == 'long':
-                            self.sell(size=partial_size)
-                            partial_profit = (current_price - self._entry_price) * partial_size
+                            partial_profit = (partial_fill_price - self._entry_price) * partial_size
                         else:
-                            self.buy(size=partial_size)
-                            partial_profit = (self._entry_price - current_price) * partial_size
+                            partial_profit = (self._entry_price - partial_fill_price) * partial_size
+
                         self._partial_pnl_realised += partial_profit
-                        print(
-                            f"📊 PARTIAL EXIT {self._partial_exits}: {partial_size} units, Profit=${partial_profit:.2f}")
+                        self._record_partial_exit_row(
+                            partial_size, partial_fill_price, partial_profit, exit_signal)
                         return
+                    else:
+                        self._partial_exits -= 1
 
                 # Full exit
                 self._bt_close_position(current_price, exit_signal, profit_pct)
 
 
-# End of file
+# ═══════════════════════════════════════════════════════════════════════════
+# WALK-FORWARD OPTIMIZATION (unchanged)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def run_walk_forward_optimization(
+        df,
+        strategy_class=BacktestMomentumStrategy,
+        train_bars=2160,
+        test_bars=720,
+        step_bars=None,
+        cash=10000,
+        commission=0.001,
+        maximize='Sharpe Ratio',
+        param_ranges=None,
+        max_tries=200,
+        verbose=True,
+):
+    if step_bars is None:
+        step_bars = test_bars
+
+    if param_ranges is None:
+        param_ranges = {}
+        optimization_map = {
+            'backtest_quality_values': ['quality_tier1_min_long', 'quality_tier2_min_long'],
+            'backtest_adx_values': ['tier1_adx_hard_min', 'adx_min'],
+            'backtest_rsi_values': ['tier1_rsi_min', 'rsi_entry_min'],
+            'backtest_volume_values': ['tier1_volume_min', 'volume_min_ratio'],
+            'backtest_momentum_values': ['tier1_momentum_min', 'momentum_min'],
+            'backtest_ema_fast_values': ['ema_fast_period'],
+            'backtest_ema_mid_values': ['ema_mid_period'],
+            'backtest_ema_slow_values': ['ema_slow_period'],
+            'backtest_weight_ema_values': ['weight_ema'],
+            'backtest_weight_adx_values': ['weight_adx'],
+            'backtest_weight_macd_values': ['weight_macd'],
+            'backtest_weight_rsi_values': ['weight_rsi'],
+            'backtest_weight_volume_values': ['weight_volume'],
+            'backtest_risk_tier1_values': ['risk_tier1'],
+            'backtest_risk_tier2_values': ['risk_tier2'],
+            'backtest_stop_loss_mult_values': ['stop_loss_atr_mult'],
+        }
+        for attr_name, param_names in optimization_map.items():
+            active_attr = attr_name.replace('_values', '_active')
+            if hasattr(strategy_class, attr_name) and getattr(strategy_class, active_attr, True):
+                values = getattr(strategy_class, attr_name)
+                for param_name in param_names:
+                    param_ranges[param_name] = values
+
+    results = []
+    n = len(df)
+    fold = 0
+    start = 0
+
+    while start + train_bars + test_bars <= n:
+        fold += 1
+        train_df = df.iloc[start:start + train_bars]
+        test_df = df.iloc[start + train_bars:start + train_bars + test_bars]
+
+        strategy_class.reset_to_defaults()
+        bt_train = Backtest(train_df, strategy_class, cash=cash,
+                            commission=commission, exclusive_orders=True)
+        try:
+            train_stats = bt_train.optimize(**param_ranges, maximize=maximize,
+                                            max_tries=max_tries)
+        except Exception as e:
+            if verbose:
+                print(f"[Fold {fold}] optimize() failed: {e}")
+            start += step_bars
+            continue
+
+        best_params = {k: getattr(train_stats._strategy, k) for k in param_ranges.keys()}
+        strategy_class.set_updated_params(best_params)
+
+        bt_test = Backtest(test_df, strategy_class, cash=cash,
+                           commission=commission, exclusive_orders=True)
+        test_stats = bt_test.run()
+
+        train_sharpe = train_stats.get('Sharpe Ratio', float('nan'))
+        test_sharpe = test_stats.get('Sharpe Ratio', float('nan'))
+        degradation = (
+            test_sharpe / train_sharpe
+            if train_sharpe not in (0, None) and not np.isnan(train_sharpe)
+            else float('nan')
+        )
+
+        fold_result = {
+            'fold': fold,
+            'train_start': train_df.index[0], 'train_end': train_df.index[-1],
+            'test_start': test_df.index[0], 'test_end': test_df.index[-1],
+            'best_params': best_params,
+            'train_sharpe': train_sharpe, 'test_sharpe': test_sharpe,
+            'train_return_pct': train_stats.get('Return [%]', float('nan')),
+            'test_return_pct': test_stats.get('Return [%]', float('nan')),
+            'test_trades': test_stats.get('# Trades', 0),
+            'degradation_ratio': degradation,
+        }
+        results.append(fold_result)
+
+        if verbose:
+            print(f"\n[Fold {fold}] Train {train_df.index[0]} → {train_df.index[-1]}  |  "
+                  f"Test {test_df.index[0]} → {test_df.index[-1]}")
+            print(f"  Train Sharpe={train_sharpe:.2f} Return={fold_result['train_return_pct']:.1f}%  |  "
+                  f"Test Sharpe={test_sharpe:.2f} Return={fold_result['test_return_pct']:.1f}% "
+                  f"Trades={fold_result['test_trades']}")
+            if not np.isnan(degradation):
+                flag = ("⚠️ OVERFIT SIGNAL" if degradation < 0.3
+                        else "✅ HOLDS UP" if degradation > 0.6
+                else "🟡 PARTIAL DECAY")
+                print(f"  Degradation ratio (test/train Sharpe) = {degradation:.2f}  {flag}")
+
+        start += step_bars
+
+    strategy_class.reset_to_defaults()
+
+    if verbose and results:
+        avg_degradation = np.nanmean([r['degradation_ratio'] for r in results])
+        print(f"\n{'=' * 70}")
+        print(f"WALK-FORWARD SUMMARY — {len(results)} folds")
+        print(f"Average degradation ratio (test/train Sharpe): {avg_degradation:.2f}")
+        if avg_degradation < 0.3:
+            print("⚠️  Strong overfitting signature — in-sample performance is not")
+            print("    persisting out-of-sample. Treat full-period grid-search results")
+            print("    with heavy skepticism; consider reducing parameter count.")
+        elif avg_degradation < 0.6:
+            print("🟡  Partial decay — some edge persists out-of-sample but expect")
+            print("    live performance meaningfully below backtest numbers.")
+        else:
+            print("✅  Performance holds up reasonably well out-of-sample.")
+        print(f"{'=' * 70}\n")
+
+    return results
