@@ -4,23 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="fc1788b3-1e63-4bdb-99af-8dad1ad8eea2" name="Changes" comment="commit 25-07-2026">
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/EMA_CCI_MACD_professional.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/MomentumStrategy_MACD_HybridScore_Analysis.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/ema_chart.png" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/monte_carlo_simulator.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/scalping_strategy.backup_20260519_100641.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/scalping_strategy.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/strategies/ATR_Calculator_Helper.py" afterDir="false" />
+    <list default="true" id="fc1788b3-1e63-4bdb-99af-8dad1ad8eea2" name="Changes" comment="commit 29-07-2026">
+      <change beforePath="$PROJECT_DIR$/.idea/New_Bollinger_bands.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/New_Bollinger_bands.iml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/App_MACD_AI_HybridScore_Latest1.py" beforeDir="false" afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/App_MACD_AI_HybridScore_Latest1.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backtest_params.json" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backtest_params_momentum.json" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/App_MACD_AI_HybridScore_Latest.py" beforeDir="false" afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/App_MACD_AI_HybridScore_Latest1.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/KalmanTrendStrategy_New.py" beforeDir="false" afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/KalmanTrendStrategy_New.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/MomentumStrategy_MACD_HybridScore_Latest.py" beforeDir="false" afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/MomentumStrategy_MACD_HybridScore_Latest.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/best_MomentumStrategy_MACD_HybridScore_LAST.py" beforeDir="false" afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/MomentumStrategy_MACD_HybridScore_Great.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/backups/strategies/update_step1+2.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/strategies/MomentumStrategy_MACD_HybridScore_Latest.py" beforeDir="false" afterPath="$PROJECT_DIR$/9.00Trading_ML_Prediction_Widget_Demo_Live_backtrade/strategies/MomentumStrategy_MACD_HybridScore_Latest.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -59,16 +46,16 @@
       <entry key="S10" value="1.0" />
       <entry key="S30" value="1.0" />
       <entry key="S60" value="1.0" />
-      <entry key="M2" value="1.0" />
-      <entry key="M5" value="1.0" />
-      <entry key="M10" value="1.0" />
-      <entry key="M15" value="1.0" />
-      <entry key="M30" value="1.0" />
-      <entry key="H1" value="1.0000000007628378" />
-      <entry key="H2" value="1.000112835655862" />
-      <entry key="H4" value="1.0508585111458308" />
-      <entry key="D1" value="13.682654042722211" />
-      <entry key="W1" value="38.367034316670015" />
+      <entry key="M2" value="1.0000000000000002" />
+      <entry key="M5" value="1.0000006964581538" />
+      <entry key="M10" value="1.0011802187525656" />
+      <entry key="M15" value="1.0140707853852804" />
+      <entry key="M30" value="1.1677544955037886" />
+      <entry key="H1" value="1.5792313797069313" />
+      <entry key="H2" value="2.0763798019114534" />
+      <entry key="H4" value="2.5044965528056853" />
+      <entry key="D1" value="14.943774404380667" />
+      <entry key="W1" value="40.077721830747564" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
@@ -90,23 +77,23 @@
       <entry key="W1" value="0.0" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="1.5402207506895618E-12" />
-      <entry key="MS500" value="0.004340268471308957" />
-      <entry key="S2" value="0.25667238642999973" />
-      <entry key="S5" value="0.5804324166333267" />
-      <entry key="S10" value="0.7618611531199938" />
-      <entry key="S30" value="0.9133248549458318" />
-      <entry key="S60" value="0.9556803100126275" />
-      <entry key="M2" value="0.9775890292002194" />
-      <entry key="M5" value="0.9909746104398988" />
-      <entry key="M10" value="0.9954770768028256" />
-      <entry key="M15" value="0.9969824403057553" />
-      <entry key="M30" value="0.9984900802240128" />
-      <entry key="H1" value="0.9992447556770798" />
-      <entry key="H2" value="0.9997351299714903" />
-      <entry key="H4" value="1.0506671012581361" />
-      <entry key="D1" value="13.682548369589192" />
-      <entry key="W1" value="38.367003667381354" />
+      <entry key="MS100" value="0.008032139270750516" />
+      <entry key="MS500" value="0.38103620758494233" />
+      <entry key="S2" value="0.7856725166675802" />
+      <entry key="S5" value="0.9080225303445044" />
+      <entry key="S10" value="0.9529021620001208" />
+      <entry key="S30" value="0.9840475946144418" />
+      <entry key="S60" value="0.9919917311220098" />
+      <entry key="M2" value="0.9959878167538047" />
+      <entry key="M5" value="0.9983938840850047" />
+      <entry key="M10" value="1.0003737595893936" />
+      <entry key="M15" value="1.013513167747736" />
+      <entry key="M30" value="1.1673568972724837" />
+      <entry key="H1" value="1.5788735211584" />
+      <entry key="H2" value="2.0761047684969864" />
+      <entry key="H4" value="2.5043193858240884" />
+      <entry key="D1" value="14.943667764472359" />
+      <entry key="W1" value="40.07769050437061" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo">{
@@ -136,7 +123,7 @@
     &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
     &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
     &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.lookFeel&quot;
+    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.externalTools&quot;
   }
 }</component>
   <component name="RecentsManager">
@@ -277,7 +264,15 @@
       <option name="project" value="LOCAL" />
       <updated>1784964592853</updated>
     </task>
-    <option name="localTasksCounter" value="8" />
+    <task id="LOCAL-00008" summary="commit 29-07-2026">
+      <option name="closed" value="true" />
+      <created>1785348211278</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1785348211278</updated>
+    </task>
+    <option name="localTasksCounter" value="9" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -300,7 +295,8 @@
     <MESSAGE value="commit 21-07-2026" />
     <MESSAGE value="commit 23-07-2026" />
     <MESSAGE value="commit 25-07-2026" />
-    <option name="LAST_COMMIT_MESSAGE" value="commit 25-07-2026" />
+    <MESSAGE value="commit 29-07-2026" />
+    <option name="LAST_COMMIT_MESSAGE" value="commit 29-07-2026" />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>

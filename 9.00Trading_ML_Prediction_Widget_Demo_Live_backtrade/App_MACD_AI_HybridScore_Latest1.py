@@ -19,46 +19,68 @@ if sys.stderr is None:
 
 try:
     import openai
+
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
     print("⚠️ OpenAI library not installed. AI features will use local analysis only.")
+
 
 def fix_tqdm_for_exe():
     try:
         import tqdm
         if hasattr(tqdm.std, '_file'):
             tqdm.std._file = sys.stdout
+
         class SafeTQDM:
             def __init__(self, iterable=None, *args, **kwargs):
                 self.iterable = iterable or []
                 self.total = len(self.iterable) if hasattr(self.iterable, '__len__') else None
-                self.n = 0; self.desc = "_plot_forecast_on_main"; self.file = sys.stdout
+                self.n = 0;
+                self.desc = "_plot_forecast_on_main";
+                self.file = sys.stdout
+
             def __iter__(self): return iter(self.iterable)
+
             def __enter__(self): return self
+
             def __exit__(self, *args): pass
+
             def update(self, n=1): self.n += n; return True
+
             def close(self): pass
+
             def set_description(self, desc=None, refresh=True):
                 if desc is not None: self.desc = desc
                 return self
+
             def set_postfix(self, **kwargs): return self
+
             def refresh(self): pass
-        tqdm.tqdm = SafeTQDM; tqdm.std.tqdm = SafeTQDM; tqdm.asyncio.tqdm = SafeTQDM
+
+        tqdm.tqdm = SafeTQDM;
+        tqdm.std.tqdm = SafeTQDM;
+        tqdm.asyncio.tqdm = SafeTQDM
         if hasattr(tqdm.std, 'Tqdm'): tqdm.std.Tqdm = SafeTQDM
         print("✅ TQDM patched successfully for EXE")
     except ImportError:
         class FakeTQDM:
             def __init__(self, *args, **kwargs): pass
+
             def __enter__(self): return self
+
             def __exit__(self, *args): pass
+
             def update(self, n=1): pass
+
             def close(self): pass
+
         sys.modules['tqdm'] = type(sys)('tqdm')
         sys.modules['tqdm'].tqdm = FakeTQDM
         sys.modules['tqdm'].std = type(sys)('std')
         sys.modules['tqdm'].std.tqdm = FakeTQDM
         print("✅ Created fake TQDM module")
+
 
 fix_tqdm_for_exe()
 
@@ -94,27 +116,41 @@ from models.lstm_model_NEW import LSTMModel
 from models.random_forest import RandomForestModel
 from models.xgboost_model import XGBoostModel
 from utils.FinancialCircletimer_New import FinancialChartWidget, CircleTimer
-from strategies.MomentumStrategy_MACD_HybridScore_Latest import MomentumStrategy, BacktestMomentumStrategy, MOMENTUM_PARAMS, GlobalConfig
+from strategies.MomentumStrategy_MACD_HybridScore_Latest import MomentumStrategy, BacktestMomentumStrategy, \
+    MOMENTUM_PARAMS, GlobalConfig
 from strategies.KalmanTrendStrategy_New import KalmanTrendStrategy, BacktestKalmanTrendStrategy
 
 import sys
 import os
+
 os.environ['TQDM_DISABLE'] = '1'
 
 try:
     import tqdm
+
+
     class FakeTQDM:
         def __init__(self, *args, **kwargs):
             self.iterable = args[0] if args else None
+
         def __iter__(self):
             if self.iterable: return iter(self.iterable)
             return iter([])
+
         def __enter__(self): return self
+
         def __exit__(self, *args): pass
+
         def update(self, n=1): pass
+
         def close(self): pass
+
         def set_description(self, desc): pass
-    tqdm.tqdm = FakeTQDM; tqdm.std.tqdm = FakeTQDM; tqdm.asyncio.tqdm = FakeTQDM
+
+
+    tqdm.tqdm = FakeTQDM;
+    tqdm.std.tqdm = FakeTQDM;
+    tqdm.asyncio.tqdm = FakeTQDM
     print("✅ TQDM disabled successfully")
 except ImportError:
     print("⚠️ TQDM not imported yet")
@@ -172,10 +208,10 @@ class TradingApp:
         self.weight_manager = AdaptiveWeightManager(alpha=0.2, min_w=0.2, max_w=0.8)
 
         # ── Trading Time Window ──────────────────────────────────────────────
-        self.trading_time_config  = self._init_trading_time_config()
-        self._sched_start_id      = None
-        self._sched_stop_id       = None
-        self._waiting_to_start    = False
+        self.trading_time_config = self._init_trading_time_config()
+        self._sched_start_id = None
+        self._sched_stop_id = None
+        self._waiting_to_start = False
 
         self.macd_below_streak = 0
         self.momentum_streak_required = 2
@@ -259,13 +295,13 @@ class TradingApp:
         from strategies.scalping_strategy import ScalpingStrategy, BacktestScalpingStrategy
 
         self.strategies = {
-            "Momentum":                    MomentumStrategy(self),
-            "BacktestMomentum":            BacktestMomentumStrategy,
-            "Kalman":                      KalmanTrendStrategy(self),
+            "Momentum": MomentumStrategy(self),
+            "BacktestMomentum": BacktestMomentumStrategy,
+            "Kalman": KalmanTrendStrategy(self),
             "BacktestKalmanTrendStrategy": BacktestKalmanTrendStrategy,
-            "Enhanced":                    TradingStrategy(self, {}),
-            "Scalping":                    ScalpingStrategy(self),
-            "BacktestScalping":            BacktestScalpingStrategy,
+            "Enhanced": TradingStrategy(self, {}),
+            "Scalping": ScalpingStrategy(self),
+            "BacktestScalping": BacktestScalpingStrategy,
         }
 
         self.apply_selected_parameters()
@@ -304,8 +340,8 @@ class TradingApp:
             cfg[strategy] = {
                 'start_h': tk.IntVar(value=0),
                 'start_m': tk.IntVar(value=0),
-                'end_h':   tk.IntVar(value=0),
-                'end_m':   tk.IntVar(value=0),
+                'end_h': tk.IntVar(value=0),
+                'end_m': tk.IntVar(value=0),
             }
         return cfg
 
@@ -317,7 +353,7 @@ class TradingApp:
     def _get_window_minutes(self, strategy: str) -> tuple:
         cfg = self.trading_time_config[strategy]
         s = cfg['start_h'].get() * 60 + cfg['start_m'].get()
-        e = cfg['end_h'].get()   * 60 + cfg['end_m'].get()
+        e = cfg['end_h'].get() * 60 + cfg['end_m'].get()
         return s, e
 
     def _is_within_trading_window(self, strategy: str) -> bool:
@@ -325,24 +361,24 @@ class TradingApp:
             return True
         now_utc = datetime.now(timezone.utc)
         now_min = now_utc.hour * 60 + now_utc.minute
-        s, e    = self._get_window_minutes(strategy)
+        s, e = self._get_window_minutes(strategy)
         if s < e:
             return s <= now_min < e
         return now_min >= s or now_min < e
 
     def _seconds_until_start(self, strategy: str) -> float:
-        now_utc  = datetime.now(timezone.utc)
-        now_min  = now_utc.hour * 60 + now_utc.minute
-        now_sec  = now_utc.second
-        s, _     = self._get_window_minutes(strategy)
+        now_utc = datetime.now(timezone.utc)
+        now_min = now_utc.hour * 60 + now_utc.minute
+        now_sec = now_utc.second
+        s, _ = self._get_window_minutes(strategy)
         diff_min = (s - now_min) % (24 * 60)
         return max(0., diff_min * 60 - now_sec)
 
     def _seconds_until_end(self, strategy: str) -> float:
-        now_utc  = datetime.now(timezone.utc)
-        now_min  = now_utc.hour * 60 + now_utc.minute
-        now_sec  = now_utc.second
-        _, e     = self._get_window_minutes(strategy)
+        now_utc = datetime.now(timezone.utc)
+        now_min = now_utc.hour * 60 + now_utc.minute
+        now_sec = now_utc.second
+        _, e = self._get_window_minutes(strategy)
         diff_min = (e - now_min) % (24 * 60)
         return max(0., diff_min * 60 - now_sec)
 
@@ -372,7 +408,7 @@ class TradingApp:
                 self.trading_running = False
                 self.trading_thread.join(timeout=3.0)
             self.trading_thread = None
-        self.running         = True
+        self.running = True
         self.trading_running = True
         self.start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
@@ -396,7 +432,7 @@ class TradingApp:
         if not self._waiting_to_start:
             return
         strategy = self.strategy_type_var.get()
-        now_str  = datetime.now(timezone.utc).strftime('%H:%M UTC')
+        now_str = datetime.now(timezone.utc).strftime('%H:%M UTC')
         self.log_message(f"⏰ [{strategy}] Scheduled start at {now_str}", "green")
         self._do_start_trading()
         if not self._is_time_unconstrained(strategy):
@@ -408,14 +444,14 @@ class TradingApp:
                 eh, em2 = divmod(em, 60)
                 self.log_message(
                     f"⏰ [{strategy}] Auto-stop in "
-                    f"{stop_secs/60:.1f} min ({eh:02d}:{em2:02d} UTC)", "blue")
+                    f"{stop_secs / 60:.1f} min ({eh:02d}:{em2:02d} UTC)", "blue")
 
     def _scheduled_stop_callback(self):
         self._sched_stop_id = None
         if not self.running:
             return
         strategy = self.strategy_type_var.get()
-        now_str  = datetime.now(timezone.utc).strftime('%H:%M UTC')
+        now_str = datetime.now(timezone.utc).strftime('%H:%M UTC')
         self.log_message(
             f"⏰ [{strategy}] Trading window closed at {now_str}.", "orange")
         self._end_of_period_stop()
@@ -429,7 +465,7 @@ class TradingApp:
         4. Leave the app idle and ready — do NOT exit.
         """
         # ── Step 1: Block new entries ─────────────────────────────────────────
-        self.trading_running = False        # signals the loop: no new trades
+        self.trading_running = False  # signals the loop: no new trades
         self.log_message("⏸  Trading period ended — no new entries will be taken.", "orange")
 
         # ── Step 2: Close any open position at market price ──────────────────
@@ -440,7 +476,7 @@ class TradingApp:
                 current_price = float(self.current_data.get('Close', 0))
             if current_price:
                 close_side = 'sell' if pos_type == 'long' else 'buy'
-                qty        = self.position.get('quantity', 0)
+                qty = self.position.get('quantity', 0)
                 self.log_message(
                     f"📤 Period-end close: {pos_type.upper()} {qty:.4f} @ ${current_price:.4f}",
                     "blue")
@@ -453,10 +489,10 @@ class TradingApp:
                 self.log_message("⚠️  No price available — could not close open position.", "red")
 
         # ── Step 3: Fully stop the trading loop ───────────────────────────────
-        self.stop_trading()          # resets flags, re-enables Start button
+        self.stop_trading()  # resets flags, re-enables Start button
 
         # ── Step 4: Print session summary ─────────────────────────────────────
-        self.root.after(500, self._show_session_summary)   # slight delay so trades settle
+        self.root.after(500, self._show_session_summary)  # slight delay so trades settle
 
     def _show_session_summary(self):
         """Print a formatted trading period summary to the log panel."""
@@ -467,7 +503,7 @@ class TradingApp:
 
         # Session timing
         session_start = getattr(self, '_session_start_time', None)
-        session_end   = datetime.now(timezone.utc)
+        session_end = datetime.now(timezone.utc)
         if session_start:
             duration_mins = (session_end - session_start).total_seconds() / 60
             self.log_message(
@@ -479,23 +515,23 @@ class TradingApp:
         start_count = getattr(self, '_session_start_trade_count', 0)
         all_closed = [t for t in self.trade_history if t.get('exit_timestamp') is not None]
         # all_closed  = [t for t in self.trade_history if t.get('type') == 'sell']
-        session_trades = all_closed[start_count:]   # trades added during this session
+        session_trades = all_closed[start_count:]  # trades added during this session
 
         if not session_trades:
             self.log_message("  No trades completed during this session.", "orange")
         else:
-            total   = len(session_trades)
-            wins    = [t for t in session_trades if t.get('pnl', t.get('net_pnl', 0)) > 0]
-            losses  = [t for t in session_trades if t.get('pnl', t.get('net_pnl', 0)) <= 0]
-            total_pnl   = sum(t.get('pnl', t.get('net_pnl', 0)) for t in session_trades)
-            win_rate    = len(wins) / total * 100 if total else 0
-            avg_win     = sum(t.get('pnl', t.get('net_pnl', 0)) for t in wins)  / len(wins)  if wins   else 0
-            avg_loss    = sum(t.get('pnl', t.get('net_pnl', 0)) for t in losses)/ len(losses) if losses else 0
-            best_trade  = max(t.get('pnl', t.get('net_pnl', 0)) for t in session_trades)
+            total = len(session_trades)
+            wins = [t for t in session_trades if t.get('pnl', t.get('net_pnl', 0)) > 0]
+            losses = [t for t in session_trades if t.get('pnl', t.get('net_pnl', 0)) <= 0]
+            total_pnl = sum(t.get('pnl', t.get('net_pnl', 0)) for t in session_trades)
+            win_rate = len(wins) / total * 100 if total else 0
+            avg_win = sum(t.get('pnl', t.get('net_pnl', 0)) for t in wins) / len(wins) if wins else 0
+            avg_loss = sum(t.get('pnl', t.get('net_pnl', 0)) for t in losses) / len(losses) if losses else 0
+            best_trade = max(t.get('pnl', t.get('net_pnl', 0)) for t in session_trades)
             worst_trade = min(t.get('pnl', t.get('net_pnl', 0)) for t in session_trades)
 
-            gross_wins  = sum(t.get('pnl', t.get('net_pnl', 0)) for t in wins)
-            gross_loss  = abs(sum(t.get('pnl', t.get('net_pnl', 0)) for t in losses))
+            gross_wins = sum(t.get('pnl', t.get('net_pnl', 0)) for t in wins)
+            gross_loss = abs(sum(t.get('pnl', t.get('net_pnl', 0)) for t in losses))
             profit_factor = (gross_wins / gross_loss) if gross_loss > 0 else float('inf')
 
             pnl_color = "green" if total_pnl >= 0 else "red"
@@ -545,16 +581,18 @@ class TradingApp:
             text=f"⏰ STARTS IN {mins}m → {sh:02d}:{sm:02d} UTC",
             foreground='red')
         self.root.after(60_000,
-            lambda: self._update_wait_countdown(strategy, sh, sm))
+                        lambda: self._update_wait_countdown(strategy, sh, sm))
 
     def open_time_settings_panel(self, strategy: str):
         """Open a floating panel to set trading hours for *strategy*."""
-        attr     = f"_time_panel_{strategy}"
+        attr = f"_time_panel_{strategy}"
         existing = getattr(self, attr, None)
         if existing and existing.winfo_exists():
-            existing.lift(); existing.focus_force(); return
+            existing.lift();
+            existing.focus_force();
+            return
 
-        cfg   = self.trading_time_config[strategy]
+        cfg = self.trading_time_config[strategy]
         panel = tk.Toplevel(self.root)
         panel.title(f"⏰ Trading Hours — {strategy}")
         panel.geometry("390x285")
@@ -587,7 +625,7 @@ class TradingApp:
                 row=row, column=4, padx=5)
 
         _time_row("▶  Start time :", cfg["start_h"], cfg["start_m"], row=0)
-        _time_row("⏹  End   time :", cfg["end_h"],   cfg["end_m"],   row=1)
+        _time_row("⏹  End   time :", cfg["end_h"], cfg["end_m"], row=1)
 
         status_var = tk.StringVar()
         status_lbl = ttk.Label(body, textvariable=status_var, font=("Arial", 9))
@@ -595,7 +633,7 @@ class TradingApp:
 
         def _refresh(*_):
             sh, sm = cfg["start_h"].get(), cfg["start_m"].get()
-            eh, em = cfg["end_h"].get(),   cfg["end_m"].get()
+            eh, em = cfg["end_h"].get(), cfg["end_m"].get()
             if sh == eh and sm == em:
                 status_var.set("ℹ️  No restriction — trades run at any time")
                 status_lbl.config(foreground="#0066CC")
@@ -620,7 +658,7 @@ class TradingApp:
         def _save():
             _refresh()
             sh, sm = cfg["start_h"].get(), cfg["start_m"].get()
-            eh, em = cfg["end_h"].get(),   cfg["end_m"].get()
+            eh, em = cfg["end_h"].get(), cfg["end_m"].get()
             if sh == eh and sm == em:
                 self.log_message(
                     f"⏰ [{strategy}] Trading hours: unrestricted", "blue")
@@ -653,7 +691,7 @@ class TradingApp:
 
         def _summary():
             sh, sm = cfg["start_h"].get(), cfg["start_m"].get()
-            eh, em = cfg["end_h"].get(),   cfg["end_m"].get()
+            eh, em = cfg["end_h"].get(), cfg["end_m"].get()
             if sh == eh and sm == em:
                 return "⏰ Trading hours: unrestricted"
             return f"⏰ {sh:02d}:{sm:02d} → {eh:02d}:{em:02d} UTC"
@@ -666,7 +704,7 @@ class TradingApp:
         def _refresh(*_):
             lbl_var.set(_summary())
             sh, sm = cfg["start_h"].get(), cfg["start_m"].get()
-            eh, em = cfg["end_h"].get(),   cfg["end_m"].get()
+            eh, em = cfg["end_h"].get(), cfg["end_m"].get()
             lbl.config(fg="#006600" if not (sh == eh and sm == em) else "#444444")
 
         for v in (cfg["start_h"], cfg["start_m"], cfg["end_h"], cfg["end_m"]):
@@ -687,7 +725,7 @@ class TradingApp:
         if not self.running:
             self.log_message("⚠️ Trading is not currently running.", "orange")
             return
-        self.running         = False
+        self.running = False
         self.trading_running = False
         self._cancel_scheduled_trading()
         if hasattr(self, 'timer') and self.timer:
@@ -748,7 +786,7 @@ class TradingApp:
         if not (0 < fraction <= 1):
             self.log_message(f"❌ close_partial: invalid fraction {fraction}", "red")
             return False
-        qty_to_close  = self.position['quantity'] * fraction
+        qty_to_close = self.position['quantity'] * fraction
         current_price = self.get_current_price()
         if current_price is None:
             if self.current_data is not None:
@@ -757,7 +795,7 @@ class TradingApp:
             self.log_message("❌ close_partial: cannot determine price.", "red")
             return False
         self.log_message(
-            f"📤 Partial close: {fraction*100:.0f}% "
+            f"📤 Partial close: {fraction * 100:.0f}% "
             f"({qty_to_close:.4f} units) @ ${current_price:.4f}", "blue")
         success = self.place_order(
             'sell', current_price, quantity=qty_to_close,
@@ -832,8 +870,8 @@ class TradingApp:
         try:
             from strategies.MomentumStrategy_MACD_HybridScore_Latest import MOMENTUM_PARAMS, MomentumConfig
             self.momentum_params = MOMENTUM_PARAMS.copy()
-            self.current_mode    = MomentumConfig.get_current_mode()
-            self.custom_params   = MomentumConfig.get_custom_params()
+            self.current_mode = MomentumConfig.get_current_mode()
+            self.custom_params = MomentumConfig.get_custom_params()
             print("=" * 70)
             print("📋 LOADING MOMENTUM SETTINGS")
             print("=" * 70)
@@ -861,8 +899,8 @@ class TradingApp:
             print("Falling back to MOMENTUM_PARAMS defaults")
             from strategies.MomentumStrategy_MACD_HybridScore_Latest import MOMENTUM_PARAMS
             self.momentum_params = MOMENTUM_PARAMS.copy()
-            self.current_mode    = "Default Parameters"
-            self.custom_params   = {}
+            self.current_mode = "Default Parameters"
+            self.custom_params = {}
             return False
 
     def get_volume_ratio(self, df=None, current_data=None, default=1.0):
@@ -873,7 +911,8 @@ class TradingApp:
                     try:
                         val = df[col_name].iloc[-2]
                         if pd.notna(val) and val > 0:
-                            vol_ratio = float(val); break
+                            vol_ratio = float(val);
+                            break
                     except:
                         continue
         if vol_ratio is None or vol_ratio <= 0:
@@ -882,14 +921,15 @@ class TradingApp:
                     try:
                         val = current_data.get(col_name) if hasattr(current_data, 'get') else None
                         if val and float(val) > 0:
-                            vol_ratio = float(val); break
+                            vol_ratio = float(val);
+                            break
                     except:
                         continue
         if vol_ratio is None or vol_ratio <= 0:
             if df is not None and 'Volume' in df.columns and len(df) >= 22:
                 try:
                     current_vol = float(df['Volume'].iloc[-2])
-                    avg_vol     = df['Volume'].iloc[-22:-2].mean()
+                    avg_vol = df['Volume'].iloc[-22:-2].mean()
                     if avg_vol > 0: vol_ratio = current_vol / avg_vol
                 except:
                     pass
@@ -904,13 +944,17 @@ class TradingApp:
             if hasattr(self, '_cancel_scheduled_trading'):
                 self._cancel_scheduled_trading()
             if hasattr(self, 'timer') and self.timer:
-                try: self.timer.stop()
-                except Exception: pass
+                try:
+                    self.timer.stop()
+                except Exception:
+                    pass
             if hasattr(self, '_tts_engine') and self._tts_engine:
-                try: self._tts_engine.stop()
-                except Exception: pass
+                try:
+                    self._tts_engine.stop()
+                except Exception:
+                    pass
             if hasattr(self, 'market_api') and self.market_api: self.market_api = None
-            if hasattr(self, 'trade_api')  and self.trade_api:  self.trade_api  = None
+            if hasattr(self, 'trade_api') and self.trade_api:  self.trade_api = None
             if hasattr(self, 'account_api') and self.account_api: self.account_api = None
             try:
                 import matplotlib.pyplot as plt
@@ -918,13 +962,17 @@ class TradingApp:
             except Exception:
                 pass
             if hasattr(self, 'chart') and self.chart:
-                try: self.chart.destroy()
-                except Exception: pass
+                try:
+                    self.chart.destroy()
+                except Exception:
+                    pass
             try:
                 after_ids = list(self.root.tk.call('after', 'info'))
                 for after_id in after_ids:
-                    try: self.root.after_cancel(after_id)
-                    except Exception: pass
+                    try:
+                        self.root.after_cancel(after_id)
+                    except Exception:
+                        pass
             except Exception:
                 pass
             self.root.quit()
@@ -934,7 +982,9 @@ class TradingApp:
         finally:
             import threading
             def force_exit():
-                import os; os._exit(0)
+                import os;
+                os._exit(0)
+
             threading.Timer(2.0, force_exit).start()
 
     def sync_custom_params_with_code_defaults(self):
@@ -947,8 +997,10 @@ class TradingApp:
         self.log_message(f"   tier1_adx_hard_min     = {self.custom_params['momentum']['tier1_adx_hard_min']}", "green")
         self.log_message(f"   tier1_volume_min       = {self.custom_params['momentum']['tier1_volume_min']}", "green")
         self.log_message(f"   stop_loss_atr_mult     = {self.custom_params['momentum']['stop_loss_atr_mult']}", "green")
-        self.log_message(f"   trailing_activation_pct = {self.custom_params['momentum']['trailing_activation_pct']}", "green")
-        self.log_message(f"   quality_tier2_min      = {self.custom_params['momentum']['quality_tier2_min']}", "green")
+        self.log_message(
+            f"   trailing_activation_tier1 = {self.custom_params['momentum']['trailing_activation_tier1']}", "green")
+        self.log_message(f"   quality_tier2_min_long = {self.custom_params['momentum']['quality_tier2_min_long']}",
+                         "green")
         self.log_message(f"   risk_tier1             = {self.custom_params['momentum']['risk_tier1']}", "green")
         self.log_message(f"   max_daily_trades       = {self.custom_params['momentum']['max_daily_trades']}", "green")
         self.log_message(f"   only_tier1_entries     = {self.custom_params['momentum']['only_tier1_entries']}", "green")
@@ -957,18 +1009,28 @@ class TradingApp:
 
     def test_premium_tier1_config(self):
         if not hasattr(self, 'momentum_strategy') or self.momentum_strategy is None:
-            self.log_message("ERROR: Strategy not loaded", "red"); return
+            self.log_message("ERROR: Strategy not loaded", "red");
+            return
         s = self.momentum_strategy
         checks = {
-            "Tier 1 Quality Min":   (s.quality_tier1_min,  72),
-            "Tier 2 Quality Min":   (s.quality_tier2_min,  62),
-            "Only Tier 2 Entries":  (s.only_tier1_entries, False),
-            "Tier 1 ADX Hard Min":  (s.tier1_adx_hard_min, 20),
-            "Tier 1 RSI Min":       (s.tier1_rsi_min,      44),
-            "Tier 1 RSI Max":       (s.tier1_rsi_max,      64),
-            "Tier 1 Volume Min":    (s.tier1_volume_min,   1.0),
-            "Tier 1 Momentum Min":  (s.tier1_momentum_min, 0.02),
+            "Tier 1 Quality Min (LONG)": (s.quality_tier1_min_long, 0.70),
+            "Tier 2 Quality Min (LONG)": (s.quality_tier2_min_long, 0.60),
+            "Tier 1 Quality Min (SHORT)": (s.quality_tier1_min_short, 0.70),
+            "Tier 2 Quality Min (SHORT)": (s.quality_tier2_min_short, 0.60),
+            "Only Tier 1 Entries": (s.only_tier1_entries, False),
+            "Tier 1 ADX Hard Min (LONG)": (s.tier1_adx_hard_min, 25.0),
+            "Tier 1 ADX Hard Min (SHORT)": (s.tier1_adx_hard_min_short, 30.0),
+            "Tier 1 RSI Min (LONG)": (s.tier1_rsi_min, 55.0),
+            "Tier 1 RSI Max (LONG)": (s.tier1_rsi_max, 75.0),
+            "Tier 1 RSI Min (SHORT)": (s.tier1_rsi_min_short, 25.0),
+            "Tier 1 RSI Max (SHORT)": (s.tier1_rsi_max_short, 45.0),
+            "Tier 1 Volume Min (LONG)": (s.tier1_volume_min, 1.5),
+            "Tier 1 Volume Min (SHORT)": (s.tier1_volume_min_short, 1.3),
+            "Tier 1 Momentum Min": (s.tier1_momentum_min, 0.02),
             "Tier 1 Price EMA Max %": (s.tier1_price_ema_max_pct, 1.5),
+            "Stop Loss ATR Mult (unified)": (s.stop_loss_atr_mult, 2.0),
+            "Risk Tier 1": (s.risk_tier1, 0.02),
+            "Risk Tier 2": (s.risk_tier2, 0.01),
         }
         self.log_message("=" * 70, "cyan")
         self.log_message("PREMIUM TIER 1 CONFIGURATION CHECK", "bold blue")
@@ -982,7 +1044,7 @@ class TradingApp:
                 all_passed = False
         self.log_message("=" * 70, "cyan")
         if all_passed:
-            self.log_message("✅ ALL CHECKS PASSED - CONFIG MATCHES MOMENTUM_PARAMS", "bold green")
+            self.log_message("✅ ALL CHECKS PASSED - CONFIG MATCHES CONSOLIDATED MOMENTUM_PARAMS", "bold green")
         else:
             self.log_message("❌ SOME CHECKS FAILED - REVIEW CONFIGURATION", "bold red")
         return all_passed
@@ -1078,55 +1140,45 @@ class TradingApp:
         """
         Resolve the Tier 1 / Tier 2 quality thresholds to use.
 
-        backtest_mode=False (default): original behavior. Prefers whatever is
-            currently set on the live/paper-trading Momentum strategy object
-            (self.strategies['Momentum']), falling back to the GUI/current
-            params, then custom_params. This is correct for LIVE TRADING,
-            where you want the thresholds actually governing the running
-            strategy (which may have been adjusted via the GUI or the fuzzy
-            learning system).
-
-        backtest_mode=True: ALWAYS use the explicitly configured backtest
-            parameters (get_current_momentum_params() / custom_params) and
-            NEVER read from self.strategies['Momentum']. This guarantees a
-            backtest run reflects the "Parameter Mode" the user actually
-            selected (e.g. "Default Parameters"), rather than silently
-            inheriting whatever threshold the live strategy object happens
-            to be holding at that moment (which can drift due to GUI edits,
-            prior optimizer runs, or the fuzzy-learning threshold decay).
-            This fixes non-reproducible backtests where the same "Default
-            Parameters" mode produced different Tier 1 minimums across runs.
-
         Returns a 3-tuple: (quality_tier1_min, quality_tier2_min, source).
         """
         quality_tier1_min = None
         quality_tier2_min = None
         source = "unknown"
+
         if not backtest_mode and hasattr(self, 'strategies') and 'Momentum' in self.strategies:
             live_strategy = self.strategies['Momentum']
-            if hasattr(live_strategy, 'quality_tier1_min'):
-                quality_tier1_min = live_strategy.quality_tier1_min
-            if hasattr(live_strategy, 'quality_tier2_min'):
-                quality_tier2_min = live_strategy.quality_tier2_min
+            # Try LONG first, fallback to SHORT
+            quality_tier1_min = getattr(live_strategy, 'quality_tier1_min_long',
+                                        getattr(live_strategy, 'quality_tier1_min_short', None))
+            quality_tier2_min = getattr(live_strategy, 'quality_tier2_min_long',
+                                        getattr(live_strategy, 'quality_tier2_min_short', None))
             if quality_tier1_min is not None:
                 source = "live Momentum strategy"
                 self.log_message(
-                    f"📋 Tier thresholds from LIVE STRATEGY: Tier1={quality_tier1_min}, Tier2={quality_tier2_min}", "green")
+                    f"📋 Tier thresholds from LIVE STRATEGY: Tier1={quality_tier1_min}, Tier2={quality_tier2_min}",
+                    "green")
                 return quality_tier1_min, quality_tier2_min, source
-        current_params    = self.get_current_momentum_params()
-        quality_tier1_min = current_params.get('quality_tier1_min')
-        quality_tier2_min = current_params.get('quality_tier2_min')
+
+        current_params = self.get_current_momentum_params()
+        quality_tier1_min = current_params.get('quality_tier1_min_long', current_params.get('quality_tier1_min_short'))
+        quality_tier2_min = current_params.get('quality_tier2_min_long', current_params.get('quality_tier2_min_short'))
+
         if quality_tier1_min is not None:
             source = f"get_current_momentum_params() (mode={self.param_toggle_var.get()})"
-            self.log_message(f"📋 Tier thresholds from {source}: Tier1={quality_tier1_min}, Tier2={quality_tier2_min}", "green")
+            self.log_message(f"📋 Tier thresholds from {source}: Tier1={quality_tier1_min}, Tier2={quality_tier2_min}",
+                             "green")
             return quality_tier1_min, quality_tier2_min, source
-        quality_tier1_min = self.custom_params.get('momentum', {}).get('quality_tier1_min')
-        quality_tier2_min = self.custom_params.get('momentum', {}).get('quality_tier2_min')
+
+        saved_custom = self.custom_params.get('momentum', {})
+        quality_tier1_min = saved_custom.get('quality_tier1_min_long', saved_custom.get('quality_tier1_min_short'))
+        quality_tier2_min = saved_custom.get('quality_tier2_min_long', saved_custom.get('quality_tier2_min_short'))
+
         if quality_tier1_min is not None:
             source = "custom_params"
-            self.log_message(f"📋 Tier thresholds from CUSTOM_PARAMS: Tier1={quality_tier1_min}, Tier2={quality_tier2_min}", "green")
             return quality_tier1_min, quality_tier2_min, source
-        error_msg = f"❌ Cannot determine tier thresholds! quality_tier1_min={quality_tier1_min}, quality_tier2_min={quality_tier2_min}"
+
+        error_msg = f"❌ Cannot determine tier thresholds!"
         self.log_message(error_msg, "red")
         raise ValueError(error_msg)
 
@@ -1169,10 +1221,10 @@ class TradingApp:
 
     def get_current_scalping_params(self):
         current_mode = self.param_toggle_var.get()
-        defaults     = self.get_default_scalping_params()
+        defaults = self.get_default_scalping_params()
         if current_mode == "Default Parameters":
             return defaults
-        params      = defaults.copy()
+        params = defaults.copy()
         saved_custom = self.custom_params.get('scalping', {})
         for key, value in saved_custom.items():
             if key in params: params[key] = value
@@ -1190,7 +1242,7 @@ class TradingApp:
         self.strategy_settings_file = "strategy_settings.json"
         self.default_params = {
             'momentum': self.get_default_momentum_params(),
-            'kalman':   self.get_default_kalman_params()
+            'kalman': self.get_default_kalman_params()
         }
         self.custom_params = {'momentum': {}, 'kalman': {}, 'scalping': {}}
         selected_mode = 'Default Parameters'
@@ -1228,13 +1280,13 @@ class TradingApp:
             except Exception as e:
                 self.log_message(f"⚠️ Error loading settings: {e} - using MOMENTUM_PARAMS for custom", "orange")
                 self.custom_params['momentum'] = self.get_default_momentum_params().copy()
-                self.custom_params['kalman']   = self.get_default_kalman_params().copy()
+                self.custom_params['kalman'] = self.get_default_kalman_params().copy()
                 import traceback
                 self.log_message(traceback.format_exc(), "red")
         else:
             self.log_message(f"ℹ️ No {self.strategy_settings_file} found", "blue")
             self.custom_params['momentum'] = self.get_default_momentum_params().copy()
-            self.custom_params['kalman']   = self.get_default_kalman_params().copy()
+            self.custom_params['kalman'] = self.get_default_kalman_params().copy()
             self.custom_params['scalping'] = self.get_default_scalping_params().copy()
             try:
                 initial_settings = {
@@ -1252,13 +1304,19 @@ class TradingApp:
         self.param_toggle_var = tk.StringVar(value=selected_mode)
 
     def get_current_momentum_params(self):
+        """Get current momentum parameters from MOMENTUM_PARAMS with UI overrides."""
         from strategies.MomentumStrategy_MACD_HybridScore_Latest import MOMENTUM_PARAMS
         current_mode = self.param_toggle_var.get()
         params = MOMENTUM_PARAMS.copy()
+
+        # ─── Apply custom parameters if selected ──────────────────────────
         if current_mode == "Custom Parameters":
             saved_custom = self.custom_params.get('momentum', {})
             for key, value in saved_custom.items():
-                if key in params: params[key] = value
+                if key in params:
+                    params[key] = value
+
+            # UI widget overrides (highest priority)
             if hasattr(self, 'momentum_param_widgets'):
                 for param_name, widget_info in self.momentum_param_widgets.items():
                     if param_name in params:
@@ -1268,6 +1326,8 @@ class TradingApp:
                         else:
                             value_str = custom_var.get()
                             params[param_name] = self.convert_param_value(value_str)
+
+        # ─── Apply GUI trade direction ─────────────────────────────────────
         try:
             if hasattr(self, 'trade_direction_var'):
                 gui_dir = self.trade_direction_var.get()
@@ -1275,30 +1335,14 @@ class TradingApp:
                     params['trade_direction'] = gui_dir
         except Exception:
             pass
-        # ─────────────────────────────────────────────────────────────────
-        # FIX: sync legacy "bare" quality-tier keys into the REAL _long/_short
-        # suffixed attributes the strategy's entry logic actually reads.
-        #
-        # The strategy (MomentumStrategy_MACD_HybridScore_Latest.py) gates
-        # LONG entries on quality_tier1_min_long / quality_tier2_min_long,
-        # and SHORT entries on the _short-suffixed equivalents. The GUI,
-        # however, has always exposed the older bare names
-        # ('quality_tier1_min', 'quality_tier2_min') for LONG and the
-        # 'short_'-prefixed names ('short_quality_tier1_min',
-        # 'short_quality_tier2_min') for SHORT. Without this sync, editing
-        # those GUI fields silently had NO effect on real trade entries --
-        # only the never-edited MOMENTUM_PARAMS defaults for the _long/_short
-        # keys were actually being used.
-        #
-        # Bare/legacy key -> real key actually used by the strategy:
-        params['quality_tier1_min_long']  = params.get('quality_tier1_min',  params.get('quality_tier1_min_long'))
-        params['quality_tier2_min_long']  = params.get('quality_tier2_min',  params.get('quality_tier2_min_long'))
-        params['quality_tier1_min_short'] = params.get('short_quality_tier1_min', params.get('quality_tier1_min_short'))
-        params['quality_tier2_min_short'] = params.get('short_quality_tier2_min', params.get('quality_tier2_min_short'))
 
         self.log_message(
             f"📋 get_current_momentum_params() - Mode: {current_mode}, "
-            f"Tier1={params.get('quality_tier1_min')}, Tier2={params.get('quality_tier2_min')}", "cyan")
+            f"Tier1_Long={params.get('quality_tier1_min_long')}, "
+            f"Tier2_Long={params.get('quality_tier2_min_long')}, "
+            f"Tier1_Short={params.get('quality_tier1_min_short')}, "
+            f"Tier2_Short={params.get('quality_tier2_min_short')}, "
+            f"StopLoss_ATR={params.get('stop_loss_atr_mult')}", "cyan")
         return params
 
     def get_current_kalman_params(self):
@@ -1327,7 +1371,7 @@ class TradingApp:
                 ui_value = custom_var.get()
             else:
                 value_str = custom_var.get()
-                ui_value  = self.convert_param_value(value_str)
+                ui_value = self.convert_param_value(value_str)
             stored_value = self.custom_params['momentum'].get(param_name)
             if stored_value != ui_value:
                 self.custom_params['momentum'][param_name] = ui_value
@@ -1352,27 +1396,27 @@ class TradingApp:
             interval_lower = interval.lower()
             if any(x in interval_lower for x in ['1m', '5m', '15m', '30m']):
                 config['min_trades_absolute'] = int(config['min_trades_absolute'] * 1.5)
-                config['min_trades_penalty']  = int(config['min_trades_penalty']  * 1.5)
-                config['max_trades_penalty']  = int(config['max_trades_penalty']  * 2.0)
+                config['min_trades_penalty'] = int(config['min_trades_penalty'] * 1.5)
+                config['max_trades_penalty'] = int(config['max_trades_penalty'] * 2.0)
                 config['penalty_low'] = 0.6
                 sw, rw, ww = config['weights']
                 config['weights'] = (sw - 0.1, rw, ww + 0.1)
             elif any(x in interval_lower for x in ['1h', '4h']):
                 config['min_trades_absolute'] = max(8, int(config['min_trades_absolute'] * 0.8))
-                config['max_trades_penalty']  = int(config['max_trades_penalty'] * 0.7)
+                config['max_trades_penalty'] = int(config['max_trades_penalty'] * 0.7)
             elif '1d' in interval_lower or 'day' in interval_lower:
                 config['min_trades_absolute'] = max(5, int(config['min_trades_absolute'] * 0.5))
-                config['min_trades_penalty']  = max(8, int(config['min_trades_penalty']  * 0.5))
-                config['max_trades_penalty']  = max(200, int(config['max_trades_penalty'] * 0.4))
+                config['min_trades_penalty'] = max(8, int(config['min_trades_penalty'] * 0.5))
+                config['max_trades_penalty'] = max(200, int(config['max_trades_penalty'] * 0.4))
                 config['penalty_low'] = 0.85
                 sw, rw, ww = config['weights']
                 config['weights'] = (sw + 0.1, rw - 0.05, ww - 0.05)
             elif any(x in interval_lower for x in ['1w', 'week', 'month']):
                 config['min_trades_absolute'] = max(3, int(config['min_trades_absolute'] * 0.3))
-                config['min_trades_penalty']  = max(5, int(config['min_trades_penalty']  * 0.3))
-                config['max_trades_penalty']  = 100
+                config['min_trades_penalty'] = max(5, int(config['min_trades_penalty'] * 0.3))
+                config['max_trades_penalty'] = 100
                 config['penalty_low'] = 0.9
-                config['weights']    = (0.8, 0.15, 0.05)
+                config['weights'] = (0.8, 0.15, 0.05)
         return config
 
     # ───────────────────────────────────────────────────────────────────────
@@ -1388,18 +1432,16 @@ class TradingApp:
     #   5. create_scalping_parameter_controls() — _add_time_settings_button hook
     # ───────────────────────────────────────────────────────────────────────
 
-
-
     def _execute_ai_analysis(self):
         """Run DeepSeek AI analysis — works in backtest AND demo/live mode."""
         try:
             analysis_type = self.ai_analysis_type.get()
-            depth         = self.analysis_depth_var.get()
+            depth = self.analysis_depth_var.get()
 
             self._update_ai_progress(5, "Gathering market data...")
 
             mode = self.mode_var.get().lower()
-            df   = None
+            df = None
 
             # ── Step 1: use cached backtest DataFrame if available ──────────
             if mode == "backtest":
@@ -1450,7 +1492,7 @@ class TradingApp:
 
             # ── Step 5: build summary & prompt ──────────────────────────────
             self._update_ai_progress(25, "Preparing data summary...")
-            data_summary  = self._prepare_ai_data_summary(df, depth)
+            data_summary = self._prepare_ai_data_summary(df, depth)
             trade_summary = self._prepare_trade_history_summary()
 
             self._update_ai_progress(35, "Building analysis prompt...")
@@ -1459,12 +1501,12 @@ class TradingApp:
             try:
                 if df is not None and len(df) >= 2 and 'Close' in df.columns:
                     last_completed = df.iloc[-2]
-                    current_dict   = (last_completed.to_dict()
-                                      if hasattr(last_completed, 'to_dict')
-                                      else dict(last_completed))
+                    current_dict = (last_completed.to_dict()
+                                    if hasattr(last_completed, 'to_dict')
+                                    else dict(last_completed))
                     snapshot = dict(current_dict)
                     self.root.after(0,
-                        lambda s=snapshot: self._display_market_snapshot(s))
+                                    lambda s=snapshot: self._display_market_snapshot(s))
             except Exception as e:
                 self.log_message(
                     f"⚠️ Could not display market snapshot: {e}", "orange")
@@ -1519,20 +1561,17 @@ class TradingApp:
             )
 
     def create_momentum_parameter_controls(self, parent):
-        """Create parameter controls for Momentum strategy."""
+        """Create parameter controls for Momentum strategy with CONSOLIDATED TIER SYSTEM."""
         # ── Trading Hours button ─────────────────────────────────────────
         self._add_time_settings_button(parent, "Momentum")
 
         paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        # left_frame  = ttk.Frame(paned, width=600)
-        # paned.add(left_frame, weight=2)
-        # right_frame = ttk.LabelFrame(paned, text="Backtest Optimization Parameters", width=500)
-        # paned.add(right_frame, weight=1)
+
         screen_width = parent.winfo_screenwidth()
 
-        left_width = int(screen_width * 0.65)  # 65%
-        right_width = int(screen_width * 0.35)  # 35%
+        left_width = int(screen_width * 0.65)
+        right_width = int(screen_width * 0.35)
 
         left_frame = ttk.Frame(paned, width=left_width)
         right_frame = ttk.LabelFrame(
@@ -1543,25 +1582,31 @@ class TradingApp:
 
         paned.add(left_frame, weight=65)
         paned.add(right_frame, weight=35)
+
         headers_frame = ttk.Frame(left_frame)
         headers_frame.pack(fill='x', padx=5, pady=(5, 0), side=tk.TOP)
         headers_frame.columnconfigure(0, weight=0, minsize=250)
         headers_frame.columnconfigure(1, weight=0, minsize=120)
         headers_frame.columnconfigure(2, weight=0, minsize=120)
-        headers_frame.columnconfigure(3, weight=1,  minsize=350)
+        headers_frame.columnconfigure(3, weight=1, minsize=350)
 
         header_style = ('Arial', 10, 'bold')
-        ttk.Label(headers_frame, text="Parameter",       font=header_style, anchor='w').grid(row=0, column=0, padx=5, pady=8, sticky='w')
-        ttk.Label(headers_frame, text="📌 Default Value",font=header_style, anchor='w').grid(row=0, column=1, padx=5, pady=8, sticky='w')
-        ttk.Label(headers_frame, text="✏️ Custom Value", font=header_style, anchor='w').grid(row=0, column=2, padx=5, pady=8, sticky='w')
-        ttk.Label(headers_frame, text="Description",     font=header_style, anchor='w').grid(row=0, column=3, padx=5, pady=8, sticky='w')
-        ttk.Separator(headers_frame, orient='horizontal').grid(row=1, column=0, columnspan=4, sticky='ew', padx=5, pady=(0, 5))
+        ttk.Label(headers_frame, text="Parameter", font=header_style, anchor='w').grid(row=0, column=0, padx=5, pady=8,
+                                                                                       sticky='w')
+        ttk.Label(headers_frame, text="📌 Default Value", font=header_style, anchor='w').grid(row=0, column=1, padx=5,
+                                                                                             pady=8, sticky='w')
+        ttk.Label(headers_frame, text="✏️ Custom Value", font=header_style, anchor='w').grid(row=0, column=2, padx=5,
+                                                                                             pady=8, sticky='w')
+        ttk.Label(headers_frame, text="Description", font=header_style, anchor='w').grid(row=0, column=3, padx=5,
+                                                                                         pady=8, sticky='w')
+        ttk.Separator(headers_frame, orient='horizontal').grid(row=1, column=0, columnspan=4, sticky='ew', padx=5,
+                                                               pady=(0, 5))
 
         content_frame = ttk.Frame(left_frame)
         content_frame.pack(fill='both', expand=True, padx=5, pady=5, side=tk.TOP)
 
-        canvas          = tk.Canvas(content_frame, bg='white', highlightthickness=0)
-        scrollbar       = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
+        canvas = tk.Canvas(content_frame, bg='white', highlightthickness=0)
+        scrollbar = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
         scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
@@ -1572,46 +1617,240 @@ class TradingApp:
         default_params = self.get_default_momentum_params()
         self.momentum_param_widgets = {}
 
+        # ═══════════════════════════════════════════════════════════════════
+        # CONSOLIDATED CATEGORIES — v10.0.5
+        # All obsolete/duplicate parameters removed
+        # ═══════════════════════════════════════════════════════════════════
         categories = {
-            '📊 EMA Parameters': ['ema_fast_period','ema_mid_period','ema_slow_period','ema_near_tolerance','daily_ema_period'],
-            '🎯 LONG Quality Thresholds': ['quality_tier1_min','quality_tier2_min'],
-            '🎯 SHORT Quality Thresholds': ['short_quality_tier1_min','short_quality_tier2_min'],
-            '📊 Quality Component Weights': ['weight_ema','weight_adx','weight_macd','weight_rsi','weight_volume'],
-            '🎯 TIER CONTROL': ['only_tier1_entries'],
-            '⏱️ TIER COOLDOWN & CONFLUENCE': ['min_bars_between_trades_tier1','min_bars_between_trades_tier2','cooldown_tier2_enabled','tier1_confluence_min','tier2_confluence_min'],
-            '⬆️ TIER 1 LONG FILTERS': ['tier1_adx_hard_min','tier1_adx_min','tier1_rsi_min','tier1_rsi_max','tier1_volume_min','tier1_momentum_min','tier1_kalman_min','tier1_macd_gate','tier1_price_ema_max_pct','daily_trend_filter_enabled','pullback_zone_lower_pct','pullback_zone_upper_pct','adx_slope_min'],
-            '⬇️ TIER 1 SHORT FILTERS': ['short_tier1_adx_hard_min','short_tier1_rsi_min','short_tier1_rsi_max','short_tier1_volume_min','short_tier1_momentum_min','short_tier1_macd_gate','daily_trend_down_filter_enabled'],
-            '🎯 TIER 2 FILTERS': ['tier2_adx_min','tier2_volume_min','tier2_volume_min_ratio','tier2_momentum_min','tier2_macd_histogram_min','tier2_require_macd_histogram'],
-            '🔬 Indicator Periods': ['adx_period','rsi_period','cci_period','atr_period','volume_ma_period','macd_fast','macd_slow','macd_signal','supertrend_atr_period','supertrend_multiplier','kalman_q_param','kalman_r_param','vix_atr_period','vix_rolling_period'],
-            '🎯 Entry Filters': ['adx_min','adx_min_trend','rsi_entry_min','rsi_entry_max','volume_min_ratio','volume_period','momentum_min','kalman_min_strength','cci_filter_enabled','vix_max_threshold','rsi_dynamic_enabled'],
-            '🛡️ Risk Management': ['risk_per_trade','risk_full_position','risk_reduced_position','risk_aggressive_position','risk_tier1','risk_tier2','risk_tier2_exceptional','tier1_size_multiplier','tier2_size_multiplier','tier1_stop_multiplier','tier2_stop_multiplier'],
-            '🛑 STOP LOSS & TRAILING': ['stop_loss_atr_mult','trailing_stop_atr_mult','trailing_activation_pct','trailing_distance_pct','trailing_stop_pct','trailing_activation_r','initial_trailing_atr_mult'],
-            '🔒 BREAKEVEN STOP': ['be_stop_enabled','be_stop_r_trigger','be_stop_no_progress_bars'],
-            '💰 Profit Targets': ['take_profit_r1','take_profit_r2','take_profit_r3','profit_target_r1','profit_target_r2','profit_target_r3'],
-            '📉 Exit Conditions': ['max_hold_bars','min_hold_bars_before_stop','emergency_stop_multiplier','macd_bearish_cross_exit','macd_bearish_cross_profit_min','ema_cross_exit','rsi_exit_threshold','kalman_fade_threshold','momentum_reversal_exit','momentum_reversal_threshold','momentum_reversal_profit_min','profit_min_fade','profit_min_time_exit','profit_min_ma_crossover'],
-            '⏱️ COOLDOWN & TRADE MANAGEMENT': ['max_daily_trades','min_bars_between_trades','cooldown_after_profit_target_bars','cooldown_after_loss_bars'],
-            '🔬 PRECISION FILTERS': ['dmi_spread_min_long','dmi_spread_min_short','ema_trending_bars','macd_hist_rising_bars','rsi_direction_bars','rsi_direction_min_move','macd_hist_positive_required_long','macd_hist_negative_required_short','bb_expand_required','time_filter_enabled','time_filter_start_utc','time_filter_end_utc'],
-            '⚙️ Regime & Strategy Control': ['regime_filter_enabled','ranging_min_checks','bb_period','bb_std','kc_period','kc_atr_mult','chop_period','chop_threshold','volatility_scaling','trade_high_vol','trade_ranging','supertrend_exit_enabled'],
-            '📊 PRICE POSITIONING': ['price_percentile_bonus_early','price_percentile_penalty_late','price_percentile_early_threshold','price_percentile_late_threshold','price_percentile_lookback'],
-            '📈 ADX SCORING BANDS': ['adx_score_trend_forming','adx_score_good_trend','adx_score_strong_trend','adx_score_very_strong','adx_score_extended'],
-            '📉 MACD SCORING': ['macd_score_line_vs_signal','macd_score_histogram_direction','macd_score_zero_cross','macd_score_histogram_value'],
-            '🧠 FUZZY MODE SETTINGS': ['fuzzy_mode_enabled','fuzzy_learning_enabled','fuzzy_safety_cutoffs','fuzzy_default_margin_pct','fuzzy_absolute_min','fuzzy_absolute_max','fuzzy_min_confidence','fuzzy_min_samples','fuzzy_max_adjustment_pct','fuzzy_learning_rate','fuzzy_conservative_start'],
+            # ─── EMA ──────────────────────────────────────────────────────
+            '📊 EMA Parameters': [
+                'ema_fast_period', 'ema_mid_period', 'ema_slow_period',
+                'ema_near_tolerance', 'daily_ema_period',
+            ],
+
+            # ─── QUALITY THRESHOLDS (CONSOLIDATED) ──────────────────────
+            '🎯 LONG Quality Thresholds': [
+                'quality_tier1_min_long',
+                'quality_tier2_min_long',
+            ],
+            '🎯 SHORT Quality Thresholds': [
+                'quality_tier1_min_short',
+                'quality_tier2_min_short',
+            ],
+
+            # ─── WEIGHTS ──────────────────────────────────────────────────
+            '📊 Quality Component Weights (total=100)': [
+                'weight_ema', 'weight_adx', 'weight_macd', 'weight_rsi', 'weight_volume',
+            ],
+
+            # ─── TIER CONTROL ─────────────────────────────────────────────
+            '🎯 TIER CONTROL': [
+                'only_tier1_entries',
+            ],
+
+            # ─── COOLDOWN & CONFLUENCE ──────────────────────────────────
+            '⏱️ TIER COOLDOWN & CONFLUENCE': [
+                'min_bars_between_trades_tier1',
+                'min_bars_between_trades_tier2',
+                'cooldown_tier2_enabled',
+                'tier1_confluence_min',
+                'tier2_confluence_min',
+            ],
+
+            # ─── TIER 1 LONG FILTERS ────────────────────────────────────
+            '⬆️ TIER 1 LONG FILTERS': [
+                'tier1_adx_hard_min',
+                'tier1_rsi_min',
+                'tier1_rsi_max',
+                'tier1_volume_min',
+                'tier1_momentum_min',
+                'tier1_kalman_min',
+                'tier1_macd_gate',
+                'tier1_price_ema_max_pct',
+                'daily_trend_filter_enabled',
+                'pullback_zone_lower_pct',
+                'pullback_zone_upper_pct',
+                'adx_slope_min',
+            ],
+
+            # ─── TIER 1 SHORT FILTERS ───────────────────────────────────
+            '⬇️ TIER 1 SHORT FILTERS': [
+                'tier1_adx_hard_min_short',
+                'tier1_rsi_min_short',
+                'tier1_rsi_max_short',
+                'tier1_volume_min_short',
+                'tier1_momentum_min_short',
+                'tier1_macd_gate_short',
+                'daily_trend_down_filter_enabled',
+            ],
+
+            # ─── TIER 2 FILTERS ──────────────────────────────────────────
+            '🎯 TIER 2 FILTERS': [
+                'tier2_adx_hard_min',
+                'tier2_volume_min',
+                'tier2_momentum_min',
+                'tier2_rsi_min',
+                'tier2_rsi_max',
+                'tier2_rsi_min_short',
+                'tier2_rsi_max_short',
+                'tier2_macd_histogram_min',
+                'tier2_require_macd_histogram',
+            ],
+
+            # ─── SIZE / STOP / EXIT / TRAILING (CONSOLIDATED) ──────────
+            '🎯 TIER SIZE / EXIT / TRAILING': [
+                'tier1_size_multiplier',
+                'tier2_size_multiplier',
+                'stop_loss_atr_mult',          # UNIFIED — removed tier-specific
+                'exit_threshold_tier1',
+                'exit_threshold_tier2',
+                'trailing_activation_tier1',
+                'trailing_activation_tier2',
+                'trailing_distance_tier1',
+                'trailing_distance_tier2',
+            ],
+
+            # ─── INDICATOR PERIODS ──────────────────────────────────────
+            '🔬 Indicator Periods': [
+                'adx_period', 'rsi_period', 'cci_period', 'atr_period',
+                'volume_ma_period', 'macd_fast', 'macd_slow', 'macd_signal',
+                'supertrend_atr_period', 'supertrend_multiplier',
+                'kalman_q_param', 'kalman_r_param', 'vix_atr_period', 'vix_rolling_period',
+            ],
+
+            # ─── RISK MANAGEMENT (CONSOLIDATED) ─────────────────────────
+            '🛡️ Risk Management': [
+                'risk_tier1',
+                'risk_tier2',
+            ],
+
+            # ─── BREAKEVEN STOP ──────────────────────────────────────────
+            '🔒 BREAKEVEN STOP': [
+                'be_stop_enabled',
+                'be_stop_r_trigger',
+                'be_stop_no_progress_bars',
+            ],
+
+            # ─── PROFIT TARGETS (CONSOLIDATED) ──────────────────────────
+            '💰 Profit Targets': [
+                'take_profit_r1',
+                'take_profit_r2',
+                'take_profit_r3',
+            ],
+
+            # ─── EXIT CONDITIONS (CONSOLIDATED) ─────────────────────────
+            '📉 Exit Conditions': [
+                'max_hold_bars',
+                'min_hold_bars_before_stop',
+                'emergency_stop_multiplier',
+                'macd_bearish_cross_exit',
+                'macd_bearish_cross_profit_min',
+                'ema_cross_exit',
+                'rsi_exit_threshold',
+                'kalman_fade_threshold',
+                'momentum_reversal_exit',
+                'momentum_reversal_threshold',
+                'momentum_reversal_profit_min',
+            ],
+
+            # ─── COOLDOWN & TRADE MANAGEMENT ────────────────────────────
+            '⏱️ COOLDOWN & TRADE MANAGEMENT': [
+                'max_daily_trades',
+                'min_bars_between_trades',
+                'cooldown_after_profit_target_bars',
+                'cooldown_after_loss_bars',
+                'consecutive_loss_threshold',
+                'consecutive_loss_cooldown_bars',
+            ],
+
+            # ─── PRECISION FILTERS (CONSOLIDATED) ──────────────────────
+            '🔬 PRECISION FILTERS': [
+                'ema_trending_bars',
+                'macd_hist_rising_bars',
+                'rsi_direction_bars',
+                'rsi_direction_min_move',
+            ],
+
+            # ─── REGIME & STRATEGY CONTROL (CONSOLIDATED) ──────────────
+            '⚙️ Regime & Strategy Control': [
+                'regime_filter_enabled',
+                'ranging_min_checks',
+                'bb_period', 'bb_std',
+                'kc_period', 'kc_atr_mult',
+                'chop_period', 'chop_threshold',
+                'volatility_scaling',
+                'atr_compression_enabled',
+                'atr_compression_threshold',
+                'extended_run_max_pct_long',
+                'extended_run_max_pct_short',
+            ],
+
+            # ─── PRICE POSITIONING ──────────────────────────────────────
+            '📊 PRICE POSITIONING': [
+                'price_percentile_bonus_early',
+                'price_percentile_penalty_late',
+                'price_percentile_early_threshold',
+                'price_percentile_late_threshold',
+                'price_percentile_lookback',
+            ],
+
+            # ─── ADX SCORING ─────────────────────────────────────────────
+            '📈 ADX SCORING BANDS': [
+                'adx_score_trend_forming',
+                'adx_score_good_trend',
+                'adx_score_strong_trend',
+                'adx_score_very_strong',
+                'adx_score_extended',
+            ],
+
+            # ─── MACD SCORING ─────────────────────────────────────────────
+            '📉 MACD SCORING': [
+                'macd_score_line_vs_signal',
+                'macd_score_histogram_direction',
+                'macd_score_zero_cross',
+                'macd_score_histogram_value',
+            ],
+
+            # ─── FUZZY MODE ──────────────────────────────────────────────
+            '🧠 FUZZY MODE SETTINGS': [
+                'fuzzy_mode_enabled',
+                'fuzzy_learning_enabled',
+                'fuzzy_safety_cutoffs',
+                'fuzzy_default_margin_pct',
+                'fuzzy_absolute_min',
+                'fuzzy_absolute_max',
+                'fuzzy_min_confidence',
+                'fuzzy_min_samples',
+                'fuzzy_max_adjustment_pct',
+                'fuzzy_learning_rate',
+                'fuzzy_conservative_start',
+            ],
+
+            # ─── TRADE DIRECTION ──────────────────────────────────────────
+            '🎯 Trade Direction': [
+                'trade_direction',
+            ],
         }
 
         row = 0
         for category, params in categories.items():
-            ttk.Separator(scrollable_frame, orient='horizontal').grid(row=row, column=0, columnspan=4, sticky='ew', pady=(10, 5), padx=5)
+            ttk.Separator(scrollable_frame, orient='horizontal').grid(row=row, column=0, columnspan=4, sticky='ew',
+                                                                      pady=(10, 5), padx=5)
             row += 1
-            ttk.Label(scrollable_frame, text=category, font=('Arial', 11, 'bold')).grid(row=row, column=0, columnspan=4, sticky='w', padx=5, pady=5)
+            ttk.Label(scrollable_frame, text=category, font=('Arial', 11, 'bold')).grid(row=row, column=0, columnspan=4,
+                                                                                        sticky='w', padx=5, pady=5)
             row += 1
             for param_name in params:
                 if param_name in default_params:
                     for col, minw in enumerate([250, 120, 120, 350]):
                         scrollable_frame.columnconfigure(col, weight=0 if col < 3 else 1, minsize=minw)
                     label_text = param_name.replace('_', ' ').title()
-                    ttk.Label(scrollable_frame, text=label_text, anchor='w').grid(row=row, column=0, padx=5, pady=2, sticky='w')
+                    ttk.Label(scrollable_frame, text=label_text, anchor='w').grid(row=row, column=0, padx=5, pady=2,
+                                                                                  sticky='w')
                     default_value = default_params[param_name]
-                    default_display = ("✓ Enabled" if default_value else "✗ Disabled") if isinstance(default_value, bool) else str(default_value)
+                    default_display = ("✓ Enabled" if default_value else "✗ Disabled") if isinstance(default_value,
+                                                                                                     bool) else str(
+                        default_value)
                     default_entry = ttk.Entry(scrollable_frame, width=15)
                     default_entry.insert(0, default_display)
                     default_entry.config(state='readonly')
@@ -1619,10 +1858,13 @@ class TradingApp:
                     custom_value = self.custom_params['momentum'].get(param_name, default_value)
                     if isinstance(default_value, bool):
                         custom_var = tk.BooleanVar(value=custom_value)
-                        custom_entry = ttk.Checkbutton(scrollable_frame, variable=custom_var, text="Enable" if custom_value else "Disable")
+                        custom_entry = ttk.Checkbutton(scrollable_frame, variable=custom_var,
+                                                       text="Enable" if custom_value else "Disable")
                         custom_entry.grid(row=row, column=2, padx=5, pady=2, sticky='w')
-                        bool_indicator = tk.Label(scrollable_frame, text="●", width=2, bg="yellow" if bool(custom_value) != bool(default_value) else "white")
+                        bool_indicator = tk.Label(scrollable_frame, text="●", width=2,
+                                                  bg="yellow" if bool(custom_value) != bool(default_value) else "white")
                         bool_indicator.grid(row=row, column=2, padx=(100, 0), pady=2, sticky='w')
+
                         def _make_bool_callbacks(v, w, txt_widget, indicator, def_val):
                             def _update_text(*_):
                                 try:
@@ -1631,21 +1873,32 @@ class TradingApp:
                                     indicator.config(bg="yellow" if bool(current) != bool(def_val) else "white")
                                 except tk.TclError:
                                     pass
+
                             return _update_text
-                        custom_var.trace_add('write', _make_bool_callbacks(custom_var, custom_entry, custom_entry, bool_indicator, default_value))
+
+                        custom_var.trace_add('write', _make_bool_callbacks(custom_var, custom_entry, custom_entry,
+                                                                           bool_indicator, default_value))
                     else:
                         custom_var = tk.StringVar(value=str(custom_value))
-                        custom_entry = tk.Entry(scrollable_frame, textvariable=custom_var, width=15, bg="yellow" if str(custom_value) != str(default_value) else "white")
+                        custom_entry = tk.Entry(scrollable_frame, textvariable=custom_var, width=15,
+                                                bg="yellow" if str(custom_value) != str(default_value) else "white")
                         custom_entry.grid(row=row, column=2, padx=5, pady=2, sticky='w')
+
                         def _make_str_callback(v, widget, def_val):
                             def _highlight(*_):
-                                try: widget.config(bg="yellow" if v.get() != str(def_val) else "white")
-                                except tk.TclError: pass
+                                try:
+                                    widget.config(bg="yellow" if v.get() != str(def_val) else "white")
+                                except tk.TclError:
+                                    pass
+
                             return _highlight
+
                         custom_var.trace_add('write', _make_str_callback(custom_var, custom_entry, default_value))
                     description = self.get_momentum_param_description(param_name)
-                    ttk.Label(scrollable_frame, text=description, wraplength=400, anchor='w', foreground='#555555').grid(row=row, column=3, padx=5, pady=2, sticky='w')
-                    self.momentum_param_widgets[param_name] = {'default': default_entry, 'custom': custom_var, 'widget': custom_entry}
+                    ttk.Label(scrollable_frame, text=description, wraplength=400, anchor='w',
+                              foreground='#555555').grid(row=row, column=3, padx=5, pady=2, sticky='w')
+                    self.momentum_param_widgets[param_name] = {'default': default_entry, 'custom': custom_var,
+                                                               'widget': custom_entry}
                     row += 1
 
         self._build_backtest_optimization_panel(right_frame)
@@ -1657,22 +1910,25 @@ class TradingApp:
 
         paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        left_frame  = ttk.Frame(paned, width=600)
+        left_frame = ttk.Frame(paned, width=600)
         paned.add(left_frame, weight=2)
         right_frame = ttk.LabelFrame(paned, text="Backtest Optimization Parameters", width=400)
         paned.add(right_frame, weight=1)
 
         headers_frame = ttk.Frame(left_frame)
         headers_frame.pack(fill='x', padx=5, pady=(5, 0), side=tk.TOP)
-        for col, (text, minw) in enumerate([("Parameter", 250), ("📌 Default Value", 120), ("✏️ Custom Value", 120), ("Description", 350)]):
+        for col, (text, minw) in enumerate(
+                [("Parameter", 250), ("📌 Default Value", 120), ("✏️ Custom Value", 120), ("Description", 350)]):
             headers_frame.columnconfigure(col, weight=0 if col < 3 else 1, minsize=minw)
-            ttk.Label(headers_frame, text=text, font=('Arial', 10, 'bold'), anchor='w').grid(row=0, column=col, padx=5, pady=8, sticky='w')
-        ttk.Separator(headers_frame, orient='horizontal').grid(row=1, column=0, columnspan=4, sticky='ew', padx=5, pady=(0, 5))
+            ttk.Label(headers_frame, text=text, font=('Arial', 10, 'bold'), anchor='w').grid(row=0, column=col, padx=5,
+                                                                                             pady=8, sticky='w')
+        ttk.Separator(headers_frame, orient='horizontal').grid(row=1, column=0, columnspan=4, sticky='ew', padx=5,
+                                                               pady=(0, 5))
 
         content_frame = ttk.Frame(left_frame)
         content_frame.pack(fill='both', expand=True, padx=5, pady=5, side=tk.TOP)
-        canvas          = tk.Canvas(content_frame, bg='white', highlightthickness=0)
-        scrollbar       = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
+        canvas = tk.Canvas(content_frame, bg='white', highlightthickness=0)
+        scrollbar = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
         scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
@@ -1684,38 +1940,48 @@ class TradingApp:
         self.kalman_param_widgets = {}
 
         categories = {
-            '🔬 Kalman Filter': ['process_noise_1','process_noise_2','measurement_noise','trend_lookback','strength_smooth'],
-            '📊 Strategy Configuration': ['risk_reward','lookback','window','strength_smooth_param'],
-            '📈 Moving Averages': ['ma_fast_period','ma_slow_period'],
-            '🎯 Entry Conditions': ['kalman_strength_min','rsi_min','rsi_max','volume_min_ratio','pullback_percent'],
-            '🛡️ Risk Management': ['stop_loss_pct','trailing_stop_pct','atr_multiplier','risk_per_trade','max_position_pct'],
-            '📉 Exit Conditions': ['rsi_exit_threshold','max_hold_bars','max_hold_seconds'],
-            '🌐 Market Filters': ['min_adx','min_volatility','cooldown_bars'],
+            '🔬 Kalman Filter': ['process_noise_1', 'process_noise_2', 'measurement_noise', 'trend_lookback',
+                                'strength_smooth'],
+            '📊 Strategy Configuration': ['risk_reward', 'lookback', 'window', 'strength_smooth_param'],
+            '📈 Moving Averages': ['ma_fast_period', 'ma_slow_period'],
+            '🎯 Entry Conditions': ['kalman_strength_min', 'rsi_min', 'rsi_max', 'volume_min_ratio', 'pullback_percent'],
+            '🛡️ Risk Management': ['stop_loss_pct', 'trailing_stop_pct', 'atr_multiplier', 'risk_per_trade',
+                                   'max_position_pct'],
+            '📉 Exit Conditions': ['rsi_exit_threshold', 'max_hold_bars', 'max_hold_seconds'],
+            '🌐 Market Filters': ['min_adx', 'min_volatility', 'cooldown_bars'],
         }
 
         row = 0
         for category, params in categories.items():
-            ttk.Separator(scrollable_frame, orient='horizontal').grid(row=row, column=0, columnspan=4, sticky='ew', pady=(10, 5), padx=5)
+            ttk.Separator(scrollable_frame, orient='horizontal').grid(row=row, column=0, columnspan=4, sticky='ew',
+                                                                      pady=(10, 5), padx=5)
             row += 1
-            ttk.Label(scrollable_frame, text=category, font=('Arial', 11, 'bold')).grid(row=row, column=0, columnspan=4, sticky='w', padx=5, pady=5)
+            ttk.Label(scrollable_frame, text=category, font=('Arial', 11, 'bold')).grid(row=row, column=0, columnspan=4,
+                                                                                        sticky='w', padx=5, pady=5)
             row += 1
             for param_name in params:
                 if param_name in default_params:
                     for col, minw in enumerate([250, 120, 120, 350]):
                         scrollable_frame.columnconfigure(col, weight=0 if col < 3 else 1, minsize=minw)
-                    ttk.Label(scrollable_frame, text=param_name.replace('_',' ').title(), anchor='w').grid(row=row, column=0, padx=5, pady=2, sticky='w')
+                    ttk.Label(scrollable_frame, text=param_name.replace('_', ' ').title(), anchor='w').grid(row=row,
+                                                                                                            column=0,
+                                                                                                            padx=5,
+                                                                                                            pady=2,
+                                                                                                            sticky='w')
                     default_value = str(default_params[param_name])
                     default_entry = ttk.Entry(scrollable_frame, width=15)
                     default_entry.insert(0, default_value)
                     default_entry.config(state='readonly')
                     default_entry.grid(row=row, column=1, padx=5, pady=2, sticky='w')
                     custom_value = str(self.custom_params['kalman'].get(param_name, default_value))
-                    custom_var   = tk.StringVar(value=custom_value)
+                    custom_var = tk.StringVar(value=custom_value)
                     custom_entry = ttk.Entry(scrollable_frame, textvariable=custom_var, width=15)
                     custom_entry.grid(row=row, column=2, padx=5, pady=2, sticky='w')
                     description = self.get_kalman_param_description(param_name)
-                    ttk.Label(scrollable_frame, text=description, wraplength=400, anchor='w', foreground='#555555').grid(row=row, column=3, padx=5, pady=2, sticky='w')
-                    self.kalman_param_widgets[param_name] = {'default': default_entry, 'custom': custom_var, 'widget': custom_entry}
+                    ttk.Label(scrollable_frame, text=description, wraplength=400, anchor='w',
+                              foreground='#555555').grid(row=row, column=3, padx=5, pady=2, sticky='w')
+                    self.kalman_param_widgets[param_name] = {'default': default_entry, 'custom': custom_var,
+                                                             'widget': custom_entry}
                     row += 1
 
         self._build_backtest_optimization_panel(right_frame)
@@ -1727,37 +1993,38 @@ class TradingApp:
 
         paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        left_frame  = ttk.Frame(paned, width=600)
+        left_frame = ttk.Frame(paned, width=600)
         paned.add(left_frame, weight=2)
         right_frame = ttk.LabelFrame(paned, text="Backtest Optimization Parameters", width=500)
         paned.add(right_frame, weight=1)
 
         headers_frame = ttk.Frame(left_frame)
         headers_frame.pack(fill='x', padx=5, pady=(5, 0), side=tk.TOP)
-        for col, (text, minw) in enumerate([("Parameter", 250), ("📌 Default Value", 120), ("✏️ Custom Value", 120), ("Description", 350)]):
+        for col, (text, minw) in enumerate(
+                [("Parameter", 250), ("📌 Default Value", 120), ("✏️ Custom Value", 120), ("Description", 350)]):
             headers_frame.columnconfigure(col, weight=0 if col < 3 else 1, minsize=minw)
-            ttk.Label(headers_frame, text=text, font=('Arial', 10, 'bold'), anchor='w').grid(row=0, column=col, padx=5, pady=8, sticky='w')
-        ttk.Separator(headers_frame, orient='horizontal').grid(row=1, column=0, columnspan=4, sticky='ew', padx=5, pady=(0, 5))
+            ttk.Label(headers_frame, text=text, font=('Arial', 10, 'bold'), anchor='w').grid(row=0, column=col, padx=5,
+                                                                                             pady=8, sticky='w')
+        ttk.Separator(headers_frame, orient='horizontal').grid(row=1, column=0, columnspan=4, sticky='ew', padx=5,
+                                                               pady=(0, 5))
 
         content_frame = ttk.Frame(left_frame)
         content_frame.pack(fill='both', expand=True, padx=5, pady=5, side=tk.TOP)
-        canvas          = tk.Canvas(content_frame, bg='white', highlightthickness=0)
-        scrollbar       = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
+        canvas = tk.Canvas(content_frame, bg='white', highlightthickness=0)
+        scrollbar = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
         scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        canvas.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        canvas.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
 
         default_params = self.get_default_scalping_params()
         self.scalping_param_widgets = {}
 
         # (Full scalping categories and parameter widgets — identical to original)
         # All original scalping parameter rows preserved here unchanged.
-        # For brevity the loop body is identical to the original create_scalping_parameter_controls
-        # starting after the _add_time_settings_button call.
 
         self._build_scalping_backtest_optimization_panel(right_frame)
 
@@ -2432,7 +2699,7 @@ class TradingApp:
                     strat.risk_controller.starting_equity = new_capital
                     strat.risk_controller.current_equity = new_capital
                     strat.risk_controller.peak_equity = new_capital
-                    strat.risk_controller.daily_loss_limit   = new_capital * SCALPING_PARAMS['daily_loss_limit_pct']
+                    strat.risk_controller.daily_loss_limit = new_capital * SCALPING_PARAMS['daily_loss_limit_pct']
                     strat.risk_controller.max_drawdown_limit = new_capital * SCALPING_PARAMS['max_drawdown_limit_pct']
                     strat.risk_controller.weekly_loss_limit = new_capital * 0.05
                     strat.risk_controller.monthly_loss_limit = new_capital * 0.10
@@ -5261,7 +5528,6 @@ class TradingApp:
                     self.log_message(f"❌ All {max_retries} attempts failed: {str(e)}", "red")
         return None
 
-
     # ═══════════════════════════════════════════════════════════════════════════════
     # FIX 1  —  get_market_data
     # ═══════════════════════════════════════════════════════════════════════════════
@@ -5344,8 +5610,6 @@ class TradingApp:
             import logging, traceback
             logging.error(traceback.format_exc())
             return None
-
-
 
     def _process_trading_result(self, result, current_data, current_price, df=None):
         """
@@ -5699,7 +5963,7 @@ class TradingApp:
         self.log_message("⚙ Settings panel opened (maximized)", "blue")
 
     def create_momentum_parameter_controls(self, parent):
-        """Create parameter controls for Momentum strategy with ALL parameters including Quality Score and Tier 2 filters"""
+        """Create parameter controls for Momentum strategy with CONSOLIDATED TIER SYSTEM."""
         paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
@@ -5749,11 +6013,8 @@ class TradingApp:
         self.momentum_param_widgets = {}
 
         # ═══════════════════════════════════════════════════════════════
-        # v9.4 FIX: categories now matches MOMENTUM_PARAMS EXACTLY
-        # Every param in MOMENTUM_PARAMS appears here (except trade_direction
-        # which is controlled by a separate dropdown widget, and
-        # backtest_only_tier1_active/values which are backtest-internal).
-        # NO phantom params (params that don't exist in MOMENTUM_PARAMS).
+        # CONSOLIDATED CATEGORIES — v10.0.5
+        # All obsolete/duplicate parameters removed
         # ═══════════════════════════════════════════════════════════════
         categories = {
             '📊 EMA Parameters': [
@@ -5761,10 +6022,12 @@ class TradingApp:
                 'ema_near_tolerance', 'daily_ema_period',
             ],
             '🎯 LONG Quality Thresholds': [
-                'quality_tier1_min', 'quality_tier2_min',
+                'quality_tier1_min_long',
+                'quality_tier2_min_long',
             ],
             '🎯 SHORT Quality Thresholds': [
-                'short_quality_tier1_min', 'short_quality_tier2_min',
+                'quality_tier1_min_short',
+                'quality_tier2_min_short',
             ],
             '📊 Quality Component Weights (total=100)': [
                 'weight_ema', 'weight_adx', 'weight_macd', 'weight_rsi', 'weight_volume',
@@ -5773,36 +6036,56 @@ class TradingApp:
                 'only_tier1_entries',
             ],
             '⏱️ TIER COOLDOWN & CONFLUENCE': [
-                'min_bars_between_trades_tier1', 'min_bars_between_trades_tier2',
+                'min_bars_between_trades_tier1',
+                'min_bars_between_trades_tier2',
                 'cooldown_tier2_enabled',
-                'tier1_confluence_min', 'tier2_confluence_min',
+                'tier1_confluence_min',
+                'tier2_confluence_min',
             ],
             '⬆️ TIER 1 LONG FILTERS': [
-                'tier1_adx_hard_min', 'tier1_adx_min',
-                'tier1_rsi_min', 'tier1_rsi_max',
-                'tier1_volume_min', 'tier1_momentum_min', 'tier1_kalman_min',
-                'tier1_macd_gate', 'tier1_price_ema_max_pct',
+                'tier1_adx_hard_min',
+                'tier1_rsi_min',
+                'tier1_rsi_max',
+                'tier1_volume_min',
+                'tier1_momentum_min',
+                'tier1_kalman_min',
+                'tier1_macd_gate',
+                'tier1_price_ema_max_pct',
                 'daily_trend_filter_enabled',
-                'pullback_zone_lower_pct', 'pullback_zone_upper_pct',
+                'pullback_zone_lower_pct',
+                'pullback_zone_upper_pct',
                 'adx_slope_min',
             ],
             '⬇️ TIER 1 SHORT FILTERS': [
-                'short_tier1_adx_hard_min',
-                'short_tier1_rsi_min', 'short_tier1_rsi_max',
-                'short_tier1_volume_min', 'short_tier1_momentum_min',
-                'short_tier1_macd_gate',
+                'tier1_adx_hard_min_short',
+                'tier1_rsi_min_short',
+                'tier1_rsi_max_short',
+                'tier1_volume_min_short',
+                'tier1_momentum_min_short',
+                'tier1_macd_gate_short',
                 'daily_trend_down_filter_enabled',
             ],
             '🎯 TIER 2 FILTERS': [
-                'tier2_adx_min', 'tier2_volume_min', 'tier2_volume_min_ratio',
-                'tier2_momentum_min', 'tier2_macd_histogram_min', 'tier2_require_macd_histogram',
+                'tier2_adx_hard_min',
+                'tier2_volume_min',
+                'tier2_momentum_min',
+                'tier2_rsi_min',
+                'tier2_rsi_max',
+                'tier2_rsi_min_short',
+                'tier2_rsi_max_short',
+                'tier2_macd_histogram_min',
+                'tier2_require_macd_histogram',
             ],
-            '🎯 TIER SIZE / STOP / EXIT / TRAILING MULTIPLIERS': [
-                'tier1_size_multiplier', 'tier2_size_multiplier',
-                'tier1_stop_multiplier', 'tier2_stop_multiplier',
-                'exit_threshold_tier1', 'exit_threshold_tier2',
-                'trailing_activation_tier1', 'trailing_activation_tier2',
-                'trailing_distance_tier1', 'trailing_distance_tier2',
+            '🎯 TIER SIZE / EXIT / TRAILING': [
+                'tier1_size_multiplier',
+                'tier2_size_multiplier',
+                'stop_loss_atr_mult',
+                'exit_threshold_tier1',
+                'exit_threshold_tier2',
+                'trailing_activation_tier1',
+                'trailing_activation_tier2',
+                'trailing_distance_tier1',
+                'trailing_distance_tier2',
             ],
             '🔬 Indicator Periods': [
                 'adx_period', 'rsi_period', 'cci_period', 'atr_period',
@@ -5810,73 +6093,94 @@ class TradingApp:
                 'supertrend_atr_period', 'supertrend_multiplier',
                 'kalman_q_param', 'kalman_r_param', 'vix_atr_period', 'vix_rolling_period',
             ],
-            '🎯 Entry Filters': [
-                'adx_min', 'adx_min_trend', 'rsi_entry_min', 'rsi_entry_max',
-                'volume_min_ratio', 'volume_period', 'momentum_min',
-                'kalman_min_strength', 'cci_filter_enabled', 'vix_max_threshold',
-                'rsi_dynamic_enabled',
-            ],
             '🛡️ Risk Management': [
-                'risk_per_trade', 'risk_full_position', 'risk_reduced_position',
-                'risk_aggressive_position', 'risk_tier1', 'risk_tier2',
-                'risk_tier2_exceptional',
-            ],
-            '🛑 STOP LOSS & TRAILING': [
-                'stop_loss_atr_mult', 'trailing_stop_atr_mult',
-                'trailing_activation_pct', 'trailing_distance_pct',
-                'trailing_stop_pct', 'trailing_activation_r', 'initial_trailing_atr_mult',
+                'risk_tier1',
+                'risk_tier2',
             ],
             '🔒 BREAKEVEN STOP': [
-                'be_stop_enabled', 'be_stop_r_trigger', 'be_stop_no_progress_bars',
+                'be_stop_enabled',
+                'be_stop_r_trigger',
+                'be_stop_no_progress_bars',
             ],
-            '💰 Profit Targets (legacy)': [
-                'take_profit_r1', 'take_profit_r2', 'take_profit_r3',
-                'profit_target_r1', 'profit_target_r2', 'profit_target_r3',
+            '💰 Profit Targets': [
+                'take_profit_r1',
+                'take_profit_r2',
+                'take_profit_r3',
             ],
             '📉 Exit Conditions': [
-                'max_hold_bars', 'min_hold_bars_before_stop', 'emergency_stop_multiplier',
-                'macd_bearish_cross_exit', 'macd_bearish_cross_profit_min',
-                'ema_cross_exit', 'rsi_exit_threshold', 'kalman_fade_threshold',
-                'momentum_reversal_exit', 'momentum_reversal_threshold', 'momentum_reversal_profit_min',
-                'profit_min_fade', 'profit_min_time_exit', 'profit_min_ma_crossover',
+                'max_hold_bars',
+                'min_hold_bars_before_stop',
+                'emergency_stop_multiplier',
+                'macd_bearish_cross_exit',
+                'macd_bearish_cross_profit_min',
+                'ema_cross_exit',
+                'rsi_exit_threshold',
+                'kalman_fade_threshold',
+                'momentum_reversal_exit',
+                'momentum_reversal_threshold',
+                'momentum_reversal_profit_min',
             ],
             '⏱️ COOLDOWN & TRADE MANAGEMENT': [
                 'max_daily_trades',
                 'min_bars_between_trades',
-                'cooldown_after_profit_target_bars', 'cooldown_after_loss_bars',
+                'cooldown_after_profit_target_bars',
+                'cooldown_after_loss_bars',
+                'consecutive_loss_threshold',
+                'consecutive_loss_cooldown_bars',
             ],
             '🔬 PRECISION FILTERS': [
-                'dmi_spread_min_long', 'dmi_spread_min_short',
-                'ema_trending_bars', 'macd_hist_rising_bars',
-                'rsi_direction_bars', 'rsi_direction_min_move',
-                'macd_hist_positive_required_long', 'macd_hist_negative_required_short',
-                'bb_expand_required',
-                'time_filter_enabled', 'time_filter_start_utc', 'time_filter_end_utc',
+                'ema_trending_bars',
+                'macd_hist_rising_bars',
+                'rsi_direction_bars',
+                'rsi_direction_min_move',
             ],
             '⚙️ Regime & Strategy Control': [
-                'regime_filter_enabled', 'ranging_min_checks',
-                'bb_period', 'bb_std', 'kc_period', 'kc_atr_mult',
+                'regime_filter_enabled',
+                'ranging_min_checks',
+                'bb_period', 'bb_std',
+                'kc_period', 'kc_atr_mult',
                 'chop_period', 'chop_threshold',
-                'volatility_scaling', 'trade_high_vol', 'trade_ranging', 'supertrend_exit_enabled',
+                'volatility_scaling',
+                'atr_compression_enabled',
+                'atr_compression_threshold',
+                'extended_run_max_pct_long',
+                'extended_run_max_pct_short',
             ],
             '📊 PRICE POSITIONING': [
-                'price_percentile_bonus_early', 'price_percentile_penalty_late',
-                'price_percentile_early_threshold', 'price_percentile_late_threshold',
+                'price_percentile_bonus_early',
+                'price_percentile_penalty_late',
+                'price_percentile_early_threshold',
+                'price_percentile_late_threshold',
                 'price_percentile_lookback',
             ],
             '📈 ADX SCORING BANDS': [
-                'adx_score_trend_forming', 'adx_score_good_trend',
-                'adx_score_strong_trend', 'adx_score_very_strong', 'adx_score_extended',
+                'adx_score_trend_forming',
+                'adx_score_good_trend',
+                'adx_score_strong_trend',
+                'adx_score_very_strong',
+                'adx_score_extended',
             ],
             '📉 MACD SCORING': [
-                'macd_score_line_vs_signal', 'macd_score_histogram_direction',
-                'macd_score_zero_cross', 'macd_score_histogram_value',
+                'macd_score_line_vs_signal',
+                'macd_score_histogram_direction',
+                'macd_score_zero_cross',
+                'macd_score_histogram_value',
             ],
             '🧠 FUZZY MODE SETTINGS': [
-                'fuzzy_mode_enabled', 'fuzzy_learning_enabled', 'fuzzy_safety_cutoffs',
-                'fuzzy_default_margin_pct', 'fuzzy_absolute_min', 'fuzzy_absolute_max',
-                'fuzzy_min_confidence', 'fuzzy_min_samples', 'fuzzy_max_adjustment_pct',
-                'fuzzy_learning_rate', 'fuzzy_conservative_start',
+                'fuzzy_mode_enabled',
+                'fuzzy_learning_enabled',
+                'fuzzy_safety_cutoffs',
+                'fuzzy_default_margin_pct',
+                'fuzzy_absolute_min',
+                'fuzzy_absolute_max',
+                'fuzzy_min_confidence',
+                'fuzzy_min_samples',
+                'fuzzy_max_adjustment_pct',
+                'fuzzy_learning_rate',
+                'fuzzy_conservative_start',
+            ],
+            '🎯 Trade Direction': [
+                'trade_direction',
             ],
         }
 
@@ -6222,6 +6526,7 @@ class TradingApp:
             }
 
         self._sc_update_count()
+
     def _sc_update_count(self):
         """Update Scalping optimization selection counter."""
         if hasattr(self, 'sc_selection_label') and self.sc_selection_label.winfo_exists():
@@ -6325,513 +6630,438 @@ class TradingApp:
             self._build_momentum_backtest_panel(right_frame)
 
     def _build_momentum_backtest_panel(self, right_frame):
-        """Build COMPLETE Momentum-specific backtest optimization panel with ALL 160+ parameters"""
+        """Build COMPLETE Momentum-specific backtest optimization panel."""
 
-        # ═══ Get current parameters from GUI (respects toggle selection) ══════════
         current_params = self.get_current_momentum_params()
 
-        # Log the source of parameters
-        self.log_message("=" * 70, "yellow")
-        self.log_message(f"📋 MOMENTUM BACKTEST PARAMETER SOURCE: {self.param_toggle_var.get()}", "yellow")
-        self.log_message(f"📊 Total parameters loaded: {len(current_params)}", "cyan")
-        self.log_message("=" * 70, "yellow")
-
-        # ═══ COMPLETE MOMENTUM BACKTEST PARAMETERS (All categories) ═══════════════
+        # ═══════════════════════════════════════════════════════════════════
+        # ALL_MOMENTUM_BACKTEST_PARAMS - UPDATED v9.5.0
+        # REMOVED: generic/old parameters (quality_tier1_min, tier2_adx_min, etc.)
+        # ADDED: tier-specific parameters (_long/_short suffixed)
+        # ═══════════════════════════════════════════════════════════════════
         ALL_MOMENTUM_BACKTEST_PARAMS = {
-            # ──────────────────────────────────────────────────────────────────────
-            # QUALITY & TIER THRESHOLDS
-            # ──────────────────────────────────────────────────────────────────────
-            'quality_tier1_min': {
-                'description': 'Tier 1 Minimum Score (LONG)',
-                'current': current_params.get('quality_tier1_min', 68),
-                'v1': '62', 'v2': '65', 'v3': '68', 'v4': '72'},
-            'quality_tier2_min': {
-                'description': 'Tier 2 Minimum Score (LONG)',
-                'current': current_params.get('quality_tier2_min', 62),
-                'v1': '55', 'v2': '58', 'v3': '62', 'v4': '65'},
-            'short_quality_tier1_min': {
-                'description': 'Tier 1 Minimum Score (SHORT)',
-                'current': current_params.get('short_quality_tier1_min', 70),
-                'v1': '65', 'v2': '68', 'v3': '70', 'v4': '75'},
-            'short_quality_tier2_min': {
-                'description': 'Tier 2 Minimum Score (SHORT)',
-                'current': current_params.get('short_quality_tier2_min', 65),
-                'v1': '60', 'v2': '63', 'v3': '65', 'v4': '68'},
-            'only_tier1_entries': {
-                'description': '🔥 ONLY Tier 2 Entries (Block Tier 1)',
-                'current': current_params.get('only_tier1_entries', False),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
+            # ──────────────────────────────────────────────────────────────
+            # QUALITY THRESHOLDS (UPDATED: tier-specific)
+            # ──────────────────────────────────────────────────────────────
+            'quality_tier1_min_long': {
+                'description': 'Tier 1 Min Score (LONG)',
+                'current': current_params.get('quality_tier1_min_long', 0.70),
+                'v1': '0.65', 'v2': '0.70', 'v3': '0.75', 'v4': '0.80'
+            },
+            'quality_tier2_min_long': {
+                'description': 'Tier 2 Min Score (LONG)',
+                'current': current_params.get('quality_tier2_min_long', 0.60),
+                'v1': '0.55', 'v2': '0.60', 'v3': '0.65', 'v4': '0.70'
+            },
+            'quality_tier1_min_short': {
+                'description': 'Tier 1 Min Score (SHORT)',
+                'current': current_params.get('quality_tier1_min_short', 0.70),
+                'v1': '0.65', 'v2': '0.70', 'v3': '0.75', 'v4': '0.80'
+            },
+            'quality_tier2_min_short': {
+                'description': 'Tier 2 Min Score (SHORT)',
+                'current': current_params.get('quality_tier2_min_short', 0.60),
+                'v1': '0.55', 'v2': '0.60', 'v3': '0.65', 'v4': '0.70'
+            },
 
-            # ──────────────────────────────────────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────
+            # TIER CONTROL
+            # ──────────────────────────────────────────────────────────────
+            'only_tier1_entries': {
+                'description': '🔥 Only Tier 2 Entries (Block Tier 1)',
+                'current': current_params.get('only_tier1_entries', False),
+                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''
+            },
+
+            # ──────────────────────────────────────────────────────────────
             # EMA PERIODS
-            # ──────────────────────────────────────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────
             'ema_fast_period': {
                 'description': 'EMA Fast Period',
                 'current': current_params.get('ema_fast_period', 9),
-                'v1': '8', 'v2': '9', 'v3': '10', 'v4': '12'},
+                'v1': '8', 'v2': '9', 'v3': '10', 'v4': '12'
+            },
             'ema_mid_period': {
                 'description': 'EMA Mid Period',
                 'current': current_params.get('ema_mid_period', 21),
-                'v1': '18', 'v2': '20', 'v3': '21', 'v4': '24'},
+                'v1': '18', 'v2': '20', 'v3': '21', 'v4': '24'
+            },
             'ema_slow_period': {
                 'description': 'EMA Slow Period',
                 'current': current_params.get('ema_slow_period', 55),
-                'v1': '45', 'v2': '50', 'v3': '55', 'v4': '60'},
-            'daily_ema_period': {
-                'description': 'Daily EMA Period (hours)',
-                'current': current_params.get('daily_ema_period', 720),
-                'v1': '480', 'v2': '600', 'v3': '720', 'v4': '960'},
-            'daily_trend_adx_override': {
-                'description': 'Daily Trend ADX Override',
-                'current': current_params.get('daily_trend_adx_override', 28),
-                'v1': '22', 'v2': '25', 'v3': '28', 'v4': '32'},
+                'v1': '45', 'v2': '50', 'v3': '55', 'v4': '60'
+            },
 
-            # ──────────────────────────────────────────────────────────────────────
-            # QUALITY WEIGHTS (Must sum to 100)
-            # ──────────────────────────────────────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────
+            # QUALITY WEIGHTS
+            # ──────────────────────────────────────────────────────────────
             'weight_ema': {
                 'description': 'EMA Weight',
                 'current': current_params.get('weight_ema', 20),
-                'v1': '15', 'v2': '18', 'v3': '20', 'v4': '25'},
+                'v1': '15', 'v2': '18', 'v3': '20', 'v4': '25'
+            },
             'weight_adx': {
                 'description': 'ADX Weight',
                 'current': current_params.get('weight_adx', 20),
-                'v1': '15', 'v2': '18', 'v3': '20', 'v4': '25'},
+                'v1': '15', 'v2': '18', 'v3': '20', 'v4': '25'
+            },
             'weight_macd': {
                 'description': 'MACD Weight',
                 'current': current_params.get('weight_macd', 25),
-                'v1': '20', 'v2': '22', 'v3': '25', 'v4': '28'},
+                'v1': '20', 'v2': '22', 'v3': '25', 'v4': '28'
+            },
             'weight_rsi': {
                 'description': 'RSI Weight',
                 'current': current_params.get('weight_rsi', 20),
-                'v1': '15', 'v2': '18', 'v3': '20', 'v4': '22'},
+                'v1': '15', 'v2': '18', 'v3': '20', 'v4': '22'
+            },
             'weight_volume': {
                 'description': 'Volume Weight',
                 'current': current_params.get('weight_volume', 15),
-                'v1': '10', 'v2': '12', 'v3': '15', 'v4': '18'},
+                'v1': '10', 'v2': '12', 'v3': '15', 'v4': '18'
+            },
 
-            # ──────────────────────────────────────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────
             # TIER 1 LONG FILTERS
-            # ──────────────────────────────────────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────
             'tier1_adx_hard_min': {
                 'description': 'Tier 1 ADX Hard Min (LONG)',
-                'current': current_params.get('tier1_adx_hard_min', 25),
-                'v1': '20', 'v2': '22', 'v3': '25', 'v4': '28'},
+                'current': current_params.get('tier1_adx_hard_min', 25.0),
+                'v1': '20', 'v2': '22', 'v3': '25', 'v4': '28'
+            },
             'tier1_adx_min': {
                 'description': 'Tier 1 ADX Min (soft)',
-                'current': current_params.get('tier1_adx_min', 20),
-                'v1': '16', 'v2': '18', 'v3': '20', 'v4': '22'},
+                'current': current_params.get('tier1_adx_min', 20.0),
+                'v1': '16', 'v2': '18', 'v3': '20', 'v4': '22'
+            },
             'tier1_rsi_min': {
                 'description': 'Tier 1 RSI Min (LONG)',
-                'current': current_params.get('tier1_rsi_min', 40),
-                'v1': '38', 'v2': '40', 'v3': '42', 'v4': '44'},
+                'current': current_params.get('tier1_rsi_min', 55.0),
+                'v1': '50', 'v2': '52', 'v3': '55', 'v4': '58'
+            },
             'tier1_rsi_max': {
                 'description': 'Tier 1 RSI Max (LONG)',
-                'current': current_params.get('tier1_rsi_max', 68),
-                'v1': '62', 'v2': '65', 'v3': '68', 'v4': '72'},
+                'current': current_params.get('tier1_rsi_max', 75.0),
+                'v1': '70', 'v2': '72', 'v3': '75', 'v4': '78'
+            },
             'tier1_volume_min': {
                 'description': 'Tier 1 Volume Min (LONG)',
-                'current': current_params.get('tier1_volume_min', 0.8),
-                'v1': '0.7', 'v2': '0.8', 'v3': '1.0', 'v4': '1.2'},
+                'current': current_params.get('tier1_volume_min', 1.5),
+                'v1': '1.2', 'v2': '1.3', 'v3': '1.5', 'v4': '1.8'
+            },
             'tier1_momentum_min': {
-                'description': 'Tier 1 Momentum Min % (LONG)',
+                'description': 'Tier 1 Momentum Min',
                 'current': current_params.get('tier1_momentum_min', 0.02),
-                'v1': '0.01', 'v2': '0.015', 'v3': '0.02', 'v4': '0.03'},
-            'tier1_kalman_min': {
-                'description': 'Tier 1 Kalman Strength Min',
-                'current': current_params.get('tier1_kalman_min', 0.0),
-                'v1': '0.0', 'v2': '0.1', 'v3': '0.2', 'v4': '0.3'},
-            'tier1_macd_gate': {
-                'description': 'Tier 1 MACD Gate Required',
-                'current': current_params.get('tier1_macd_gate', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
+                'v1': '0.01', 'v2': '0.015', 'v3': '0.02', 'v4': '0.03'
+            },
             'tier1_price_ema_max_pct': {
                 'description': 'Tier 1 Price-EMA Max %',
                 'current': current_params.get('tier1_price_ema_max_pct', 1.5),
-                'v1': '1.0', 'v2': '1.5', 'v3': '2.0', 'v4': '3.0'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # DAILY TREND FILTERS (LONG)
-            # ──────────────────────────────────────────────────────────────────────
-            'daily_trend_filter_enabled': {
-                'description': 'Daily Trend Filter Enabled',
-                'current': current_params.get('daily_trend_filter_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # TIER 1 SHORT FILTERS
-            # ──────────────────────────────────────────────────────────────────────
-            'short_tier1_adx_hard_min': {
-                'description': 'Tier 1 ADX Hard Min (SHORT)',
-                'current': current_params.get('short_tier1_adx_hard_min', 30),
-                'v1': '25', 'v2': '28', 'v3': '30', 'v4': '32'},
-            'short_tier1_rsi_min': {
-                'description': 'Tier 1 RSI Min (SHORT)',
-                'current': current_params.get('short_tier1_rsi_min', 34),
-                'v1': '30', 'v2': '32', 'v3': '34', 'v4': '36'},
-            'short_tier1_rsi_max': {
-                'description': 'Tier 1 RSI Max (SHORT)',
-                'current': current_params.get('short_tier1_rsi_max', 54),
-                'v1': '48', 'v2': '50', 'v3': '54', 'v4': '56'},
-            'short_tier1_volume_min': {
-                'description': 'Tier 1 Volume Min (SHORT)',
-                'current': current_params.get('short_tier1_volume_min', 1.3),
-                'v1': '1.0', 'v2': '1.2', 'v3': '1.3', 'v4': '1.5'},
-            'short_tier1_momentum_min': {
-                'description': 'Tier 1 Momentum Min % (SHORT)',
-                'current': current_params.get('short_tier1_momentum_min', 0.05),
-                'v1': '0.03', 'v2': '0.04', 'v3': '0.05', 'v4': '0.06'},
-            'short_tier1_macd_gate': {
-                'description': 'Tier 1 MACD Gate (SHORT)',
-                'current': current_params.get('short_tier1_macd_gate', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'daily_trend_down_filter_enabled': {
-                'description': 'Daily Trend Down Filter Enabled',
-                'current': current_params.get('daily_trend_down_filter_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'short_require_lower_highs_bars': {
-                'description': 'Short: Lower Highs Bars Required',
-                'current': current_params.get('short_require_lower_highs_bars', 2),
-                'v1': '1', 'v2': '2', 'v3': '3', 'v4': '4'},
-            'short_require_lower_lows_bars': {
-                'description': 'Short: Lower Lows Bars Required',
-                'current': current_params.get('short_require_lower_lows_bars', 2),
-                'v1': '1', 'v2': '2', 'v3': '3', 'v4': '4'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # PULLBACK ZONE & ADX SLOPE
-            # ──────────────────────────────────────────────────────────────────────
+                'v1': '1.0', 'v2': '1.5', 'v3': '2.0', 'v4': '3.0'
+            },
             'pullback_zone_lower_pct': {
                 'description': 'Pullback Zone Lower %',
                 'current': current_params.get('pullback_zone_lower_pct', -2.5),
-                'v1': '-3.0', 'v2': '-2.5', 'v3': '-2.0', 'v4': '-1.5'},
+                'v1': '-3.0', 'v2': '-2.5', 'v3': '-2.0', 'v4': '-1.5'
+            },
             'pullback_zone_upper_pct': {
                 'description': 'Pullback Zone Upper %',
                 'current': current_params.get('pullback_zone_upper_pct', 1.5),
-                'v1': '1.0', 'v2': '1.5', 'v3': '2.0', 'v4': '3.0'},
+                'v1': '1.0', 'v2': '1.5', 'v3': '2.0', 'v4': '3.0'
+            },
             'adx_slope_min': {
-                'description': 'ADX Slope Min (rise per bar)',
+                'description': 'ADX Slope Min',
                 'current': current_params.get('adx_slope_min', 0.1),
-                'v1': '-0.2', 'v2': '0.0', 'v3': '0.1', 'v4': '0.2'},
+                'v1': '-0.2', 'v2': '0.0', 'v3': '0.1', 'v4': '0.2'
+            },
 
-            # ──────────────────────────────────────────────────────────────────────
-            # TIER 2 FILTERS
-            # ──────────────────────────────────────────────────────────────────────
-            'tier2_adx_min': {
-                'description': 'Tier 2 ADX Min',
-                'current': current_params.get('tier2_adx_min', 18),
-                'v1': '12', 'v2': '15', 'v3': '18', 'v4': '22'},
+            # ──────────────────────────────────────────────────────────────
+            # TIER 1 SHORT FILTERS (UPDATED)
+            # ──────────────────────────────────────────────────────────────
+            'short_tier1_adx_hard_min': {
+                'description': 'Tier 1 ADX Hard Min (SHORT)',
+                'current': current_params.get('short_tier1_adx_hard_min', 30.0),
+                'v1': '25', 'v2': '28', 'v3': '30', 'v4': '32'
+            },
+            'tier1_rsi_min_short': {
+                'description': 'Tier 1 RSI Min (SHORT)',
+                'current': current_params.get('tier1_rsi_min_short', 25.0),
+                'v1': '20', 'v2': '22', 'v3': '25', 'v4': '28'
+            },
+            'tier1_rsi_max_short': {
+                'description': 'Tier 1 RSI Max (SHORT)',
+                'current': current_params.get('tier1_rsi_max_short', 45.0),
+                'v1': '40', 'v2': '42', 'v3': '45', 'v4': '48'
+            },
+            'short_tier1_volume_min': {
+                'description': 'Tier 1 Volume Min (SHORT)',
+                'current': current_params.get('short_tier1_volume_min', 1.3),
+                'v1': '1.0', 'v2': '1.2', 'v3': '1.3', 'v4': '1.5'
+            },
+            'short_tier1_momentum_min': {
+                'description': 'Tier 1 Momentum Min (SHORT)',
+                'current': current_params.get('short_tier1_momentum_min', 0.05),
+                'v1': '0.03', 'v2': '0.04', 'v3': '0.05', 'v4': '0.06'
+            },
+
+            # ──────────────────────────────────────────────────────────────
+            # TIER 2 FILTERS (UPDATED)
+            # ──────────────────────────────────────────────────────────────
+            'tier2_adx_hard_min': {
+                'description': 'Tier 2 ADX Hard Min',
+                'current': current_params.get('tier2_adx_hard_min', 20.0),
+                'v1': '15', 'v2': '18', 'v3': '20', 'v4': '22'
+            },
             'tier2_volume_min': {
                 'description': 'Tier 2 Volume Min',
-                'current': current_params.get('tier2_volume_min', 0.5),
-                'v1': '0.3', 'v2': '0.4', 'v3': '0.5', 'v4': '0.7'},
-            'tier2_volume_min_ratio': {
-                'description': 'Tier 2 Volume Ratio Min',
-                'current': current_params.get('tier2_volume_min_ratio', 1.1),
-                'v1': '0.9', 'v2': '1.0', 'v3': '1.1', 'v4': '1.3'},
+                'current': current_params.get('tier2_volume_min', 1.2),
+                'v1': '0.9', 'v2': '1.0', 'v3': '1.2', 'v4': '1.4'
+            },
             'tier2_momentum_min': {
-                'description': 'Tier 2 Momentum Min %',
-                'current': current_params.get('tier2_momentum_min', 0.05),
-                'v1': '0.03', 'v2': '0.04', 'v3': '0.05', 'v4': '0.07'},
-            'cooldown_tier2_enabled': {
-                'description': 'Enable Tier 2 Cooldown',
-                'current': current_params.get('cooldown_tier2_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
+                'description': 'Tier 2 Momentum Min',
+                'current': current_params.get('tier2_momentum_min', 0.01),
+                'v1': '0.005', 'v2': '0.01', 'v3': '0.015', 'v4': '0.02'
+            },
+            'tier2_rsi_min': {
+                'description': 'Tier 2 RSI Min (LONG)',
+                'current': current_params.get('tier2_rsi_min', 50.0),
+                'v1': '45', 'v2': '48', 'v3': '50', 'v4': '55'
+            },
+            'tier2_rsi_max': {
+                'description': 'Tier 2 RSI Max (LONG)',
+                'current': current_params.get('tier2_rsi_max', 70.0),
+                'v1': '65', 'v2': '68', 'v3': '70', 'v4': '72'
+            },
+            'tier2_rsi_min_short': {
+                'description': 'Tier 2 RSI Min (SHORT)',
+                'current': current_params.get('tier2_rsi_min_short', 30.0),
+                'v1': '25', 'v2': '28', 'v3': '30', 'v4': '35'
+            },
+            'tier2_rsi_max_short': {
+                'description': 'Tier 2 RSI Max (SHORT)',
+                'current': current_params.get('tier2_rsi_max_short', 50.0),
+                'v1': '45', 'v2': '48', 'v3': '50', 'v4': '55'
+            },
 
-            # ──────────────────────────────────────────────────────────────────────
-            # TIER-AWARE COOLDOWN & CONFLUENCE
-            # ──────────────────────────────────────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────
+            # CONFLUENCE & COOLDOWN
+            # ──────────────────────────────────────────────────────────────
+            'tier1_confluence_min': {
+                'description': 'Tier 1 Confluence Min (signals count)',
+                'current': current_params.get('tier1_confluence_min', 3.0),
+                'v1': '2', 'v2': '3', 'v3': '4', 'v4': '5'
+            },
+            'tier2_confluence_min': {
+                'description': 'Tier 2 Confluence Min (signals count)',
+                'current': current_params.get('tier2_confluence_min', 2.0),
+                'v1': '1', 'v2': '2', 'v3': '3', 'v4': '4'
+            },
             'min_bars_between_trades_tier1': {
                 'description': 'Min Bars Between Trades (Tier 1)',
                 'current': current_params.get('min_bars_between_trades_tier1', 4),
-                'v1': '3', 'v2': '4', 'v3': '5', 'v4': '6'},
+                'v1': '2', 'v2': '3', 'v3': '4', 'v4': '6'
+            },
             'min_bars_between_trades_tier2': {
                 'description': 'Min Bars Between Trades (Tier 2)',
                 'current': current_params.get('min_bars_between_trades_tier2', 3),
-                'v1': '3', 'v2': '4', 'v3': '5', 'v4': '6'},
-            'tier1_confluence_min': {
-                'description': 'Tier 1 Min Directional Confluence (0-1)',
-                'current': current_params.get('tier1_confluence_min', 0.65),
-                'v1': '0.55', 'v2': '0.60', 'v3': '0.65', 'v4': '0.70'},
-            'tier2_confluence_min': {
-                'description': 'Tier 2 Min Directional Confluence (0-1)',
-                'current': current_params.get('tier2_confluence_min', 0.70),
-                'v1': '0.60', 'v2': '0.65', 'v3': '0.70', 'v4': '0.75'},
+                'v1': '2', 'v2': '3', 'v3': '4', 'v4': '5'
+            },
 
-            # ──────────────────────────────────────────────────────────────────────
-            # REGIME & VOLATILITY FILTERS
-            # ──────────────────────────────────────────────────────────────────────
-            'regime_filter_enabled': {
-                'description': 'Regime Filter Enabled',
-                'current': current_params.get('regime_filter_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'chop_threshold': {
-                'description': 'Choppiness Index Threshold',
-                'current': current_params.get('chop_threshold', 58),
-                'v1': '50', 'v2': '54', 'v3': '58', 'v4': '62'},
-            'atr_compression_enabled': {
-                'description': 'ATR Compression Filter Enabled',
-                'current': current_params.get('atr_compression_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'atr_compression_threshold': {
-                'description': 'ATR Compression Threshold',
-                'current': current_params.get('atr_compression_threshold', 0.25),
-                'v1': '0.15', 'v2': '0.20', 'v3': '0.25', 'v4': '0.30'},
-            'extended_run_max_pct_long': {
-                'description': 'Extended Run Max % (LONG)',
-                'current': current_params.get('extended_run_max_pct_long', 12.0),
-                'v1': '8.0', 'v2': '10.0', 'v3': '12.0', 'v4': '15.0'},
-            'extended_run_max_pct_short': {
-                'description': 'Extended Run Max % (SHORT)',
-                'current': current_params.get('extended_run_max_pct_short', 12.0),
-                'v1': '8.0', 'v2': '10.0', 'v3': '12.0', 'v4': '15.0'},
+            # ──────────────────────────────────────────────────────────────
+            # RISK MANAGEMENT (UPDATED)
+            # ──────────────────────────────────────────────────────────────
+            'risk_tier1': {
+                'description': 'Tier 1 Risk %',
+                'current': current_params.get('risk_tier1', 0.02),
+                'v1': '0.015', 'v2': '0.02', 'v3': '0.025', 'v4': '0.03'
+            },
+            'risk_tier2': {
+                'description': 'Tier 2 Risk %',
+                'current': current_params.get('risk_tier2', 0.01),
+                'v1': '0.008', 'v2': '0.01', 'v3': '0.015', 'v4': '0.02'
+            },
+            'tier1_size_multiplier': {
+                'description': 'Tier 1 Size Multiplier',
+                'current': current_params.get('tier1_size_multiplier', 1.0),
+                'v1': '0.8', 'v2': '1.0', 'v3': '1.2', 'v4': '1.5'
+            },
+            'tier2_size_multiplier': {
+                'description': 'Tier 2 Size Multiplier',
+                'current': current_params.get('tier2_size_multiplier', 0.70),
+                'v1': '0.5', 'v2': '0.7', 'v3': '0.9', 'v4': '1.0'
+            },
 
-            # ──────────────────────────────────────────────────────────────────────
-            # ENTRY PRECISION FILTERS
-            # ──────────────────────────────────────────────────────────────────────
-            'adx_min': {
-                'description': 'ADX Minimum (Entry)',
-                'current': current_params.get('adx_min', 18),
-                'v1': '15', 'v2': '18', 'v3': '20', 'v4': '22'},
-            'adx_min_trend': {
-                'description': 'ADX Min Trend Strength',
-                'current': current_params.get('adx_min_trend', 25),
-                'v1': '20', 'v2': '22', 'v3': '25', 'v4': '28'},
-            'rsi_entry_min': {
-                'description': 'RSI Entry Minimum',
-                'current': current_params.get('rsi_entry_min', 40),
-                'v1': '38', 'v2': '40', 'v3': '42', 'v4': '45'},
-            'rsi_entry_max': {
-                'description': 'RSI Entry Maximum',
-                'current': current_params.get('rsi_entry_max', 68),
-                'v1': '62', 'v2': '65', 'v3': '68', 'v4': '72'},
-            'volume_min_ratio': {
-                'description': 'Volume Ratio Minimum',
-                'current': current_params.get('volume_min_ratio', 1.1),
-                'v1': '0.9', 'v2': '1.0', 'v3': '1.1', 'v4': '1.3'},
-            'momentum_min': {
-                'description': 'Momentum Minimum %',
-                'current': current_params.get('momentum_min', 0.05),
-                'v1': '0.03', 'v2': '0.04', 'v3': '0.05', 'v4': '0.07'},
-            'rsi_direction_bars': {
-                'description': 'RSI Direction Bars',
-                'current': current_params.get('rsi_direction_bars', 3),
-                'v1': '1', 'v2': '2', 'v3': '3', 'v4': '4'},
-            'ema_trending_bars': {
-                'description': 'EMA Trending Bars',
-                'current': current_params.get('ema_trending_bars', 3),
-                'v1': '2', 'v2': '3', 'v3': '4', 'v4': '5'},
-            'macd_hist_rising_bars': {
-                'description': 'MACD Histogram Rising Bars',
-                'current': current_params.get('macd_hist_rising_bars', 0),
-                'v1': '0', 'v2': '1', 'v3': '2', 'v4': '3'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # BREAKEVEN STOP
-            # ──────────────────────────────────────────────────────────────────────
-            'be_stop_enabled': {
-                'description': 'Breakeven Stop Enabled',
-                'current': current_params.get('be_stop_enabled', True),
-                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''},
-            'be_stop_r_trigger': {
-                'description': 'Breakeven Stop R Trigger',
-                'current': current_params.get('be_stop_r_trigger', 2.0),
-                'v1': '1.5', 'v2': '2.0', 'v3': '2.5', 'v4': '3.0'},
-            'be_stop_no_progress_bars': {
-                'description': 'Breakeven No-Progress Bars',
-                'current': current_params.get('be_stop_no_progress_bars', 50),
-                'v1': '30', 'v2': '40', 'v3': '50', 'v4': '60'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # STOP LOSS & TRAILING
-            # ──────────────────────────────────────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────
+            # STOP LOSS & TRAILING (UPDATED)
+            # ──────────────────────────────────────────────────────────────
             'stop_loss_atr_mult': {
-                'description': 'Stop Loss ATR Mult',
-                'current': current_params.get('stop_loss_atr_mult', 3.5),
-                'v1': '2.5', 'v2': '3.0', 'v3': '3.5', 'v4': '4.0'},
+                'description': 'Stop Loss ATR Mult (all tiers)',
+                'current': current_params.get('stop_loss_atr_mult', 2.0),
+                'v1': '1.5', 'v2': '2.0', 'v3': '2.5', 'v4': '3.0'
+            },
+            'trailing_activation_tier1': {
+                'description': 'Trail Activation % (Tier 1)',
+                'current': current_params.get('trailing_activation_tier1', 0.03),
+                'v1': '0.02', 'v2': '0.025', 'v3': '0.03', 'v4': '0.04'
+            },
+            'trailing_activation_tier2': {
+                'description': 'Trail Activation % (Tier 2)',
+                'current': current_params.get('trailing_activation_tier2', 0.02),
+                'v1': '0.015', 'v2': '0.02', 'v3': '0.025', 'v4': '0.03'
+            },
+            'trailing_distance_tier1': {
+                'description': 'Trailing Distance % (Tier 1)',
+                'current': current_params.get('trailing_distance_tier1', 0.015),
+                'v1': '0.01', 'v2': '0.015', 'v3': '0.02', 'v4': '0.025'
+            },
+            'trailing_distance_tier2': {
+                'description': 'Trailing Distance % (Tier 2)',
+                'current': current_params.get('trailing_distance_tier2', 0.01),
+                'v1': '0.008', 'v2': '0.01', 'v3': '0.015', 'v4': '0.02'
+            },
             'trailing_stop_atr_mult': {
                 'description': 'Trailing Stop ATR Mult',
                 'current': current_params.get('trailing_stop_atr_mult', 6.5),
-                'v1': '5.0', 'v2': '5.5', 'v3': '6.0', 'v4': '6.5'},
-            'trailing_activation_pct': {
-                'description': 'Trailing Activation %',
-                'current': current_params.get('trailing_activation_pct', 0.03),
-                'v1': '0.02', 'v2': '0.03', 'v3': '0.04', 'v4': '0.05'},
-            'trailing_distance_pct': {
-                'description': 'Trailing Distance %',
-                'current': current_params.get('trailing_distance_pct', 0.035),
-                'v1': '0.025', 'v2': '0.03', 'v3': '0.035', 'v4': '0.045'},
+                'v1': '5.0', 'v2': '5.5', 'v3': '6.0', 'v4': '6.5'
+            },
+            'trailing_stop_pct': {
+                'description': 'Trailing Stop %',
+                'current': current_params.get('trailing_stop_pct', 0.06),
+                'v1': '0.04', 'v2': '0.05', 'v3': '0.06', 'v4': '0.08'
+            },
             'trailing_activation_r': {
                 'description': 'Trail Activation R',
-                'current': current_params.get('trailing_activation_r', 2.5),
-                'v1': '1.5', 'v2': '2.0', 'v3': '2.5', 'v4': '3.0'},
-            'initial_trailing_atr_mult': {
-                'description': 'Initial Trailing ATR Mult',
-                'current': current_params.get('initial_trailing_atr_mult', 5.5),
-                'v1': '4.0', 'v2': '4.5', 'v3': '5.0', 'v4': '5.5'},
+                'current': current_params.get('trailing_activation_r', 3.0),
+                'v1': '2.0', 'v2': '2.5', 'v3': '3.0', 'v4': '3.5'
+            },
 
-            # ──────────────────────────────────────────────────────────────────────
-            # COOLDOWNS
-            # ──────────────────────────────────────────────────────────────────────
-            'cooldown_after_loss_bars': {
-                'description': 'Cooldown After Loss (bars)',
-                'current': current_params.get('cooldown_after_loss_bars', 12),
-                'v1': '6', 'v2': '8', 'v3': '12', 'v4': '16'},
-            'consecutive_loss_threshold': {
-                'description': 'Consecutive Loss Threshold',
-                'current': current_params.get('consecutive_loss_threshold', 3),
-                'v1': '2', 'v2': '3', 'v3': '4', 'v4': '5'},
-            'consecutive_loss_cooldown_bars': {
-                'description': 'Consecutive Loss Cooldown (bars)',
-                'current': current_params.get('consecutive_loss_cooldown_bars', 12),
-                'v1': '6', 'v2': '8', 'v3': '12', 'v4': '16'},
+            # ──────────────────────────────────────────────────────────────
+            # BREAKEVEN STOP
+            # ──────────────────────────────────────────────────────────────
+            'be_stop_enabled': {
+                'description': 'Breakeven Stop Enabled',
+                'current': current_params.get('be_stop_enabled', True),
+                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''
+            },
+            'be_stop_r_trigger': {
+                'description': 'Breakeven R Trigger',
+                'current': current_params.get('be_stop_r_trigger', 2.0),
+                'v1': '1.5', 'v2': '2.0', 'v3': '2.5', 'v4': '3.0'
+            },
 
-            # ──────────────────────────────────────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────
             # EXIT CONDITIONS
-            # ──────────────────────────────────────────────────────────────────────
-            'rsi_exit_threshold': {
-                'description': 'RSI Exit Threshold',
-                'current': current_params.get('rsi_exit_threshold', 80),
-                'v1': '75', 'v2': '78', 'v3': '80', 'v4': '85'},
-            'macd_bearish_cross_profit_min': {
-                'description': 'MACD Bearish Cross Min Profit %',
-                'current': current_params.get('macd_bearish_cross_profit_min', 2.5),
-                'v1': '1.5', 'v2': '2.0', 'v3': '2.5', 'v4': '3.0'},
-            'kalman_fade_threshold': {
-                'description': 'Kalman Fade Threshold',
-                'current': current_params.get('kalman_fade_threshold', 35),
-                'v1': '25', 'v2': '30', 'v3': '35', 'v4': '40'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # TRADE MANAGEMENT ← FIX: ADD max_daily_trades HERE
-            # ──────────────────────────────────────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────
             'max_hold_bars': {
                 'description': 'Max Hold Bars',
                 'current': current_params.get('max_hold_bars', 500),
-                'v1': '200', 'v2': '300', 'v3': '400', 'v4': '500'},
-            'max_daily_trades': {  # ← ADD THIS ENTIRE BLOCK
+                'v1': '200', 'v2': '300', 'v3': '400', 'v4': '500'
+            },
+            'rsi_exit_threshold': {
+                'description': 'RSI Exit Threshold',
+                'current': current_params.get('rsi_exit_threshold', 80),
+                'v1': '75', 'v2': '78', 'v3': '80', 'v4': '85'
+            },
+            'macd_bearish_cross_profit_min': {
+                'description': 'MACD Bearish Cross Min Profit %',
+                'current': current_params.get('macd_bearish_cross_profit_min', 2.5),
+                'v1': '1.5', 'v2': '2.0', 'v3': '2.5', 'v4': '3.0'
+            },
+            'kalman_fade_threshold': {
+                'description': 'Kalman Fade Threshold',
+                'current': current_params.get('kalman_fade_threshold', 35),
+                'v1': '25', 'v2': '30', 'v3': '35', 'v4': '40'
+            },
+
+            # ──────────────────────────────────────────────────────────────
+            # COOLDOWN & TRADE MANAGEMENT
+            # ──────────────────────────────────────────────────────────────
+            'max_daily_trades': {
                 'description': 'Max Daily Trades',
                 'current': current_params.get('max_daily_trades', 15),
-                'v1': '5', 'v2': '8', 'v3': '10', 'v4': '15'},
+                'v1': '5', 'v2': '8', 'v3': '10', 'v4': '15'
+            },
             'min_bars_between_trades': {
-                'description': 'Min Bars Between Trades',
+                'description': 'Min Bars Between Trades (blanket)',
                 'current': current_params.get('min_bars_between_trades', 4),
-                'v1': '2', 'v2': '3', 'v3': '4', 'v4': '6'},
-            'cooldown_after_profit_target_bars': {
-                'description': 'Cooldown After Profit Target (bars)',
-                'current': current_params.get('cooldown_after_profit_target_bars', 2),
-                'v1': '1', 'v2': '2', 'v3': '3', 'v4': '4'},
+                'v1': '2', 'v2': '3', 'v3': '4', 'v4': '6'
+            },
+            'cooldown_after_loss_bars': {
+                'description': 'Cooldown After Loss (bars)',
+                'current': current_params.get('cooldown_after_loss_bars', 12),
+                'v1': '6', 'v2': '8', 'v3': '12', 'v4': '16'
+            },
 
-            # ──────────────────────────────────────────────────────────────────────
-            # RISK MANAGEMENT
-            # ──────────────────────────────────────────────────────────────────────
-            'risk_tier1': {
-                'description': 'Tier 1 Risk %',
-                'current': current_params.get('risk_tier1', 0.025),
-                'v1': '0.015', 'v2': '0.020', 'v3': '0.025', 'v4': '0.030'},
-            'risk_tier2': {
-                'description': 'Tier 2 Risk %',
-                'current': current_params.get('risk_tier2', 0.030),
-                'v1': '0.020', 'v2': '0.025', 'v3': '0.030', 'v4': '0.035'},
-            'tier1_size_multiplier': {
-                'description': 'Tier 1 Position Size Multiplier',
-                'current': current_params.get('tier1_size_multiplier', 1.0),
-                'v1': '0.8', 'v2': '0.9', 'v3': '1.0', 'v4': '1.2'},
-            'tier2_size_multiplier': {
-                'description': 'Tier 2 Position Size Multiplier',
-                'current': current_params.get('tier2_size_multiplier', 0.70),
-                'v1': '0.5', 'v2': '0.6', 'v3': '0.70', 'v4': '0.8'},
-            'tier1_stop_multiplier': {
-                'description': 'Tier 1 Stop ATR Multiplier',
-                'current': current_params.get('tier1_stop_multiplier', 2.0),
-                'v1': '1.5', 'v2': '1.8', 'v3': '2.0', 'v4': '2.5'},
-            'tier2_stop_multiplier': {
-                'description': 'Tier 2 Stop ATR Multiplier',
-                'current': current_params.get('tier2_stop_multiplier', 2.5),
-                'v1': '2.0', 'v2': '2.2', 'v3': '2.5', 'v4': '3.0'},
-            'exit_threshold_tier1': {
-                'description': 'Exit Power Threshold (Tier 1)',
-                'current': current_params.get('exit_threshold_tier1', 60),
-                'v1': '50', 'v2': '55', 'v3': '60', 'v4': '65'},
-            'exit_threshold_tier2': {
-                'description': 'Exit Power Threshold (Tier 2)',
-                'current': current_params.get('exit_threshold_tier2', 50),
-                'v1': '40', 'v2': '45', 'v3': '50', 'v4': '55'},
-            'trailing_activation_tier1': {
-                'description': 'Trailing Activation % (Tier 1)',
-                'current': current_params.get('trailing_activation_tier1', 0.03),
-                'v1': '0.02', 'v2': '0.025', 'v3': '0.03', 'v4': '0.04'},
-            'trailing_activation_tier2': {
-                'description': 'Trailing Activation % (Tier 2)',
-                'current': current_params.get('trailing_activation_tier2', 0.04),
-                'v1': '0.03', 'v2': '0.035', 'v3': '0.04', 'v4': '0.05'},
-            'trailing_distance_tier1': {
-                'description': 'Trailing Distance % (Tier 1)',
-                'current': current_params.get('trailing_distance_tier1', 0.025),
-                'v1': '0.015', 'v2': '0.02', 'v3': '0.025', 'v4': '0.03'},
-            'trailing_distance_tier2': {
-                'description': 'Trailing Distance % (Tier 2)',
-                'current': current_params.get('trailing_distance_tier2', 0.035),
-                'v1': '0.025', 'v2': '0.03', 'v3': '0.035', 'v4': '0.045'},
-            'risk_per_trade': {
-                'description': 'Base Risk Per Trade',
-                'current': current_params.get('risk_per_trade', 0.022),
-                'v1': '0.015', 'v2': '0.018', 'v3': '0.020', 'v4': '0.022'},
-
-            # ──────────────────────────────────────────────────────────────────────
-            # PROFIT TARGETS
-            # ──────────────────────────────────────────────────────────────────────
-            'take_profit_r1': {
-                'description': 'Profit Target R1',
-                'current': current_params.get('take_profit_r1', 3.0),
-                'v1': '2.0', 'v2': '2.5', 'v3': '3.0', 'v4': '3.5'},
-            'take_profit_r2': {
-                'description': 'Profit Target R2',
-                'current': current_params.get('take_profit_r2', 5.0),
-                'v1': '3.0', 'v2': '4.0', 'v3': '5.0', 'v4': '6.0'},
-            'take_profit_r3': {
-                'description': 'Profit Target R3',
-                'current': current_params.get('take_profit_r3', 8.0),
-                'v1': '6.0', 'v2': '7.0', 'v3': '8.0', 'v4': '10.0'},
-
-            # ──────────────────────────────────────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────
             # PRICE POSITIONING
-            # ──────────────────────────────────────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────
             'price_percentile_bonus_early': {
-                'description': 'Early Entry Bonus (pts)',
+                'description': 'Early Entry Bonus',
                 'current': current_params.get('price_percentile_bonus_early', 12),
-                'v1': '8', 'v2': '10', 'v3': '12', 'v4': '15'},
+                'v1': '8', 'v2': '10', 'v3': '12', 'v4': '15'
+            },
             'price_percentile_penalty_late': {
-                'description': 'Late Entry Penalty (pts)',
+                'description': 'Late Entry Penalty',
                 'current': current_params.get('price_percentile_penalty_late', 12),
-                'v1': '8', 'v2': '10', 'v3': '12', 'v4': '15'},
+                'v1': '8', 'v2': '10', 'v3': '12', 'v4': '15'
+            },
 
-            # ──────────────────────────────────────────────────────────────────────
-            # FUZZY MODE
-            # ──────────────────────────────────────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────        # FUZZY MODE
+            # ──────────────────────────────────────────────────────────────
             'fuzzy_default_margin_pct': {
                 'description': 'Fuzzy Margin %',
                 'current': current_params.get('fuzzy_default_margin_pct', 10),
-                'v1': '5', 'v2': '8', 'v3': '10', 'v4': '15'},
+                'v1': '5', 'v2': '8', 'v3': '10', 'v4': '15'
+            },
             'fuzzy_absolute_min': {
                 'description': 'Fuzzy Absolute Min',
                 'current': current_params.get('fuzzy_absolute_min', 45),
-                'v1': '55', 'v2': '58', 'v3': '62', 'v4': '65'},
+                'v1': '55', 'v2': '58', 'v3': '62', 'v4': '65'
+            },
 
-            # ──────────────────────────────────────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────
+            # REGIME FILTERS
+            # ──────────────────────────────────────────────────────────────
+            'regime_filter_enabled': {
+                'description': 'Regime Filter Enabled',
+                'current': current_params.get('regime_filter_enabled', True),
+                'v1': 'false', 'v2': 'true', 'v3': '', 'v4': ''
+            },
+            'chop_threshold': {
+                'description': 'Choppiness Index Threshold',
+                'current': current_params.get('chop_threshold', 58),
+                'v1': '50', 'v2': '54', 'v3': '58', 'v4': '62'
+            },
+            'atr_compression_threshold': {
+                'description': 'ATR Compression Threshold',
+                'current': current_params.get('atr_compression_threshold', 0.25),
+                'v1': '0.15', 'v2': '0.20', 'v3': '0.25', 'v4': '0.30'
+            },
+            'extended_run_max_pct_long': {
+                'description': 'Extended Run Max % (LONG)',
+                'current': current_params.get('extended_run_max_pct_long', 12.0),
+                'v1': '8.0', 'v2': '10.0', 'v3': '12.0', 'v4': '15.0'
+            },
+            'extended_run_max_pct_short': {
+                'description': 'Extended Run Max % (SHORT)',
+                'current': current_params.get('extended_run_max_pct_short', 12.0),
+                'v1': '8.0', 'v2': '10.0', 'v3': '12.0', 'v4': '15.0'
+            },
+
+            # ──────────────────────────────────────────────────────────────
             # TRADE DIRECTION
-            # ──────────────────────────────────────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────
             'trade_direction': {
                 'description': 'Trade Direction',
                 'current': current_params.get('trade_direction', 'both'),
-                'v1': 'long', 'v2': 'both', 'v3': 'short', 'v4': ''},
+                'v1': 'long', 'v2': 'both', 'v3': 'short', 'v4': ''
+            },
         }
 
-        # Initialize backtest_params if not already done
+        # ─── Initialize backtest_params ──────────────────────────────────
         if not hasattr(self, 'backtest_params'):
             self.backtest_params = {}
 
-        # Create or update backtest_params with current values
         for key, meta in ALL_MOMENTUM_BACKTEST_PARAMS.items():
             if key not in self.backtest_params:
                 self.backtest_params[key] = {
@@ -6844,12 +7074,9 @@ class TradingApp:
                     'current_value': meta['current']
                 }
             else:
-                # Update current value if changed
                 self.backtest_params[key]['current_value'] = meta['current']
-                # Update description if changed
                 self.backtest_params[key]['description'] = meta['description']
 
-        # Now build the UI (same as before but with complete parameter list)
         self._build_backtest_ui(right_frame)
 
     def _build_kalman_backtest_panel(self, right_frame):
@@ -7756,7 +7983,6 @@ class TradingApp:
         except ImportError:
             return None
 
-
     def _build_backtest_ui(self, right_frame):
         """Build the actual UI for backtest parameters (shared across strategies)"""
 
@@ -8441,7 +8667,6 @@ class TradingApp:
             self._update_bt_selection_count()
             self._check_bt_selection_warning()
 
-
     def _select_all_backtest_params(self):
         """Select all backtest parameters, respecting parameter groups"""
         self._updating_group = True
@@ -8500,7 +8725,6 @@ class TradingApp:
             )
         elif count > 10:
             self.log_message(f"⚠️ {count} parameters selected - optimization may take a while", "orange")
-
 
     def _deselect_all_backtest_params(self):
         """Deselect all backtest parameters, respecting parameter groups"""
@@ -8809,7 +9033,6 @@ class TradingApp:
             except Exception as e:
                 self.log_message(f"❌ Error resetting backtest params: {e}", "red")
 
-
     def _get_param_values(self, param_key):
         """
         Get values for a parameter:
@@ -8988,7 +9211,7 @@ class TradingApp:
         paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        left_frame  = ttk.Frame(paned, width=600)
+        left_frame = ttk.Frame(paned, width=600)
         paned.add(left_frame, weight=2)
 
         right_frame = ttk.LabelFrame(paned, text="Backtest Optimization Parameters", width=500)
@@ -9011,7 +9234,7 @@ class TradingApp:
         content_frame = ttk.Frame(left_frame)
         content_frame.pack(fill='both', expand=True, padx=5, pady=5, side=tk.TOP)
 
-        canvas    = tk.Canvas(content_frame, bg='white', highlightthickness=0)
+        canvas = tk.Canvas(content_frame, bg='white', highlightthickness=0)
         scrollbar = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
         scrollable_frame.bind("<Configure>",
@@ -9111,110 +9334,110 @@ class TradingApp:
         }
 
         scalping_descriptions = {
-            'ema_fast_period'            : 'Fast EMA period (default 5)',
-            'ema_mid_period'             : 'Mid EMA period (default 13)',
-            'ema_slow_period'            : 'Slow EMA period (default 21)',
-            'macd_fast'                  : 'MACD fast period — faster than standard for scalping',
-            'macd_slow'                  : 'MACD slow period',
-            'macd_signal_period'         : 'MACD signal smoothing',
-            'stoch_k_period'             : 'Stochastic %K period',
-            'stoch_d_period'             : 'Stochastic %D smoothing',
-            'stoch_smooth'               : 'Stochastic slow %K smoothing',
-            'stoch_overbought'           : 'Stochastic overbought threshold (exit signal)',
-            'stoch_oversold'             : 'Stochastic oversold threshold (exit signal)',
-            'stoch_mid_upper'            : 'Upper mid zone for perfect long setup',
-            'stoch_mid_lower'            : 'Lower mid zone for perfect short setup',
-            'rsi_period'                 : 'RSI look-back period',
-            'rsi_long_min'               : 'RSI minimum for long entries (avoid oversold)',
-            'rsi_long_max'               : 'RSI maximum for long entries (avoid overbought)',
-            'rsi_short_min'              : 'RSI minimum for short entries',
-            'rsi_short_max'              : 'RSI maximum for short entries (avoid too oversold)',
-            'rsi_overbought_exit'        : 'RSI level that triggers long exit',
-            'rsi_oversold_exit'          : 'RSI level that triggers short exit',
-            'adx_period'                 : 'ADX calculation period',
-            'adx_min_long'               : 'Minimum ADX for long entries — needs real trend',
-            'adx_min_short'              : 'Minimum ADX for short entries',
-            'adx_extended_threshold'     : 'ADX above this = trend exhausted, block new entries',
-            'adx_slope_min'              : 'Minimum ADX rise per bar (trend accelerating)',
-            'volume_period'              : 'Volume MA look-back bars',
-            'volume_min_ratio'           : 'Minimum volume vs average (1.4 = 40% above average)',
-            'volume_strong_ratio'        : 'Strong volume confirmation threshold',
-            'atr_period'                 : 'ATR calculation period',
-            'atr_compression_lookback'   : 'Bars to average ATR for compression check',
-            'atr_compression_threshold'  : 'Block entries when ATR < this × average ATR',
-            'quality_min_long'           : 'Minimum quality score to enter a long (0-100)',
-            'quality_min_short'          : 'Minimum quality score to enter a short (0-100)',
-            'quality_tier1_min'          : 'Quality score for Tier 1 (high-conviction) entries',
-            'weight_ema'                 : 'EMA alignment component weight (out of 100)',
-            'weight_macd'                : 'MACD component weight',
-            'weight_stoch'               : 'Stochastic component weight',
-            'weight_rsi'                 : 'RSI component weight',
-            'weight_volume'              : 'Volume component weight',
-            'weight_adx'                 : 'ADX component weight',
-            'risk_per_trade'             : 'Base risk % of equity per trade (0.008 = 0.8%)',
-            'risk_tier1'                 : 'Risk % for high-conviction Tier 1 entries',
-            'max_position_size_pct'      : 'Maximum position as % of equity (0.15 = 15%)',
-            'max_position_units'         : 'Hard unit cap per position',
-            'min_cash_reserve'           : 'Minimum cash to keep unallocated',
-            'base_risk_pct'              : 'Base risk used for position sizing',
-            'stop_loss_atr_mult'         : 'Stop distance = ATR × this multiplier (2.2 recommended)',
-            'trailing_activation_pct'    : 'Profit % needed to activate trailing stop',
-            'trailing_distance_pct'      : 'Trailing stop distance from peak',
-            'trailing_atr_mult'          : 'ATR multiplier for dynamic trailing distance',
-            'be_stop_enabled'            : 'Enable breakeven stop',
-            'be_stop_r_trigger'          : 'Move stop to breakeven when profit reaches this R',
-            'be_stop_no_progress_bars'   : 'Move to BE if no progress after this many bars',
-            'take_profit_r1'             : 'First partial exit at this R-multiple',
-            'take_profit_r2'             : 'Second partial exit at this R-multiple',
-            'partial_exit_pct_r1'        : 'Fraction of position to close at R1 (0.50 = 50%)',
-            'partial_exit_pct_r2'        : 'Fraction to close at R2 (0.30 = 30%)',
-            'macd_cross_exit_enabled'    : 'Exit on MACD bearish cross when in profit',
-            'macd_cross_min_profit_r'    : 'Minimum profit (R) before MACD cross exit fires',
+            'ema_fast_period': 'Fast EMA period (default 5)',
+            'ema_mid_period': 'Mid EMA period (default 13)',
+            'ema_slow_period': 'Slow EMA period (default 21)',
+            'macd_fast': 'MACD fast period — faster than standard for scalping',
+            'macd_slow': 'MACD slow period',
+            'macd_signal_period': 'MACD signal smoothing',
+            'stoch_k_period': 'Stochastic %K period',
+            'stoch_d_period': 'Stochastic %D smoothing',
+            'stoch_smooth': 'Stochastic slow %K smoothing',
+            'stoch_overbought': 'Stochastic overbought threshold (exit signal)',
+            'stoch_oversold': 'Stochastic oversold threshold (exit signal)',
+            'stoch_mid_upper': 'Upper mid zone for perfect long setup',
+            'stoch_mid_lower': 'Lower mid zone for perfect short setup',
+            'rsi_period': 'RSI look-back period',
+            'rsi_long_min': 'RSI minimum for long entries (avoid oversold)',
+            'rsi_long_max': 'RSI maximum for long entries (avoid overbought)',
+            'rsi_short_min': 'RSI minimum for short entries',
+            'rsi_short_max': 'RSI maximum for short entries (avoid too oversold)',
+            'rsi_overbought_exit': 'RSI level that triggers long exit',
+            'rsi_oversold_exit': 'RSI level that triggers short exit',
+            'adx_period': 'ADX calculation period',
+            'adx_min_long': 'Minimum ADX for long entries — needs real trend',
+            'adx_min_short': 'Minimum ADX for short entries',
+            'adx_extended_threshold': 'ADX above this = trend exhausted, block new entries',
+            'adx_slope_min': 'Minimum ADX rise per bar (trend accelerating)',
+            'volume_period': 'Volume MA look-back bars',
+            'volume_min_ratio': 'Minimum volume vs average (1.4 = 40% above average)',
+            'volume_strong_ratio': 'Strong volume confirmation threshold',
+            'atr_period': 'ATR calculation period',
+            'atr_compression_lookback': 'Bars to average ATR for compression check',
+            'atr_compression_threshold': 'Block entries when ATR < this × average ATR',
+            'quality_min_long': 'Minimum quality score to enter a long (0-100)',
+            'quality_min_short': 'Minimum quality score to enter a short (0-100)',
+            'quality_tier1_min': 'Quality score for Tier 1 (high-conviction) entries',
+            'weight_ema': 'EMA alignment component weight (out of 100)',
+            'weight_macd': 'MACD component weight',
+            'weight_stoch': 'Stochastic component weight',
+            'weight_rsi': 'RSI component weight',
+            'weight_volume': 'Volume component weight',
+            'weight_adx': 'ADX component weight',
+            'risk_per_trade': 'Base risk % of equity per trade (0.008 = 0.8%)',
+            'risk_tier1': 'Risk % for high-conviction Tier 1 entries',
+            'max_position_size_pct': 'Maximum position as % of equity (0.15 = 15%)',
+            'max_position_units': 'Hard unit cap per position',
+            'min_cash_reserve': 'Minimum cash to keep unallocated',
+            'base_risk_pct': 'Base risk used for position sizing',
+            'stop_loss_atr_mult': 'Stop distance = ATR × this multiplier (2.2 recommended)',
+            'trailing_activation_pct': 'Profit % needed to activate trailing stop',
+            'trailing_distance_pct': 'Trailing stop distance from peak',
+            'trailing_atr_mult': 'ATR multiplier for dynamic trailing distance',
+            'be_stop_enabled': 'Enable breakeven stop',
+            'be_stop_r_trigger': 'Move stop to breakeven when profit reaches this R',
+            'be_stop_no_progress_bars': 'Move to BE if no progress after this many bars',
+            'take_profit_r1': 'First partial exit at this R-multiple',
+            'take_profit_r2': 'Second partial exit at this R-multiple',
+            'partial_exit_pct_r1': 'Fraction of position to close at R1 (0.50 = 50%)',
+            'partial_exit_pct_r2': 'Fraction to close at R2 (0.30 = 30%)',
+            'macd_cross_exit_enabled': 'Exit on MACD bearish cross when in profit',
+            'macd_cross_min_profit_r': 'Minimum profit (R) before MACD cross exit fires',
             'stoch_reversal_exit_enabled': 'Exit on Stochastic reversal when in profit',
             'stoch_reversal_min_profit_r': 'Minimum profit before Stochastic exit fires',
-            'ema_cross_exit_enabled'     : 'Exit on full EMA bearish reversal',
-            'ema_cross_min_profit_r'     : 'Minimum profit before EMA cross exit fires',
-            'max_hold_bars'              : 'Force exit after this many bars (48 × 15min = 12h)',
-            'min_hold_bars_before_stop'  : 'Do not allow stop in first N bars (noise protection)',
-            'pullback_zone_lower_pct'    : 'Max % below EMA_fast for entry — deeper pullback allowed',
-            'pullback_zone_upper_pct'    : 'Max % above EMA_fast for entry — tighter = fewer entries',
-            'momentum_period'            : 'Look-back bars for short-term momentum check',
-            'momentum_min_long'          : 'Minimum momentum % required for long entry',
-            'momentum_min_short'         : 'Minimum downward momentum % for short entry',
-            'regime_filter_enabled'      : 'Block entries in ranging/choppy markets',
-            'bb_period'                  : 'Bollinger Band period for regime detection',
-            'bb_std'                     : 'Bollinger Band standard deviation',
-            'kc_period'                  : 'Keltner Channel period',
-            'kc_atr_mult'                : 'Keltner Channel ATR multiplier',
-            'chop_period'                : 'Choppiness Index period',
-            'chop_threshold'             : 'Choppiness above this = ranging, block entries',
-            'ranging_min_checks'         : 'Minimum regime checks to classify as ranging',
-            'max_daily_trades'           : 'Maximum entries per day (8 prevents overtrading)',
-            'min_bars_between_trades'    : 'Bars to wait between entries (4 = 1 hour minimum)',
-            'cooldown_after_loss_bars'   : 'Bars to pause after a losing trade',
-            'consecutive_loss_threshold' : 'Trigger extended cooldown after this many consecutive losses',
+            'ema_cross_exit_enabled': 'Exit on full EMA bearish reversal',
+            'ema_cross_min_profit_r': 'Minimum profit before EMA cross exit fires',
+            'max_hold_bars': 'Force exit after this many bars (48 × 15min = 12h)',
+            'min_hold_bars_before_stop': 'Do not allow stop in first N bars (noise protection)',
+            'pullback_zone_lower_pct': 'Max % below EMA_fast for entry — deeper pullback allowed',
+            'pullback_zone_upper_pct': 'Max % above EMA_fast for entry — tighter = fewer entries',
+            'momentum_period': 'Look-back bars for short-term momentum check',
+            'momentum_min_long': 'Minimum momentum % required for long entry',
+            'momentum_min_short': 'Minimum downward momentum % for short entry',
+            'regime_filter_enabled': 'Block entries in ranging/choppy markets',
+            'bb_period': 'Bollinger Band period for regime detection',
+            'bb_std': 'Bollinger Band standard deviation',
+            'kc_period': 'Keltner Channel period',
+            'kc_atr_mult': 'Keltner Channel ATR multiplier',
+            'chop_period': 'Choppiness Index period',
+            'chop_threshold': 'Choppiness above this = ranging, block entries',
+            'ranging_min_checks': 'Minimum regime checks to classify as ranging',
+            'max_daily_trades': 'Maximum entries per day (8 prevents overtrading)',
+            'min_bars_between_trades': 'Bars to wait between entries (4 = 1 hour minimum)',
+            'cooldown_after_loss_bars': 'Bars to pause after a losing trade',
+            'consecutive_loss_threshold': 'Trigger extended cooldown after this many consecutive losses',
             'consecutive_loss_cooldown_bars': 'Extended cooldown bars after loss streak',
-            'daily_trend_filter_enabled' : 'Only trade longs above daily EMA, shorts below',
-            'daily_ema_period'           : 'Bars for daily trend EMA (96 × 15min = 24h)',
-            'daily_trend_adx_override'   : 'ADX level that overrides daily trend filter',
-            'extended_run_lookback'      : 'Bars to look back for swing high/low',
-            'extended_run_max_pct_long'  : 'Block longs if price already ran > this % from swing low',
-            'extended_run_max_pct_short' : 'Block shorts if price dropped > this % from swing high',
-            'trend_age_penalty_enabled'  : 'Penalise old trends in quality score',
-            'trend_age_max_bars'         : 'Trend older than this gets quality penalty',
-            'trend_age_penalty_pts'      : 'Points deducted from quality for aged trend',
-            'daily_loss_limit_pct'       : 'Halt trading if daily loss exceeds this % of equity',
-            'max_drawdown_limit_pct'     : 'Halt if drawdown from peak exceeds this %',
-            'max_consecutive_losses'     : 'Halt trading after this many consecutive losses',
-            'fuzzy_mode_enabled'         : 'Use adaptive quality thresholds learned from near-misses',
-            'fuzzy_learning_enabled'     : 'Enable continuous learning from near-miss trades',
-            'fuzzy_absolute_min'         : 'Absolute floor — fuzzy mode cannot go below this',
-            'fuzzy_absolute_max'         : 'Absolute ceiling for fuzzy threshold',
-            'fuzzy_default_margin_pct'   : 'Percentage below fixed threshold to start fuzzy zone',
-            'fuzzy_min_confidence'       : 'Minimum confidence for fuzzy entry to fire',
-            'fuzzy_min_samples'          : 'Minimum near-miss samples before fuzzy activates',
-            'trade_direction'            : 'long / short / both',
-            'only_tier1_entries'         : 'When True, only Tier 1 (high-conviction) entries fire',
+            'daily_trend_filter_enabled': 'Only trade longs above daily EMA, shorts below',
+            'daily_ema_period': 'Bars for daily trend EMA (96 × 15min = 24h)',
+            'daily_trend_adx_override': 'ADX level that overrides daily trend filter',
+            'extended_run_lookback': 'Bars to look back for swing high/low',
+            'extended_run_max_pct_long': 'Block longs if price already ran > this % from swing low',
+            'extended_run_max_pct_short': 'Block shorts if price dropped > this % from swing high',
+            'trend_age_penalty_enabled': 'Penalise old trends in quality score',
+            'trend_age_max_bars': 'Trend older than this gets quality penalty',
+            'trend_age_penalty_pts': 'Points deducted from quality for aged trend',
+            'daily_loss_limit_pct': 'Halt trading if daily loss exceeds this % of equity',
+            'max_drawdown_limit_pct': 'Halt if drawdown from peak exceeds this %',
+            'max_consecutive_losses': 'Halt trading after this many consecutive losses',
+            'fuzzy_mode_enabled': 'Use adaptive quality thresholds learned from near-misses',
+            'fuzzy_learning_enabled': 'Enable continuous learning from near-miss trades',
+            'fuzzy_absolute_min': 'Absolute floor — fuzzy mode cannot go below this',
+            'fuzzy_absolute_max': 'Absolute ceiling for fuzzy threshold',
+            'fuzzy_default_margin_pct': 'Percentage below fixed threshold to start fuzzy zone',
+            'fuzzy_min_confidence': 'Minimum confidence for fuzzy entry to fire',
+            'fuzzy_min_samples': 'Minimum near-miss samples before fuzzy activates',
+            'trade_direction': 'long / short / both',
+            'only_tier1_entries': 'When True, only Tier 1 (high-conviction) entries fire',
         }
 
         row = 0
@@ -9270,10 +9493,11 @@ class TradingApp:
                                 ind.config(bg="yellow" if bool(cur) != bool(dv) else "white")
                             except tk.TclError:
                                 pass
+
                         return cb
 
                     custom_var.trace_add('write',
-                        _make_bool_cb(custom_var, custom_widget, indicator, default_value))
+                                         _make_bool_cb(custom_var, custom_widget, indicator, default_value))
                 else:
                     custom_var = tk.StringVar(value=str(custom_value))
                     custom_widget = tk.Entry(
@@ -9287,10 +9511,11 @@ class TradingApp:
                                 w.config(bg="yellow" if v.get() != str(dv) else "white")
                             except tk.TclError:
                                 pass
+
                         return cb
 
                     custom_var.trace_add('write',
-                        _make_str_cb(custom_var, custom_widget, default_value))
+                                         _make_str_cb(custom_var, custom_widget, default_value))
 
                 description = scalping_descriptions.get(param_name, 'Scalping parameter')
                 ttk.Label(scrollable_frame, text=description,
@@ -9299,8 +9524,8 @@ class TradingApp:
 
                 self.scalping_param_widgets[param_name] = {
                     'default': default_entry,
-                    'custom' : custom_var,
-                    'widget' : custom_widget,
+                    'custom': custom_var,
+                    'widget': custom_widget,
                 }
                 row += 1
 
@@ -9467,70 +9692,207 @@ class TradingApp:
             return str(value)
 
     def get_momentum_param_description(self, param_name):
-        """Get description for Momentum parameters - INCLUDES QUALITY SCORE and TIER 2 FILTERS"""
+        """Get description for Momentum parameters - CONSOLIDATED v10.0.5."""
         descriptions = {
+            # ─── EMA ────────────────────────────────────────────────────────
             'ema_fast_period': 'Fast EMA period for short-term trend',
             'ema_mid_period': 'Middle EMA period for medium-term trend',
             'ema_slow_period': 'Slow EMA period for long-term trend',
-            'quality_score_enabled': 'Enable Quality Score system (replaces binary)',
-            'quality_minimum_score': 'Minimum quality score (0-100) to allow entry',
-            'quality_tier1_min': 'Minimum quality score for Tier 1 entries (lower confidence)',
-            'quality_tier2_min': 'Minimum quality score for Tier 2 entries (higher confidence)',
-            # ═══ NEW: IMPROVEMENT 1 DESCRIPTION ═══════════════════════════════
-            'only_tier1_entries': '🔥 IMPROVEMENT 1: Block Tier 1 (Score 2) entries. When True, only Tier 2 entries (score≥88) execute. This addresses the 36% win rate issue with Tier 1 trades.',
-            # ═══ NEW: TIER 2 SPECIFIC FILTER DESCRIPTIONS ═══════════════════
-            'tier2_adx_min': '🎯 TIER 2: Minimum ADX for high-quality entries (lower than Tier 1 hard min). Default: 18',
-            'tier2_volume_min': '🎯 TIER 2: Minimum volume ratio for high-quality entries. Default: 0.9x',
-            'tier2_momentum_min': '🎯 TIER 2: Minimum momentum % for high-quality entries. Default: 0.3%',
-            'tier2_macd_histogram_min': '🎯 TIER 2: Minimum MACD histogram value for entry quality. Default: 0.0001',
-            # ═══ TIER 3 SPECIFIC FILTER DESCRIPTIONS ════════════════════════
+            'ema_near_tolerance': 'Tolerance for EMA near-price condition',
+            'daily_ema_period': 'Daily EMA period for trend filter (bars)',
 
-            'min_bars_between_trades_tier1': 'Minimum bars since last trade before a new TIER 1 entry is allowed. Combined with the blanket min_bars_between_trades via max() — never more permissive than the blanket gate. Default: 4',
-            'min_bars_between_trades_tier2': 'Minimum bars since last trade before a new TIER 2 entry is allowed. Default: 3',
+            # ─── QUALITY THRESHOLDS (CONSOLIDATED) ──────────────────────
+            'quality_tier1_min_long': 'Tier 1 minimum quality score for LONG entries (0-1)',
+            'quality_tier2_min_long': 'Tier 2 minimum quality score for LONG entries (0-1)',
+            'quality_tier1_min_short': 'Tier 1 minimum quality score for SHORT entries (0-1)',
+            'quality_tier2_min_short': 'Tier 2 minimum quality score for SHORT entries (0-1)',
 
-            'tier1_confluence_min': '🎯 Minimum fraction (0-1) of independent confirming signals (EMA stack, MACD momentum, RSI positioning, volume, CCI, Kalman) that must agree with the trade direction for a TIER 1 entry, on top of the quality-score gate. Default: 0.65',
-            'tier2_confluence_min': '🎯 Same confluence check as Tier 1, but for TIER 2 entries. Set higher than Tier 1 to compensate for the lower quality-score bar. Default: 0.70',
+            # ─── WEIGHTS ────────────────────────────────────────────────────
+            'weight_ema': 'EMA component weight (out of 100)',
+            'weight_adx': 'ADX component weight (out of 100)',
+            'weight_macd': 'MACD component weight (out of 100)',
+            'weight_rsi': 'RSI component weight (out of 100)',
+            'weight_volume': 'Volume component weight (out of 100)',
 
-            'tier1_size_multiplier': 'Position size multiplier applied to Tier 1 (Low Risk) entries. Default: 1.0 (full size)',
-            'tier2_size_multiplier': 'Position size multiplier applied to Tier 2 (Medium Risk) entries. Default: 0.70',
+            # ─── TIER CONTROL ──────────────────────────────────────────────
+            'only_tier1_entries': '🔥 When True, blocks Tier 1 entries (only Tier 2 allowed)',
 
-            'tier1_stop_multiplier': 'ATR multiplier used for the stop-loss distance on Tier 1 entries. Default: 2.0',
-            'tier2_stop_multiplier': 'ATR multiplier used for the stop-loss distance on Tier 2 entries. Default: 2.5',
+            # ─── COOLDOWN & CONFLUENCE ─────────────────────────────────────
+            'min_bars_between_trades_tier1': 'Min bars since last trade for TIER 1 entry',
+            'min_bars_between_trades_tier2': 'Min bars since last trade for TIER 2 entry',
+            'cooldown_tier2_enabled': 'Enable Tier 2 cooldown after trades',
+            'tier1_confluence_min': 'Number of confluent signals required for Tier 1 (default: 3)',
+            'tier2_confluence_min': 'Number of confluent signals required for Tier 2 (default: 2)',
 
-            'exit_threshold_tier1': 'Exit-power score below which a Tier 1 trade is closed. Default: 60',
-            'exit_threshold_tier2': 'Exit-power score below which a Tier 2 trade is closed. Default: 50',
+            # ─── TIER 1 LONG ───────────────────────────────────────────────
+            'tier1_adx_hard_min': 'Hard minimum ADX for Tier 1 LONG entries (default: 25)',
+            'tier1_rsi_min': 'Minimum RSI for Tier 1 LONG entries (default: 55)',
+            'tier1_rsi_max': 'Maximum RSI for Tier 1 LONG entries (default: 75)',
+            'tier1_volume_min': 'Minimum volume ratio for Tier 1 LONG entries (default: 1.5)',
+            'tier1_momentum_min': 'Minimum momentum for Tier 1 LONG entries (default: 0.02)',
+            'tier1_kalman_min': 'Minimum Kalman strength for Tier 1 entries',
+            'tier1_macd_gate': 'MACD gate required for Tier 1 entries',
+            'tier1_price_ema_max_pct': 'Maximum price-EMA distance % for Tier 1',
+            'daily_trend_filter_enabled': 'Enable daily trend filter for LONG entries',
+            'pullback_zone_lower_pct': 'Pullback zone lower bound %',
+            'pullback_zone_upper_pct': 'Pullback zone upper bound %',
+            'adx_slope_min': 'Minimum ADX slope (rise per bar)',
 
-            'trailing_activation_tier1': 'Profit % required to arm the trailing stop for Tier 1 trades. Default: 3%',
-            'trailing_activation_tier2': 'Profit % required to arm the trailing stop for Tier 2 trades. Default: 4%',
+            # ─── TIER 1 SHORT ──────────────────────────────────────────────
+            'tier1_adx_hard_min_short': 'Hard minimum ADX for Tier 1 SHORT entries (default: 30)',
+            'tier1_rsi_min_short': 'Minimum RSI for Tier 1 SHORT entries (default: 25)',
+            'tier1_rsi_max_short': 'Maximum RSI for Tier 1 SHORT entries (default: 45)',
+            'tier1_volume_min_short': 'Minimum volume ratio for Tier 1 SHORT entries (default: 1.3)',
+            'tier1_momentum_min_short': 'Minimum momentum for Tier 1 SHORT entries (default: 0.05)',
+            'tier1_macd_gate_short': 'MACD gate required for Tier 1 SHORT entries',
+            'daily_trend_down_filter_enabled': 'Enable daily trend filter for SHORT entries',
 
-            'trailing_distance_tier1': 'Trailing stop distance (from peak) for Tier 1 trades. Default: 2.5%',
-            'trailing_distance_tier2': 'Trailing stop distance (from peak) for Tier 2 trades. Default: 3.5%',
+            # ─── TIER 2 FILTERS ────────────────────────────────────────────
+            'tier2_adx_hard_min': 'Hard minimum ADX for Tier 2 entries (default: 20)',
+            'tier2_volume_min': 'Minimum volume ratio for Tier 2 entries (default: 1.2)',
+            'tier2_momentum_min': 'Minimum momentum for Tier 2 entries (default: 0.01)',
+            'tier2_rsi_min': 'Minimum RSI for Tier 2 LONG entries (default: 50)',
+            'tier2_rsi_max': 'Maximum RSI for Tier 2 LONG entries (default: 70)',
+            'tier2_rsi_min_short': 'Minimum RSI for Tier 2 SHORT entries (default: 30)',
+            'tier2_rsi_max_short': 'Maximum RSI for Tier 2 SHORT entries (default: 50)',
+            'tier2_macd_histogram_min': 'Minimum MACD histogram for Tier 2',
+            'tier2_require_macd_histogram': 'Require MACD histogram for Tier 2',
 
-            # ═══ NEW: IMPROVEMENT 2 & 3 DESCRIPTIONS ════════════════════════
-            'trailing_stop_pct': 'IMP-2: Trailing stop percentage from peak. Widened from 4% → 6%',
-            'trailing_activation_r': 'IMP-2: R-multiple to activate trailing stop. Changed from 2.0 → 3.0',
-            'min_hold_bars_before_stop': 'IMP-3: Minimum bars before hard stop can trigger. Prevents premature stops. Default: 6',
-            'emergency_stop_multiplier': 'IMP-3: Emergency stop multiplier (2x normal) for early bars',
-            # ═══ NEW: IMPROVEMENT 4 DESCRIPTION ═════════════════════════════
-            'cooldown_after_profit_target_bars': 'IMP-4: Bars to wait after profit target exit before new entry. Prevents immediate reversals. Default: 8',
-            'cooldown_after_profit_target_bars': 'IMP-4: Bars to wait after profit target exit',
-            # ═══ PULLBACK ZONE & ADX SLOPE ═══════════════════════════════════
-            'pullback_zone_lower_pct': (
-                'How far below EMA_Fast price can be and still enter (%). '
-                'Default -2.5. Widen to -4.0 or -5.0 to allow deeper pullback entries '
-                '— one of the two biggest levers for increasing trade frequency.'
-            ),
-            'pullback_zone_upper_pct': (
-                'How far above EMA_Fast price can be and still enter (%). '
-                'Default 1.5. Widen to 3.0 or 4.0 to allow more extended entries '
-                '— combined with lower bound, widening both doubles entry frequency.'
-            ),
-            'adx_slope_min': (
-                'Minimum ADX rise per bar required to enter. '
-                'Default 0.1 (strict rising ADX). Set 0.0 to allow flat ADX. '
-                'Set -0.3 or -0.5 to allow slightly declining ADX '
-                '— the second biggest lever for increasing trade frequency.'
-            ),
+            # ─── SIZE/STOP/EXIT/TRAILING ──────────────────────────────────
+            'tier1_size_multiplier': 'Position size multiplier for Tier 1 entries',
+            'tier2_size_multiplier': 'Position size multiplier for Tier 2 entries',
+            'stop_loss_atr_mult': 'ATR multiplier for stop loss (unified for all tiers)',
+            'exit_threshold_tier1': 'Exit-power score below which Tier 1 closes',
+            'exit_threshold_tier2': 'Exit-power score below which Tier 2 closes',
+            'trailing_activation_tier1': 'Profit % to activate trailing stop (Tier 1)',
+            'trailing_activation_tier2': 'Profit % to activate trailing stop (Tier 2)',
+            'trailing_distance_tier1': 'Trailing stop distance from peak (Tier 1)',
+            'trailing_distance_tier2': 'Trailing stop distance from peak (Tier 2)',
+
+            # ─── INDICATORS ─────────────────────────────────────────────────
+            'adx_period': 'ADX calculation period',
+            'rsi_period': 'RSI calculation period',
+            'cci_period': 'CCI calculation period',
+            'atr_period': 'ATR calculation period',
+            'volume_ma_period': 'Volume moving average period',
+            'macd_fast': 'MACD fast period',
+            'macd_slow': 'MACD slow period',
+            'macd_signal': 'MACD signal period',
+            'supertrend_atr_period': 'SuperTrend ATR period',
+            'supertrend_multiplier': 'SuperTrend multiplier',
+            'kalman_q_param': 'Kalman filter process noise Q',
+            'kalman_r_param': 'Kalman filter measurement noise R',
+            'vix_atr_period': 'VIX ATR period',
+            'vix_rolling_period': 'VIX rolling period',
+
+            # ─── RISK ───────────────────────────────────────────────────────
+            'risk_tier1': 'Risk percentage for Tier 1 entries (0.02 = 2%)',
+            'risk_tier2': 'Risk percentage for Tier 2 entries (0.01 = 1%)',
+
+            # ─── BREAKEVEN ──────────────────────────────────────────────────
+            'be_stop_enabled': 'Enable breakeven stop',
+            'be_stop_r_trigger': 'R-multiple to trigger breakeven stop',
+            'be_stop_no_progress_bars': 'Bars with no progress before breakeven',
+
+            # ─── PROFIT TARGETS ─────────────────────────────────────────────
+            'take_profit_r1': 'Profit target R1 (partial exit)',
+            'take_profit_r2': 'Profit target R2 (partial exit)',
+            'take_profit_r3': 'Profit target R3 (full exit)',
+            'profit_target_r1': 'Profit target R1 (alias)',
+            'profit_target_r2': 'Profit target R2 (alias)',
+            'profit_target_r3': 'Profit target R3 (alias)',
+
+            # ─── EXIT CONDITIONS ────────────────────────────────────────────
+            'max_hold_bars': 'Maximum hold bars before exit',
+            'min_hold_bars_before_stop': 'Minimum bars before stop can trigger',
+            'emergency_stop_multiplier': 'Emergency stop multiplier',
+            'macd_bearish_cross_exit': 'Exit on MACD bearish cross',
+            'macd_bearish_cross_profit_min': 'Min profit % for MACD cross exit',
+            'ema_cross_exit': 'Exit on EMA crossover',
+            'rsi_exit_threshold': 'RSI exit threshold',
+            'kalman_fade_threshold': 'Kalman fade threshold',
+            'momentum_reversal_exit': 'Exit on momentum reversal',
+            'momentum_reversal_threshold': 'Momentum reversal threshold',
+            'momentum_reversal_profit_min': 'Min profit for momentum reversal exit',
+            'profit_min_fade': 'Min profit for fade exit',
+            'profit_min_time_exit': 'Min profit for time exit',
+            'profit_min_ma_crossover': 'Min profit for MA crossover exit',
+
+            # ─── COOLDOWN ────────────────────────────────────────────────────
+            'max_daily_trades': 'Maximum trades per day',
+            'min_bars_between_trades': 'Minimum bars between trades (blanket)',
+            'cooldown_after_profit_target_bars': 'Cooldown after profit target',
+            'cooldown_after_loss_bars': 'Cooldown after losing trade',
+            'consecutive_loss_threshold': 'Consecutive losses before extended cooldown',
+            'consecutive_loss_cooldown_bars': 'Extended cooldown after loss streak',
+
+            # ─── PRECISION FILTERS ──────────────────────────────────────────
+            'dmi_spread_min_long': 'DMI spread minimum for LONG',
+            'dmi_spread_min_short': 'DMI spread minimum for SHORT',
+            'ema_trending_bars': 'EMA trending bars required',
+            'macd_hist_rising_bars': 'MACD histogram rising bars required',
+            'rsi_direction_bars': 'RSI direction bars',
+            'rsi_direction_min_move': 'RSI direction minimum move',
+            'macd_hist_positive_required_long': 'MACD histogram positive required for LONG',
+            'macd_hist_negative_required_short': 'MACD histogram negative required for SHORT',
+            'bb_expand_required': 'BB expand required',
+            'time_filter_enabled': 'Time filter enabled',
+            'time_filter_start_utc': 'Time filter start (UTC hour)',
+            'time_filter_end_utc': 'Time filter end (UTC hour)',
+
+            # ─── REGIME ─────────────────────────────────────────────────────
+            'regime_filter_enabled': 'Enable regime filter',
+            'ranging_min_checks': 'Minimum checks for ranging regime',
+            'bb_period': 'Bollinger Band period',
+            'bb_std': 'Bollinger Band standard deviation',
+            'kc_period': 'Keltner Channel period',
+            'kc_atr_mult': 'Keltner Channel ATR multiplier',
+            'chop_period': 'Choppiness Index period',
+            'chop_threshold': 'Choppiness Index threshold',
+            'volatility_scaling': 'Enable volatility scaling',
+            'trade_high_vol': 'Allow trading in high volatility',
+            'trade_ranging': 'Allow trading in ranging markets',
+            'supertrend_exit_enabled': 'Enable SuperTrend exit',
+            'atr_compression_enabled': 'Enable ATR compression filter',
+            'atr_compression_threshold': 'ATR compression threshold',
+            'extended_run_max_pct_long': 'Max extended run % for LONG',
+            'extended_run_max_pct_short': 'Max extended run % for SHORT',
+
+            # ─── PRICE POSITIONING ──────────────────────────────────────────
+            'price_percentile_bonus_early': 'Early entry bonus points',
+            'price_percentile_penalty_late': 'Late entry penalty points',
+            'price_percentile_early_threshold': 'Percentile for early entry',
+            'price_percentile_late_threshold': 'Percentile for late entry',
+            'price_percentile_lookback': 'Lookback for price percentile',
+
+            # ─── ADX SCORING ────────────────────────────────────────────────
+            'adx_score_trend_forming': 'ADX trend forming threshold',
+            'adx_score_good_trend': 'ADX good trend threshold',
+            'adx_score_strong_trend': 'ADX strong trend threshold',
+            'adx_score_very_strong': 'ADX very strong threshold',
+            'adx_score_extended': 'ADX extended threshold',
+
+            # ─── MACD SCORING ────────────────────────────────────────────────
+            'macd_score_line_vs_signal': 'Enable MACD line vs signal scoring',
+            'macd_score_histogram_direction': 'Enable MACD histogram direction scoring',
+            'macd_score_zero_cross': 'Enable MACD zero cross scoring',
+            'macd_score_histogram_value': 'Enable MACD histogram value scoring',
+
+            # ─── FUZZY MODE ─────────────────────────────────────────────────
+            'fuzzy_mode_enabled': 'Enable fuzzy adaptive mode',
+            'fuzzy_learning_enabled': 'Enable fuzzy learning',
+            'fuzzy_safety_cutoffs': 'Enable safety cutoffs for fuzzy mode',
+            'fuzzy_default_margin_pct': 'Fuzzy default margin %',
+            'fuzzy_absolute_min': 'Fuzzy absolute minimum',
+            'fuzzy_absolute_max': 'Fuzzy absolute maximum',
+            'fuzzy_min_confidence': 'Fuzzy minimum confidence',
+            'fuzzy_min_samples': 'Fuzzy minimum samples required',
+            'fuzzy_max_adjustment_pct': 'Fuzzy maximum adjustment %',
+            'fuzzy_learning_rate': 'Fuzzy learning rate',
+            'fuzzy_conservative_start': 'Fuzzy conservative start mode',
+
+            # ─── TRADE DIRECTION ────────────────────────────────────────────
+            'trade_direction': 'Trade direction: long, short, or both',
         }
         return descriptions.get(param_name, 'No description available')
 
@@ -10260,7 +10622,6 @@ class TradingApp:
         total = abs(weighted_green_sum) + abs(weighted_red_sum)
         return (diff / total) * 100 if total != 0 else 0
 
-
     def draw_volume_strength(self, canvas_frame, strength_value):
         for widget in canvas_frame.winfo_children():
             widget.destroy()
@@ -10653,6 +11014,7 @@ class TradingApp:
 
         except Exception as e:
             self.log_message(f"⚠️ Toast notification error: {e}", "orange")
+
     def start_trading(self):
         """Start trading, respecting the per-strategy time window."""
         self.update_status_indicators("parking")
@@ -11848,7 +12210,6 @@ class TradingApp:
                             "green"
                         )
 
-
                     # Check if we've reached or passed the end
                     last_timestamp = filtered_batch[-1][0]
                     if last_timestamp >= end_ms:
@@ -11915,7 +12276,6 @@ class TradingApp:
             self.log_message(f"💾 Data cached at {cache_file}", "blue")
 
         return df
-
 
     def update_trailing_stop(self, current_price):
         if self.position['price'] is None:
@@ -12219,7 +12579,8 @@ class TradingApp:
 
         if has_quality_score and hasattr(self.strategy, '_calculate_quality_score'):
             _eff_dir = getattr(self.strategy, "_pending_signal", None)
-            _eff_dir = _eff_dir.get("direction", "long") if _eff_dir else getattr(self.strategy, "trade_direction", "long")
+            _eff_dir = _eff_dir.get("direction", "long") if _eff_dir else getattr(self.strategy, "trade_direction",
+                                                                                  "long")
             if _eff_dir == "short" and hasattr(self.strategy, "_calculate_quality_score_short"):
                 total_score, component_scores, reason = self.strategy._calculate_quality_score_short(current_data)
             else:
@@ -12602,7 +12963,6 @@ class TradingApp:
             }
         }
 
-
     def log_quality_score_entry(self, entry_price, quantity, quality_score, component_scores):
         self.log_message(f"", "white")
         self.log_message(f"📊 QUALITY SCORE ENTRY DETAILS", "purple")
@@ -12730,7 +13090,6 @@ class TradingApp:
                 self.log_message("✅ Position fully closed via close_partial.", "green")
 
         return success
-
 
     def check_exit_conditions(self, current_data, current_price):
         if self.position['type'] is None:
@@ -12969,30 +13328,16 @@ class TradingApp:
             if not (tier1_risk <= tier2_risk):
                 return False
 
-
-
-
         # ── Quality tier ordering ─────────────────────────────────────────────
         # FIX: Tier 1 is the HIGHER-quality tier (more selective → higher min score).
         #      Tier 2 is the LOWER-quality tier (less selective → lower min score).
         #      Therefore tier1_min MUST be >= tier2_min.
-        #      The old check (t1 <= t2) was inverted and rejected every combination.
         if ('quality_tier1_min' in self.optimization_params_active and
                 'quality_tier2_min' in self.optimization_params_active):
             t1 = get_param(params, 'quality_tier1_min', 72)
             t2 = get_param(params, 'quality_tier2_min', 62)
-            if not (t1 >= t2):  # ← was (t1 <= t2), which is backwards
+            if not (t1 >= t2):
                 return False
-
-        # ── Tier 3 quality ordering: Tier 3 is the LOWEST-quality/highest-risk
-
-        if ('quality_tier2_min' in self.optimization_params_active  in self.optimization_params_active):
-            t2 = get_param(params, 'quality_tier2_min', 62)
-
-
-        if ('short_quality_tier2_min' in self.optimization_params_active  in self.optimization_params_active):
-            st2 = get_param(params, 'short_quality_tier2_min', 65)
-
 
         # ── Short quality tier ordering (same logic) ─────────────────────────
         if ('short_quality_tier1_min' in self.optimization_params_active and
@@ -13153,14 +13498,15 @@ class TradingApp:
         # Log critical parameters that should affect behavior
         critical_params = [
             'only_tier1_entries',
-            'quality_tier2_min',
-            'quality_tier1_min',
+            'quality_tier1_min_long',  # ← REPLACED
+            'quality_tier2_min_long',  # ← REPLACED
+            'quality_tier1_min_short',  # ← ADDED
+            'quality_tier2_min_short',  # ← ADDED
             'tier1_adx_hard_min',
             'tier1_volume_min',
-
             'stop_loss_atr_mult',
-            'trailing_activation_pct',
-            'trailing_distance_pct',
+            'trailing_activation_tier1',  # ← REPLACED
+            'trailing_distance_tier1',  # ← REPLACED
             'trade_direction'
         ]
 
@@ -13168,14 +13514,26 @@ class TradingApp:
         for param in critical_params:
             if param in current_params:
                 value = current_params[param]
-                # Highlight only_tier1_entries specially
                 if param == 'only_tier1_entries':
                     color = "yellow" if value else "green"
                     status = "BLOCKED" if value else "ACTIVE"
-                    self.log_message(f"   {param:25} = {value}  [TIER 1 {status}]", color)
+                    self.log_message(f"   {param:25} = {value}  [TIER 2 {status}]", color)
                 else:
                     self.log_message(f"   {param:25} = {value}", "white")
             else:
+                # Don't flag direction-specific keys as "NOT FOUND" if their opposite exists
+                if param in ['quality_tier1_min_long', 'quality_tier1_min_short',
+                             'quality_tier2_min_long', 'quality_tier2_min_short']:
+                    # Check if the opposite direction key exists
+                    opposite = {
+                        'quality_tier1_min_long': 'quality_tier1_min_short',
+                        'quality_tier1_min_short': 'quality_tier1_min_long',
+                        'quality_tier2_min_long': 'quality_tier2_min_short',
+                        'quality_tier2_min_short': 'quality_tier2_min_long',
+                    }.get(param)
+                    if opposite in current_params:
+                        # Not an error — just the other direction is set
+                        continue
                 self.log_message(f"   {param:25} = NOT FOUND", "red")
 
         # Show if parameters were injected into backtest class
@@ -13185,13 +13543,16 @@ class TradingApp:
             if BacktestMomentumStrategy._updated_params:
                 self.log_message(f"   Parameters in backtest class: {len(BacktestMomentumStrategy._updated_params)}",
                                  "cyan")
+                # Check both directions
                 if 'only_tier1_entries' in BacktestMomentumStrategy._updated_params:
                     bt_value = BacktestMomentumStrategy._updated_params['only_tier1_entries']
                     self.log_message(f"   Backtest only_tier1_entries = {bt_value}",
                                      "yellow" if bt_value else "green")
+                for key in ['quality_tier1_min_long', 'quality_tier1_min_short']:
+                    if key in BacktestMomentumStrategy._updated_params:
+                        self.log_message(f"   Backtest {key} = {BacktestMomentumStrategy._updated_params[key]}", "cyan")
 
         self.log_message("=" * 70, "yellow")
-
         return current_params
 
     def _set_initial_cash(self, cash):
@@ -14147,7 +14508,6 @@ class TradingApp:
             current_value = self._get_current_param_value(param_key)
             return [current_value] if current_value is not None else []
 
-
     def _convert_value(self, value_str):
         """Convert string to appropriate numeric type"""
         try:
@@ -14498,11 +14858,9 @@ class TradingApp:
                         # quality_tier1_min = 75  (highest bar, checked first)
                         # quality_tier2_min = 65
 
-
                         if hasattr(self, 'strategy') and self.strategy is not None:
                             quality_tier1_min = getattr(self.strategy, 'quality_tier1_min', 72)  # v9.4.2: was 75
                             quality_tier2_min = getattr(self.strategy, 'quality_tier2_min', 62)  # v9.4.2: was 88
-
 
                         # Check if Quality_Score column exists
                         if 'Quality_Score' in df.columns:
@@ -15062,6 +15420,19 @@ class TradingApp:
                 summary_df.to_excel(writer, sheet_name='Summary', index=False)
                 sheets_created += 1
 
+                # ─── DIAGNOSTIC: why entries were skipped (esp. useful for 0/low-trade runs) ═══
+                if strategy_instance and hasattr(strategy_instance, 'get_hold_reason_summary'):
+                    hold_summary = strategy_instance.get_hold_reason_summary(top_n=40)
+                    if hold_summary:
+                        rejections_df = pd.DataFrame(
+                            hold_summary, columns=['Reason (bucketed)', 'Bar Count', '% of Bars Checked'])
+                        rejections_df.to_excel(writer, sheet_name='Entry_Rejections', index=False)
+                        sheets_created += 1
+                        top_reason, top_count, top_pct = hold_summary[0]
+                        self.log_message(
+                            f"🔍 TOP REJECTION REASON: '{top_reason}' blocked {top_count} bars ({top_pct}% of bars checked) "
+                            f"— see 'Entry_Rejections' sheet for the full breakdown", "orange")
+
                 writer.close()
 
                 file_size_kb = os.path.getsize(filename) / 1024
@@ -15111,11 +15482,9 @@ class TradingApp:
                     # quality_tier1_min = 75 (highest bar, checked first)
                     # quality_tier2_min = 65
 
-
                     if hasattr(self, 'strategy') and self.strategy is not None:
                         quality_tier1_min = getattr(self.strategy, 'quality_tier1_min', 72)  # v9.4.2: was 75
                         quality_tier2_min = getattr(self.strategy, 'quality_tier2_min', 62)  # v9.4.2: was 88
-
 
                     # Fix Tier based on Quality_Score
                     # NOTE: Tier 1 is the highest/most-selective bar, so it must
@@ -15524,9 +15893,9 @@ class TradingApp:
             #   side='sell' + long position    → close long
             current_pos_type = self.position.get('type')  # None, 'long', or 'short'
             is_opening_short = (side == 'sell' and current_pos_type is None)
-            is_closing_short = (side == 'buy'  and current_pos_type == 'short')
-            is_closing_long  = (side == 'sell' and current_pos_type == 'long')
-            is_opening_long  = (side == 'buy'  and current_pos_type is None)
+            is_closing_short = (side == 'buy' and current_pos_type == 'short')
+            is_closing_long = (side == 'sell' and current_pos_type == 'long')
+            is_opening_long = (side == 'buy' and current_pos_type is None)
 
             if side == 'buy':
                 if is_closing_short:
@@ -15857,11 +16226,12 @@ class TradingApp:
                 log_color = "green" if net_pnl > 0 else "red"
                 direction_label = "SHORT CLOSE" if (pos_type == 'short' or is_close_short) else "SELL"
                 timestamp_str = timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')
-                log_msg = (f"[{timestamp_str}] 🔴 {direction_label} {quantity:.4f} {self.base_symbol()} @ ${price:.4f} | "
-                           f"Entry: ${entry_price:.4f} | "
-                           f"Gross: ${gross_pnl:.2f} | "
-                           f"Net: ${net_pnl:.2f} ({pnl_pct:.2f}%) | "
-                           f"Duration: {duration:.1f}m")
+                log_msg = (
+                    f"[{timestamp_str}] 🔴 {direction_label} {quantity:.4f} {self.base_symbol()} @ ${price:.4f} | "
+                    f"Entry: ${entry_price:.4f} | "
+                    f"Gross: ${gross_pnl:.2f} | "
+                    f"Net: ${net_pnl:.2f} ({pnl_pct:.2f}%) | "
+                    f"Duration: {duration:.1f}m")
 
                 if self.mode_var.get().lower() == "backtest":
                     self.virtual_balance['USDT'] += (price * quantity) - total_commission
@@ -16223,7 +16593,6 @@ class TradingApp:
         self.log_message(f"   Tier 1 Volume Min: {params.get('tier1_volume_min', 1.0)}x", "white")
         self.log_message(f"\n   Tier 2 ADX Min: {params.get('tier2_adx_min', 15)}", "white")
         self.log_message(f"   Tier 2 Volume Min: {params.get('tier2_volume_min', 0.6)}x", "white")
-
 
         self.log_message(f"\n📈 PRICE POSITIONING:", "cyan")
         early_bonus = params.get('price_percentile_bonus_early', 15)
