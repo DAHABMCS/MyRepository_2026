@@ -240,7 +240,7 @@ class TradingApp:
         self.current_data = None
         self.current_status = "parking"
         self.root = root
-        self.root.title("v8.0-Multi-Layered Trading (MACD) Hybrid Score")
+        self.root.title("v10.0-Multi-Layered Trading (MACD) Hybrid Score Claude")
         self.running = False
         self.trailing_stop = None
         self.highest_since_buy = None
@@ -720,101 +720,6 @@ class TradingApp:
     # CORE TRADING METHODS
     # ═══════════════════════════════════════════════════════════════════════
 
-    def stop_trading(self):
-        """Stop the trading loop and clean up state."""
-        if not self.running:
-            self.log_message("⚠️ Trading is not currently running.", "orange")
-            return
-        self.running = False
-        self.trading_running = False
-        self._cancel_scheduled_trading()
-        if hasattr(self, 'timer') and self.timer:
-            try:
-                self.timer.stop()
-            except Exception:
-                pass
-        if hasattr(self, 'start_btn') and self.start_btn:
-            self.start_btn.config(state=tk.NORMAL)
-        if hasattr(self, 'stop_btn') and self.stop_btn:
-            self.stop_btn.config(state=tk.DISABLED)
-        self.update_mode_display(self.mode_var.get())
-        self.update_status_indicators("parking")
-        self.log_message("🛑 Trading stopped.", "orange")
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty('rate', 135)
-            engine.say("Trading stopped")
-            engine.runAndWait()
-        except Exception:
-            pass
-        self.play_notification("tick")
-        self.update_stats()
-
-    def predict_future_trend(self, n_future: int = 5):
-        """
-        Use the current ML model to predict the trend for the next n_future candles.
-        Returns (predictions: list, confidence: float).
-        """
-        if not self.ml_enabled or self.current_ml_model is None:
-            return [], 0.0
-        if not getattr(self.current_ml_model, 'is_trained', False):
-            return [], 0.0
-        df = self.get_market_data()
-        if df is None or df.empty:
-            return [], 0.0
-        try:
-            if hasattr(self.strategy, 'calculate_indicators'):
-                df = self.strategy.calculate_indicators(df)
-            conf, prediction, _ = self.current_ml_model.predict(df, n_future)
-            confidence = float(conf) if conf <= 1.0 else float(conf) / 100.0
-            if prediction == 1:
-                predictions = ['bullish'] * n_future
-            elif prediction == -1:
-                predictions = ['bearish'] * n_future
-            else:
-                predictions = ['neutral'] * n_future
-            return predictions, confidence
-        except Exception as e:
-            self.log_message(f"⚠️ predict_future_trend error: {e}", "orange")
-            return [], 0.0
-
-    def close_partial(self, fraction: float = 0.5):
-        """Close a fraction of the current position (0 < fraction <= 1)."""
-        if self.position.get('type') is None or self.position.get('quantity') is None:
-            self.log_message("⚠️ close_partial: no open position.", "orange")
-            return False
-        if not (0 < fraction <= 1):
-            self.log_message(f"❌ close_partial: invalid fraction {fraction}", "red")
-            return False
-        qty_to_close = self.position['quantity'] * fraction
-        current_price = self.get_current_price()
-        if current_price is None:
-            if self.current_data is not None:
-                current_price = float(self.current_data.get('Close', 0))
-        if not current_price:
-            self.log_message("❌ close_partial: cannot determine price.", "red")
-            return False
-        self.log_message(
-            f"📤 Partial close: {fraction * 100:.0f}% "
-            f"({qty_to_close:.4f} units) @ ${current_price:.4f}", "blue")
-        success = self.place_order(
-            'sell', current_price, quantity=qty_to_close,
-            exit_reason='partial_profit_target')
-        if success:
-            remaining = self.position['quantity'] - qty_to_close
-            if remaining > 1e-8:
-                self.position['quantity'] = remaining
-                self.log_message(
-                    f"✅ Partial close complete. Remaining: {remaining:.4f}", "green")
-            else:
-                self.position = {
-                    'type': None, 'price': None, 'quantity': None, 'time': None,
-                    'stop_loss': None, 'trailing_stop': None, 'entry_confidence': None
-                }
-                self.update_status_indicators("parking")
-                self.log_message("✅ Position fully closed via close_partial.", "green")
-        return success
-
     def _save_trading_time_config(self, settings: dict):
         """Inject trading-time windows into a settings dict before writing to disk."""
         time_cfg = {}
@@ -1182,6 +1087,28 @@ class TradingApp:
         self.log_message(error_msg, "red")
         raise ValueError(error_msg)
 
+    def _get_builtin_defaults(self):
+        """
+        Minimal emergency fallback used ONLY if strategies.MomentumStrategy_MACD_HybridScore_Claude
+        cannot be imported at all (e.g. the file is missing or has a syntax error). This is NOT
+        a full parameter set -- it exists so the app can start and warn the user instead of
+        crashing with an AttributeError. Fix the import error and restart as soon as possible;
+        do not rely on these values for live trading.
+        """
+        self.log_message(
+            "⚠️ Using minimal built-in defaults -- MOMENTUM_PARAMS could not be imported. "
+            "Trading with this strategy is not recommended until the import error is fixed.",
+            "red")
+        return {
+            'trade_direction': 'both',
+            'risk_tier1': 0.025,
+            'risk_tier2': 0.015,
+            'quality_tier1_min_long': 75,
+            'quality_tier2_min_long': 65,
+            'quality_tier1_min_short': 75,
+            'quality_tier2_min_short': 65,
+        }
+
     def get_default_momentum_params(self):
         try:
             from strategies.MomentumStrategy_MACD_HybridScore_Claude import MOMENTUM_PARAMS
@@ -1431,602 +1358,6 @@ class TradingApp:
     #   4. create_kalman_parameter_controls()   — _add_time_settings_button hook
     #   5. create_scalping_parameter_controls() — _add_time_settings_button hook
     # ───────────────────────────────────────────────────────────────────────
-
-    def _execute_ai_analysis(self):
-        """Run DeepSeek AI analysis — works in backtest AND demo/live mode."""
-        try:
-            analysis_type = self.ai_analysis_type.get()
-            depth = self.analysis_depth_var.get()
-
-            self._update_ai_progress(5, "Gathering market data...")
-
-            mode = self.mode_var.get().lower()
-            df = None
-
-            # ── Step 1: use cached backtest DataFrame if available ──────────
-            if mode == "backtest":
-                cached = getattr(self, '_last_backtest_df', None)
-                if cached is not None and not cached.empty:
-                    df = cached.copy()
-                    df = self._normalize_ohlcv_columns(df)
-                    self.log_message("📊 AI: Using cached backtest DataFrame", "blue")
-                else:
-                    self.log_message(
-                        "📊 AI: No cached backtest data — fetching fresh data...", "blue")
-
-            # ── Step 2: fallback — call get_market_data() ───────────────────
-            if df is None:
-                df = self.get_market_data()
-                if df is not None and not df.empty:
-                    df = self._normalize_ohlcv_columns(df)
-
-            # ── Step 3: hard-fail ────────────────────────────────────────────
-            if df is None or df.empty:
-                self._ai_error(
-                    "No market data available.\n\n"
-                    "• Backtest mode  : run a backtest first, then click AI Analysis.\n"
-                    "                   The button activates automatically once data\n"
-                    "                   has been fetched.\n\n"
-                    "• Demo/Live mode : click 'Check Connection', wait for\n"
-                    "                   'Connection successful', then try again.")
-                return
-
-            # ── Step 4: calculate indicators ─────────────────────────────────
-            self._update_ai_progress(15, "Calculating indicators...")
-            if hasattr(self.strategy, 'calculate_indicators'):
-                try:
-                    enriched = self.strategy.calculate_indicators(df)
-                    if enriched is not None and not enriched.empty:
-                        df = enriched
-                        df = self._normalize_ohlcv_columns(df)
-                except Exception as e:
-                    self.log_message(
-                        f"⚠️ Indicator calc failed — using raw OHLCV: {e}", "orange")
-
-            if 'Close' not in df.columns:
-                self._ai_error(
-                    "Market data is missing a 'Close' column after indicator calculation.\n\n"
-                    "Try switching to Default Parameters and re-running "
-                    "the backtest before clicking AI Analysis.")
-                return
-
-            # ── Step 5: build summary & prompt ──────────────────────────────
-            self._update_ai_progress(25, "Preparing data summary...")
-            data_summary = self._prepare_ai_data_summary(df, depth)
-            trade_summary = self._prepare_trade_history_summary()
-
-            self._update_ai_progress(35, "Building analysis prompt...")
-            prompt = self._build_ai_prompt(analysis_type, data_summary, trade_summary)
-
-            try:
-                if df is not None and len(df) >= 2 and 'Close' in df.columns:
-                    last_completed = df.iloc[-2]
-                    current_dict = (last_completed.to_dict()
-                                    if hasattr(last_completed, 'to_dict')
-                                    else dict(last_completed))
-                    snapshot = dict(current_dict)
-                    self.root.after(0,
-                                    lambda s=snapshot: self._display_market_snapshot(s))
-            except Exception as e:
-                self.log_message(
-                    f"⚠️ Could not display market snapshot: {e}", "orange")
-
-            self._update_ai_progress(45, "Sending to DeepSeek AI...")
-
-            # ── Step 6: check dependencies & API key ────────────────────────
-            try:
-                import openai as _oi  # noqa: F401
-                openai_ok = True
-            except ImportError:
-                openai_ok = False
-
-            if not openai_ok:
-                self._update_ai_progress(100, "OpenAI not installed — local analysis")
-                self._display_ai_response(
-                    self._generate_local_analysis(analysis_type), analysis_type)
-                return
-
-            if not self._check_api_key():
-                self._update_ai_progress(100, "No API key — local analysis")
-                self._display_ai_response(
-                    self._generate_local_analysis(analysis_type), analysis_type)
-                return
-
-            # ── Step 7: call DeepSeek ────────────────────────────────────────
-            reasoning, response = self._call_deepseek_api(prompt, analysis_type)
-
-            if response and not response.startswith("❌"):
-                self._update_ai_progress(90, "Formatting results...")
-                self._display_ai_response(response, analysis_type)
-                self._update_ai_progress(100, "Analysis complete!")
-            else:
-                if response and response.startswith("❌"):
-                    self.log_message(f"🔴 DeepSeek API error: {response}", "red")
-                else:
-                    self.log_message("🔴 DeepSeek API returned empty response", "red")
-                self._update_ai_progress(50, "API unavailable — local analysis...")
-                self._display_ai_response(
-                    self._generate_local_analysis(analysis_type), analysis_type)
-                self._update_ai_progress(100, "Local analysis complete")
-
-        except Exception as e:
-            self._ai_error(f"Analysis error: {e}")
-            import traceback
-            print(traceback.format_exc())
-        finally:
-            self.root.after(
-                0,
-                lambda: self.run_ai_btn.config(
-                    state='normal', text="🚀 Run AI Analysis"),
-            )
-
-    def create_momentum_parameter_controls(self, parent):
-        """Create parameter controls for Momentum strategy with CONSOLIDATED TIER SYSTEM."""
-        # ── Trading Hours button ─────────────────────────────────────────
-        self._add_time_settings_button(parent, "Momentum")
-
-        paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        screen_width = parent.winfo_screenwidth()
-
-        left_width = int(screen_width * 0.65)
-        right_width = int(screen_width * 0.35)
-
-        left_frame = ttk.Frame(paned, width=left_width)
-        right_frame = ttk.LabelFrame(
-            paned,
-            text="Backtest Optimization Parameters",
-            width=right_width
-        )
-
-        paned.add(left_frame, weight=65)
-        paned.add(right_frame, weight=35)
-
-        headers_frame = ttk.Frame(left_frame)
-        headers_frame.pack(fill='x', padx=5, pady=(5, 0), side=tk.TOP)
-        headers_frame.columnconfigure(0, weight=0, minsize=250)
-        headers_frame.columnconfigure(1, weight=0, minsize=120)
-        headers_frame.columnconfigure(2, weight=0, minsize=120)
-        headers_frame.columnconfigure(3, weight=1, minsize=350)
-
-        header_style = ('Arial', 10, 'bold')
-        ttk.Label(headers_frame, text="Parameter", font=header_style, anchor='w').grid(row=0, column=0, padx=5, pady=8,
-                                                                                       sticky='w')
-        ttk.Label(headers_frame, text="📌 Default Value", font=header_style, anchor='w').grid(row=0, column=1, padx=5,
-                                                                                             pady=8, sticky='w')
-        ttk.Label(headers_frame, text="✏️ Custom Value", font=header_style, anchor='w').grid(row=0, column=2, padx=5,
-                                                                                             pady=8, sticky='w')
-        ttk.Label(headers_frame, text="Description", font=header_style, anchor='w').grid(row=0, column=3, padx=5,
-                                                                                         pady=8, sticky='w')
-        ttk.Separator(headers_frame, orient='horizontal').grid(row=1, column=0, columnspan=4, sticky='ew', padx=5,
-                                                               pady=(0, 5))
-
-        content_frame = ttk.Frame(left_frame)
-        content_frame.pack(fill='both', expand=True, padx=5, pady=5, side=tk.TOP)
-
-        canvas = tk.Canvas(content_frame, bg='white', highlightthickness=0)
-        scrollbar = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        default_params = self.get_default_momentum_params()
-        self.momentum_param_widgets = {}
-
-        # ═══════════════════════════════════════════════════════════════════
-        # CONSOLIDATED CATEGORIES — v10.0.5
-        # All obsolete/duplicate parameters removed
-        # ═══════════════════════════════════════════════════════════════════
-        categories = {
-            # ─── EMA ──────────────────────────────────────────────────────
-            '📊 EMA Parameters': [
-                'ema_fast_period', 'ema_mid_period', 'ema_slow_period',
-                'ema_near_tolerance', 'daily_ema_period',
-            ],
-
-            # ─── QUALITY THRESHOLDS (CONSOLIDATED) ──────────────────────
-            '🎯 LONG Quality Thresholds': [
-                'quality_tier1_min_long',
-                'quality_tier2_min_long',
-            ],
-            '🎯 SHORT Quality Thresholds': [
-                'quality_tier1_min_short',
-                'quality_tier2_min_short',
-            ],
-
-            # ─── WEIGHTS ──────────────────────────────────────────────────
-            '📊 Quality Component Weights (total=100)': [
-                'weight_ema', 'weight_adx', 'weight_macd', 'weight_rsi', 'weight_volume',
-            ],
-
-            # ─── TIER CONTROL ─────────────────────────────────────────────
-            '🎯 TIER CONTROL': [
-                'only_tier1_entries',
-            ],
-
-            # ─── COOLDOWN & CONFLUENCE ──────────────────────────────────
-            '⏱️ TIER COOLDOWN & CONFLUENCE': [
-                'min_bars_between_trades_tier1',
-                'min_bars_between_trades_tier2',
-                'cooldown_tier2_enabled',
-                'tier1_confluence_min',
-                'tier2_confluence_min',
-            ],
-
-            # ─── TIER 1 LONG FILTERS ────────────────────────────────────
-            '⬆️ TIER 1 LONG FILTERS': [
-                'tier1_adx_hard_min_long',
-                'tier1_rsi_min_long',
-                'tier1_rsi_max_long',
-                'tier1_volume_min_long',
-                'tier1_momentum_min',
-                'tier1_macd_gate_long',
-                'tier1_price_ema_max_pct',
-                'daily_trend_filter_enabled',
-                'pullback_zone_lower_pct',
-                'pullback_zone_upper_pct',
-                'adx_slope_min',
-            ],
-
-            # ─── TIER 1 SHORT FILTERS ───────────────────────────────────
-            # Note: tier1_momentum_min is shared with LONG (sign-flipped internally),
-            # so it is not repeated here.
-            '⬇️ TIER 1 SHORT FILTERS': [
-                'tier1_adx_hard_min_short',
-                'tier1_rsi_min_short',
-                'tier1_rsi_max_short',
-                'tier1_volume_min_short',
-                'tier1_macd_gate_short',
-                'daily_trend_down_filter_enabled',
-            ],
-
-            # ─── TIER 2 FILTERS ──────────────────────────────────────────
-            '🎯 TIER 2 FILTERS': [
-                'tier2_adx_hard_min',
-                'tier2_volume_min',
-                'tier2_momentum_min',
-                'tier2_rsi_min_long',
-                'tier2_rsi_max_long',
-                'tier2_rsi_min_short',
-                'tier2_rsi_max_short',
-                'tier2_macd_histogram_min',
-                'tier2_require_macd_histogram',
-            ],
-
-            # ─── SIZE / STOP / EXIT / TRAILING (CONSOLIDATED) ──────────
-            '🎯 TIER SIZE / EXIT / TRAILING': [
-                'tier1_size_multiplier',
-                'tier2_size_multiplier',
-                'stop_loss_atr_mult',          # UNIFIED — removed tier-specific
-                'exit_threshold_tier1',
-                'exit_threshold_tier2',
-                'trailing_activation_tier1',
-                'trailing_activation_tier2',
-                'trailing_distance_tier1',
-                'trailing_distance_tier2',
-            ],
-
-            # ─── INDICATOR PERIODS ──────────────────────────────────────
-            '🔬 Indicator Periods': [
-                'adx_period', 'rsi_period', 'cci_period', 'atr_period',
-                'volume_ma_period', 'macd_fast', 'macd_slow', 'macd_signal',
-                'supertrend_atr_period', 'supertrend_multiplier',
-                'kalman_q_param', 'kalman_r_param', 'vix_atr_period', 'vix_rolling_period',
-            ],
-
-            # ─── RISK MANAGEMENT (CONSOLIDATED) ─────────────────────────
-            '🛡️ Risk Management': [
-                'risk_tier1',
-                'risk_tier2',
-            ],
-
-            # ─── BREAKEVEN STOP ──────────────────────────────────────────
-            '🔒 BREAKEVEN STOP': [
-                'be_stop_enabled',
-                'be_stop_r_trigger',
-                'be_stop_no_progress_bars',
-            ],
-
-            # ─── PROFIT TARGETS (CONSOLIDATED) ──────────────────────────
-            '💰 Profit Targets': [
-                'take_profit_r1',
-                'take_profit_r2',
-                'take_profit_r3',
-            ],
-
-            # ─── EXIT CONDITIONS (CONSOLIDATED) ─────────────────────────
-            '📉 Exit Conditions': [
-                'max_hold_bars',
-                'min_hold_bars_before_stop',
-                'emergency_stop_multiplier',
-                'macd_bearish_cross_exit',
-                'macd_bearish_cross_profit_min',
-                'ema_cross_exit',
-                'rsi_exit_threshold',
-                'kalman_fade_threshold',
-                'momentum_reversal_exit',
-                'momentum_reversal_threshold',
-                'momentum_reversal_profit_min',
-            ],
-
-            # ─── COOLDOWN & TRADE MANAGEMENT ────────────────────────────
-            '⏱️ COOLDOWN & TRADE MANAGEMENT': [
-                'max_daily_trades',
-                'min_bars_between_trades',
-                'cooldown_after_profit_target_bars',
-                'cooldown_after_loss_bars',
-                'consecutive_loss_threshold',
-                'consecutive_loss_cooldown_bars',
-            ],
-
-            # ─── PRECISION FILTERS (CONSOLIDATED) ──────────────────────
-            '🔬 PRECISION FILTERS': [
-                'ema_trending_bars',
-                'macd_hist_rising_bars',
-                'rsi_direction_bars',
-                'rsi_direction_min_move',
-            ],
-
-            # ─── REGIME & STRATEGY CONTROL (CONSOLIDATED) ──────────────
-            '⚙️ Regime & Strategy Control': [
-                'regime_filter_enabled',
-                'ranging_min_checks',
-                'bb_period', 'bb_std',
-                'kc_period', 'kc_atr_mult',
-                'chop_period', 'chop_threshold',
-                'volatility_scaling',
-                'atr_compression_enabled',
-                'atr_compression_threshold',
-                'extended_run_max_pct_long',
-                'extended_run_max_pct_short',
-            ],
-
-            # ─── PRICE POSITIONING ──────────────────────────────────────
-            '📊 PRICE POSITIONING': [
-                'price_percentile_bonus_early',
-                'price_percentile_penalty_late',
-                'price_percentile_early_threshold',
-                'price_percentile_late_threshold',
-                'price_percentile_lookback',
-            ],
-
-            # ─── ADX SCORING ─────────────────────────────────────────────
-            '📈 ADX SCORING BANDS': [
-                'adx_score_trend_forming',
-                'adx_score_good_trend',
-                'adx_score_strong_trend',
-                'adx_score_very_strong',
-                'adx_score_extended',
-            ],
-
-            # ─── MACD SCORING ─────────────────────────────────────────────
-            '📉 MACD SCORING': [
-                'macd_score_line_vs_signal',
-                'macd_score_histogram_direction',
-                'macd_score_zero_cross',
-                'macd_score_histogram_value',
-            ],
-
-            # ─── FUZZY MODE ──────────────────────────────────────────────
-            '🧠 FUZZY MODE SETTINGS': [
-                'fuzzy_mode_enabled',
-                'fuzzy_learning_enabled',
-                'fuzzy_safety_cutoffs',
-                'fuzzy_default_margin_pct',
-                'fuzzy_absolute_min',
-                'fuzzy_absolute_max',
-                'fuzzy_min_confidence',
-                'fuzzy_min_samples',
-                'fuzzy_max_adjustment_pct',
-                'fuzzy_learning_rate',
-                'fuzzy_conservative_start',
-            ],
-
-            # ─── TRADE DIRECTION ──────────────────────────────────────────
-            '🎯 Trade Direction': [
-                'trade_direction',
-            ],
-        }
-
-        row = 0
-        for category, params in categories.items():
-            ttk.Separator(scrollable_frame, orient='horizontal').grid(row=row, column=0, columnspan=4, sticky='ew',
-                                                                      pady=(10, 5), padx=5)
-            row += 1
-            ttk.Label(scrollable_frame, text=category, font=('Arial', 11, 'bold')).grid(row=row, column=0, columnspan=4,
-                                                                                        sticky='w', padx=5, pady=5)
-            row += 1
-            for param_name in params:
-                if param_name in default_params:
-                    for col, minw in enumerate([250, 120, 120, 350]):
-                        scrollable_frame.columnconfigure(col, weight=0 if col < 3 else 1, minsize=minw)
-                    label_text = param_name.replace('_', ' ').title()
-                    ttk.Label(scrollable_frame, text=label_text, anchor='w').grid(row=row, column=0, padx=5, pady=2,
-                                                                                  sticky='w')
-                    default_value = default_params[param_name]
-                    default_display = ("✓ Enabled" if default_value else "✗ Disabled") if isinstance(default_value,
-                                                                                                     bool) else str(
-                        default_value)
-                    default_entry = ttk.Entry(scrollable_frame, width=15)
-                    default_entry.insert(0, default_display)
-                    default_entry.config(state='readonly')
-                    default_entry.grid(row=row, column=1, padx=5, pady=2, sticky='w')
-                    custom_value = self.custom_params['momentum'].get(param_name, default_value)
-                    if isinstance(default_value, bool):
-                        custom_var = tk.BooleanVar(value=custom_value)
-                        custom_entry = ttk.Checkbutton(scrollable_frame, variable=custom_var,
-                                                       text="Enable" if custom_value else "Disable")
-                        custom_entry.grid(row=row, column=2, padx=5, pady=2, sticky='w')
-                        bool_indicator = tk.Label(scrollable_frame, text="●", width=2,
-                                                  bg="yellow" if bool(custom_value) != bool(default_value) else "white")
-                        bool_indicator.grid(row=row, column=2, padx=(100, 0), pady=2, sticky='w')
-
-                        def _make_bool_callbacks(v, w, txt_widget, indicator, def_val):
-                            def _update_text(*_):
-                                try:
-                                    current = v.get()
-                                    txt_widget.config(text="Enable" if current else "Disable")
-                                    indicator.config(bg="yellow" if bool(current) != bool(def_val) else "white")
-                                except tk.TclError:
-                                    pass
-
-                            return _update_text
-
-                        custom_var.trace_add('write', _make_bool_callbacks(custom_var, custom_entry, custom_entry,
-                                                                           bool_indicator, default_value))
-                    else:
-                        custom_var = tk.StringVar(value=str(custom_value))
-                        custom_entry = tk.Entry(scrollable_frame, textvariable=custom_var, width=15,
-                                                bg="yellow" if str(custom_value) != str(default_value) else "white")
-                        custom_entry.grid(row=row, column=2, padx=5, pady=2, sticky='w')
-
-                        def _make_str_callback(v, widget, def_val):
-                            def _highlight(*_):
-                                try:
-                                    widget.config(bg="yellow" if v.get() != str(def_val) else "white")
-                                except tk.TclError:
-                                    pass
-
-                            return _highlight
-
-                        custom_var.trace_add('write', _make_str_callback(custom_var, custom_entry, default_value))
-                    description = self.get_momentum_param_description(param_name)
-                    ttk.Label(scrollable_frame, text=description, wraplength=400, anchor='w',
-                              foreground='#555555').grid(row=row, column=3, padx=5, pady=2, sticky='w')
-                    self.momentum_param_widgets[param_name] = {'default': default_entry, 'custom': custom_var,
-                                                               'widget': custom_entry}
-                    row += 1
-
-        self._build_backtest_optimization_panel(right_frame)
-
-    def create_kalman_parameter_controls(self, parent):
-        """Create parameter controls for Kalman strategy."""
-        # ── Trading Hours button ─────────────────────────────────────────
-        self._add_time_settings_button(parent, "Kalman")
-
-        paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        left_frame = ttk.Frame(paned, width=600)
-        paned.add(left_frame, weight=2)
-        right_frame = ttk.LabelFrame(paned, text="Backtest Optimization Parameters", width=400)
-        paned.add(right_frame, weight=1)
-
-        headers_frame = ttk.Frame(left_frame)
-        headers_frame.pack(fill='x', padx=5, pady=(5, 0), side=tk.TOP)
-        for col, (text, minw) in enumerate(
-                [("Parameter", 250), ("📌 Default Value", 120), ("✏️ Custom Value", 120), ("Description", 350)]):
-            headers_frame.columnconfigure(col, weight=0 if col < 3 else 1, minsize=minw)
-            ttk.Label(headers_frame, text=text, font=('Arial', 10, 'bold'), anchor='w').grid(row=0, column=col, padx=5,
-                                                                                             pady=8, sticky='w')
-        ttk.Separator(headers_frame, orient='horizontal').grid(row=1, column=0, columnspan=4, sticky='ew', padx=5,
-                                                               pady=(0, 5))
-
-        content_frame = ttk.Frame(left_frame)
-        content_frame.pack(fill='both', expand=True, padx=5, pady=5, side=tk.TOP)
-        canvas = tk.Canvas(content_frame, bg='white', highlightthickness=0)
-        scrollbar = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        default_params = self.get_default_kalman_params()
-        self.kalman_param_widgets = {}
-
-        categories = {
-            '🔬 Kalman Filter': ['process_noise_1', 'process_noise_2', 'measurement_noise', 'trend_lookback',
-                                'strength_smooth'],
-            '📊 Strategy Configuration': ['risk_reward', 'lookback', 'window', 'strength_smooth_param'],
-            '📈 Moving Averages': ['ma_fast_period', 'ma_slow_period'],
-            '🎯 Entry Conditions': ['kalman_strength_min', 'rsi_min', 'rsi_max', 'volume_min_ratio', 'pullback_percent'],
-            '🛡️ Risk Management': ['stop_loss_pct', 'trailing_stop_pct', 'atr_multiplier', 'risk_per_trade',
-                                   'max_position_pct'],
-            '📉 Exit Conditions': ['rsi_exit_threshold', 'max_hold_bars', 'max_hold_seconds'],
-            '🌐 Market Filters': ['min_adx', 'min_volatility', 'cooldown_bars'],
-        }
-
-        row = 0
-        for category, params in categories.items():
-            ttk.Separator(scrollable_frame, orient='horizontal').grid(row=row, column=0, columnspan=4, sticky='ew',
-                                                                      pady=(10, 5), padx=5)
-            row += 1
-            ttk.Label(scrollable_frame, text=category, font=('Arial', 11, 'bold')).grid(row=row, column=0, columnspan=4,
-                                                                                        sticky='w', padx=5, pady=5)
-            row += 1
-            for param_name in params:
-                if param_name in default_params:
-                    for col, minw in enumerate([250, 120, 120, 350]):
-                        scrollable_frame.columnconfigure(col, weight=0 if col < 3 else 1, minsize=minw)
-                    ttk.Label(scrollable_frame, text=param_name.replace('_', ' ').title(), anchor='w').grid(row=row,
-                                                                                                            column=0,
-                                                                                                            padx=5,
-                                                                                                            pady=2,
-                                                                                                            sticky='w')
-                    default_value = str(default_params[param_name])
-                    default_entry = ttk.Entry(scrollable_frame, width=15)
-                    default_entry.insert(0, default_value)
-                    default_entry.config(state='readonly')
-                    default_entry.grid(row=row, column=1, padx=5, pady=2, sticky='w')
-                    custom_value = str(self.custom_params['kalman'].get(param_name, default_value))
-                    custom_var = tk.StringVar(value=custom_value)
-                    custom_entry = ttk.Entry(scrollable_frame, textvariable=custom_var, width=15)
-                    custom_entry.grid(row=row, column=2, padx=5, pady=2, sticky='w')
-                    description = self.get_kalman_param_description(param_name)
-                    ttk.Label(scrollable_frame, text=description, wraplength=400, anchor='w',
-                              foreground='#555555').grid(row=row, column=3, padx=5, pady=2, sticky='w')
-                    self.kalman_param_widgets[param_name] = {'default': default_entry, 'custom': custom_var,
-                                                             'widget': custom_entry}
-                    row += 1
-
-        self._build_backtest_optimization_panel(right_frame)
-
-    def create_scalping_parameter_controls(self, parent):
-        """Create parameter controls for Scalping strategy."""
-        # ── Trading Hours button ─────────────────────────────────────────
-        self._add_time_settings_button(parent, "Scalping")
-
-        paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        left_frame = ttk.Frame(paned, width=600)
-        paned.add(left_frame, weight=2)
-        right_frame = ttk.LabelFrame(paned, text="Backtest Optimization Parameters", width=500)
-        paned.add(right_frame, weight=1)
-
-        headers_frame = ttk.Frame(left_frame)
-        headers_frame.pack(fill='x', padx=5, pady=(5, 0), side=tk.TOP)
-        for col, (text, minw) in enumerate(
-                [("Parameter", 250), ("📌 Default Value", 120), ("✏️ Custom Value", 120), ("Description", 350)]):
-            headers_frame.columnconfigure(col, weight=0 if col < 3 else 1, minsize=minw)
-            ttk.Label(headers_frame, text=text, font=('Arial', 10, 'bold'), anchor='w').grid(row=0, column=col, padx=5,
-                                                                                             pady=8, sticky='w')
-        ttk.Separator(headers_frame, orient='horizontal').grid(row=1, column=0, columnspan=4, sticky='ew', padx=5,
-                                                               pady=(0, 5))
-
-        content_frame = ttk.Frame(left_frame)
-        content_frame.pack(fill='both', expand=True, padx=5, pady=5, side=tk.TOP)
-        canvas = tk.Canvas(content_frame, bg='white', highlightthickness=0)
-        scrollbar = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        canvas.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
-
-        default_params = self.get_default_scalping_params()
-        self.scalping_param_widgets = {}
-
-        # (Full scalping categories and parameter widgets — identical to original)
-        # All original scalping parameter rows preserved here unchanged.
-
-        self._build_scalping_backtest_optimization_panel(right_frame)
 
     def create_widgets(self):
         print(f"DEBUG: create_widgets() called")
@@ -2488,6 +1819,24 @@ class TradingApp:
         ttk.Entry(date_frame, textvariable=self.start_date_var, width=10).pack(side=tk.LEFT)
         ttk.Label(date_frame, text="-").pack(side=tk.LEFT, padx=2)
         ttk.Entry(date_frame, textvariable=self.end_date_var, width=10).pack(side=tk.LEFT)
+
+        # Best Param Values button — runs strategies/Best_Param_Values.py standalone
+        self.best_param_btn = tk.Button(
+            date_frame,
+            text="🏆 Best Params",
+            command=self.run_best_param_values,
+            bg="#6f42c1",
+            fg="white",
+            activebackground="#59339d",
+            activeforeground="white",
+            font=("Arial", 8, "bold"),
+            relief="raised",
+            bd=2,
+            cursor="hand2",
+            padx=6,
+            pady=1
+        )
+        self.best_param_btn.pack(side=tk.LEFT, padx=(8, 0))
 
         # Monte Carlo Options Frame (Collapsible)
         self.monte_carlo_options_frame = ttk.LabelFrame(self.backtest_controls_frame, text="MC Settings", padding=2)
@@ -3047,34 +2396,6 @@ class TradingApp:
                 if hasattr(self, 'ai_status_label'):
                     self.ai_status_label.config(text="❌ API connection failed")
                 self.log_message("❌ API reconnection failed", "red")
-
-    def _ai_error(self, message):
-        """Display AI error in the results window"""
-
-        def show_error():
-            if hasattr(self, 'ai_results_text'):
-                self.ai_results_text.delete(1.0, tk.END)
-                self.ai_results_text.insert(tk.END, f"\n❌ ERROR\n{'─' * 60}\n\n", "bearish")
-                self.ai_results_text.insert(tk.END, f"{message}\n\n", "warning")
-                self.ai_results_text.insert(tk.END, "Please check:\n", "info")
-                self.ai_results_text.insert(tk.END, "  • API key is configured in config.json\n", "info")
-                self.ai_results_text.insert(tk.END, "  • Internet connection is active\n", "info")
-                self.ai_results_text.insert(tk.END, "  • Market data is available\n", "info")
-
-            if hasattr(self, 'ai_progress_var'):
-                self.ai_progress_var.set(0)
-
-            if hasattr(self, 'ai_status_label'):
-                self.ai_status_label.config(text="Error occurred")
-
-            if hasattr(self, 'run_ai_btn'):
-                self.run_ai_btn.config(state=tk.NORMAL, text="🚀 Run AI Analysis")
-
-        self.root.after(0, show_error)
-
-    def _update_ai_status(self, status):
-        if hasattr(self, 'ai_status_label'):
-            self.ai_status_label.config(text=status)
 
     def _check_api_key(self) -> bool:
         """Check if DeepSeek API key is configured"""
@@ -6051,9 +5372,6 @@ class TradingApp:
                 'tier1_macd_gate_long',
                 'tier1_price_ema_max_pct',
                 'daily_trend_filter_enabled',
-                'pullback_zone_lower_pct',
-                'pullback_zone_upper_pct',
-                'adx_slope_min',
             ],
             # Note: tier1_momentum_min is shared with LONG (sign-flipped internally),
             # so it is not repeated here.
@@ -6089,9 +5407,7 @@ class TradingApp:
             ],
             '🔬 Indicator Periods': [
                 'adx_period', 'rsi_period', 'cci_period', 'atr_period',
-                'volume_ma_period', 'macd_fast', 'macd_slow', 'macd_signal',
-                'supertrend_atr_period', 'supertrend_multiplier',
-                'kalman_q_param', 'kalman_r_param', 'vix_atr_period', 'vix_rolling_period',
+                'macd_fast', 'macd_slow', 'macd_signal',
             ],
             '🛡️ Risk Management': [
                 'risk_tier1',
@@ -6114,11 +5430,6 @@ class TradingApp:
                 'macd_bearish_cross_exit',
                 'macd_bearish_cross_profit_min',
                 'ema_cross_exit',
-                'rsi_exit_threshold',
-                'kalman_fade_threshold',
-                'momentum_reversal_exit',
-                'momentum_reversal_threshold',
-                'momentum_reversal_profit_min',
             ],
             '⏱️ COOLDOWN & TRADE MANAGEMENT': [
                 'max_daily_trades',
@@ -6129,8 +5440,6 @@ class TradingApp:
                 'consecutive_loss_cooldown_bars',
             ],
             '🔬 PRECISION FILTERS': [
-                'ema_trending_bars',
-                'macd_hist_rising_bars',
                 'rsi_direction_bars',
                 'rsi_direction_min_move',
             ],
@@ -6140,25 +5449,13 @@ class TradingApp:
                 'bb_period', 'bb_std',
                 'kc_period', 'kc_atr_mult',
                 'chop_period', 'chop_threshold',
-                'volatility_scaling',
                 'atr_compression_enabled',
                 'atr_compression_threshold',
                 'extended_run_max_pct_long',
                 'extended_run_max_pct_short',
             ],
             '📊 PRICE POSITIONING': [
-                'price_percentile_bonus_early',
-                'price_percentile_penalty_late',
-                'price_percentile_early_threshold',
-                'price_percentile_late_threshold',
                 'price_percentile_lookback',
-            ],
-            '📈 ADX SCORING BANDS': [
-                'adx_score_trend_forming',
-                'adx_score_good_trend',
-                'adx_score_strong_trend',
-                'adx_score_very_strong',
-                'adx_score_extended',
             ],
             '📉 MACD SCORING': [
                 'macd_score_line_vs_signal',
@@ -6168,8 +5465,6 @@ class TradingApp:
             ],
             '🧠 FUZZY MODE SETTINGS': [
                 'fuzzy_mode_enabled',
-                'fuzzy_learning_enabled',
-                'fuzzy_safety_cutoffs',
                 'fuzzy_default_margin_pct',
                 'fuzzy_absolute_min',
                 'fuzzy_absolute_max',
@@ -6527,47 +5822,6 @@ class TradingApp:
 
         self._sc_update_count()
 
-    def _sc_update_count(self):
-        """Update Scalping optimization selection counter."""
-        if hasattr(self, 'sc_selection_label') and self.sc_selection_label.winfo_exists():
-            count = sum(1 for p in self.scalping_backtest_params.values() if p['active'].get())
-            color = 'red' if count > 10 else 'green' if count > 0 else 'blue'
-            self.sc_selection_label.config(text=f"Selected: {count}", foreground=color)
-
-    def _sc_select_all(self):
-        for p in self.scalping_backtest_params.values():
-            p['active'].set(True)
-        self._sc_update_count()
-
-    def _sc_deselect_all(self):
-        for p in self.scalping_backtest_params.values():
-            p['active'].set(False)
-        self._sc_update_count()
-
-    def _get_scalping_param_value(self, param_key):
-        """Get current value for a scalping param (UI → custom_params → SCALPING_PARAMS)."""
-        # Layer 1: live scalping param widgets
-        if hasattr(self, 'scalping_param_widgets') and param_key in self.scalping_param_widgets:
-            try:
-                cvar = self.scalping_param_widgets[param_key]['custom']
-                if isinstance(cvar, tk.BooleanVar):
-                    return cvar.get()
-                raw = cvar.get()
-                if raw not in ('', None):
-                    return self.convert_param_value(raw)
-            except Exception:
-                pass
-        # Layer 2: saved custom
-        val = self.custom_params.get('scalping', {}).get(param_key)
-        if val is not None:
-            return val
-        # Layer 3: SCALPING_PARAMS defaults
-        try:
-            from strategies.scalping_strategy import SCALPING_PARAMS
-            return SCALPING_PARAMS.get(param_key)
-        except ImportError:
-            return None
-
     def _build_backtest_optimization_panel(self, right_frame):
         """
         Build the right-panel backtest optimization parameter UI.
@@ -6635,13 +5889,13 @@ class TradingApp:
         current_params = self.get_current_momentum_params()
 
         # ═══════════════════════════════════════════════════════════════════
-        # ALL_MOMENTUM_BACKTEST_PARAMS - UPDATED v9.5.0
-        # REMOVED: generic/old parameters (quality_tier1_min, tier2_adx_min, etc.)
-        # ADDED: tier-specific parameters (_long/_short suffixed)
+        # ALL_MOMENTUM_BACKTEST_PARAMS - UPDATED v10.0.7
+        # REMOVED: obsolete params (tier1_adx_hard_min, tier1_volume_min, stop_loss_atr_mult)
+        # ADDED: direction-specific stop multipliers
         # ═══════════════════════════════════════════════════════════════════
         ALL_MOMENTUM_BACKTEST_PARAMS = {
             # ──────────────────────────────────────────────────────────────
-            # QUALITY THRESHOLDS (UPDATED: tier-specific)
+            # QUALITY THRESHOLDS (tier-specific)
             # ──────────────────────────────────────────────────────────────
             'quality_tier1_min_long': {
                 'description': 'Tier 1 Min Score (LONG)',
@@ -6722,7 +5976,7 @@ class TradingApp:
             },
 
             # ──────────────────────────────────────────────────────────────
-            # TIER 1 LONG FILTERS
+            # TIER 1 LONG FILTERS (direction-specific)
             # ──────────────────────────────────────────────────────────────
             'tier1_adx_hard_min_long': {
                 'description': 'Tier 1 ADX Hard Min (LONG)',
@@ -6754,24 +6008,9 @@ class TradingApp:
                 'current': current_params.get('tier1_price_ema_max_pct', 1.5),
                 'v1': '1.0', 'v2': '1.5', 'v3': '2.0', 'v4': '3.0'
             },
-            'pullback_zone_lower_pct': {
-                'description': 'Pullback Zone Lower %',
-                'current': current_params.get('pullback_zone_lower_pct', -2.5),
-                'v1': '-3.0', 'v2': '-2.5', 'v3': '-2.0', 'v4': '-1.5'
-            },
-            'pullback_zone_upper_pct': {
-                'description': 'Pullback Zone Upper %',
-                'current': current_params.get('pullback_zone_upper_pct', 1.5),
-                'v1': '1.0', 'v2': '1.5', 'v3': '2.0', 'v4': '3.0'
-            },
-            'adx_slope_min': {
-                'description': 'ADX Slope Min',
-                'current': current_params.get('adx_slope_min', 0.1),
-                'v1': '-0.2', 'v2': '0.0', 'v3': '0.1', 'v4': '0.2'
-            },
 
             # ──────────────────────────────────────────────────────────────
-            # TIER 1 SHORT FILTERS (UPDATED)
+            # TIER 1 SHORT FILTERS (direction-specific)
             # ──────────────────────────────────────────────────────────────
             'tier1_adx_hard_min_short': {
                 'description': 'Tier 1 ADX Hard Min (SHORT)',
@@ -6794,10 +6033,9 @@ class TradingApp:
                 'v1': '1.0', 'v2': '1.2', 'v3': '1.3', 'v4': '1.5'
             },
             # Note: tier1_momentum_min is shared with LONG (sign-flipped internally),
-            # so it is not duplicated here.
 
             # ──────────────────────────────────────────────────────────────
-            # TIER 2 FILTERS (UPDATED)
+            # TIER 2 FILTERS
             # ──────────────────────────────────────────────────────────────
             'tier2_adx_hard_min': {
                 'description': 'Tier 2 ADX Hard Min',
@@ -6860,7 +6098,7 @@ class TradingApp:
             },
 
             # ──────────────────────────────────────────────────────────────
-            # RISK MANAGEMENT (UPDATED)
+            # RISK MANAGEMENT
             # ──────────────────────────────────────────────────────────────
             'risk_tier1': {
                 'description': 'Tier 1 Risk %',
@@ -6884,13 +6122,32 @@ class TradingApp:
             },
 
             # ──────────────────────────────────────────────────────────────
-            # STOP LOSS & TRAILING (UPDATED)
+            # STOP LOSS (direction-specific) - REPLACED stop_loss_atr_mult
             # ──────────────────────────────────────────────────────────────
-            'stop_loss_atr_mult': {
-                'description': 'Stop Loss ATR Mult (all tiers)',
-                'current': current_params.get('stop_loss_atr_mult', 2.0),
+            'tier1_stop_multiplier_long': {
+                'description': 'Tier 1 Stop Mult (LONG)',
+                'current': current_params.get('tier1_stop_multiplier_long', 2.0),
                 'v1': '1.5', 'v2': '2.0', 'v3': '2.5', 'v4': '3.0'
             },
+            'tier1_stop_multiplier_short': {
+                'description': 'Tier 1 Stop Mult (SHORT)',
+                'current': current_params.get('tier1_stop_multiplier_short', 3.0),
+                'v1': '2.0', 'v2': '2.5', 'v3': '3.0', 'v4': '4.0'
+            },
+            'tier2_stop_multiplier_long': {
+                'description': 'Tier 2 Stop Mult (LONG)',
+                'current': current_params.get('tier2_stop_multiplier_long', 2.5),
+                'v1': '2.0', 'v2': '2.5', 'v3': '3.0', 'v4': '3.5'
+            },
+            'tier2_stop_multiplier_short': {
+                'description': 'Tier 2 Stop Mult (SHORT)',
+                'current': current_params.get('tier2_stop_multiplier_short', 3.5),
+                'v1': '3.0', 'v2': '3.5', 'v3': '4.0', 'v4': '4.5'
+            },
+
+            # ──────────────────────────────────────────────────────────────
+            # TRAILING STOP
+            # ──────────────────────────────────────────────────────────────
             'trailing_activation_tier1': {
                 'description': 'Trail Activation % (Tier 1)',
                 'current': current_params.get('trailing_activation_tier1', 0.03),
@@ -6910,21 +6167,6 @@ class TradingApp:
                 'description': 'Trailing Distance % (Tier 2)',
                 'current': current_params.get('trailing_distance_tier2', 0.01),
                 'v1': '0.008', 'v2': '0.01', 'v3': '0.015', 'v4': '0.02'
-            },
-            'trailing_stop_atr_mult': {
-                'description': 'Trailing Stop ATR Mult',
-                'current': current_params.get('trailing_stop_atr_mult', 6.5),
-                'v1': '5.0', 'v2': '5.5', 'v3': '6.0', 'v4': '6.5'
-            },
-            'trailing_stop_pct': {
-                'description': 'Trailing Stop %',
-                'current': current_params.get('trailing_stop_pct', 0.06),
-                'v1': '0.04', 'v2': '0.05', 'v3': '0.06', 'v4': '0.08'
-            },
-            'trailing_activation_r': {
-                'description': 'Trail Activation R',
-                'current': current_params.get('trailing_activation_r', 3.0),
-                'v1': '2.0', 'v2': '2.5', 'v3': '3.0', 'v4': '3.5'
             },
 
             # ──────────────────────────────────────────────────────────────
@@ -6958,11 +6200,6 @@ class TradingApp:
                 'description': 'MACD Bearish Cross Min Profit %',
                 'current': current_params.get('macd_bearish_cross_profit_min', 2.5),
                 'v1': '1.5', 'v2': '2.0', 'v3': '2.5', 'v4': '3.0'
-            },
-            'kalman_fade_threshold': {
-                'description': 'Kalman Fade Threshold',
-                'current': current_params.get('kalman_fade_threshold', 35),
-                'v1': '25', 'v2': '30', 'v3': '35', 'v4': '40'
             },
 
             # ──────────────────────────────────────────────────────────────
@@ -6998,7 +6235,8 @@ class TradingApp:
                 'v1': '8', 'v2': '10', 'v3': '12', 'v4': '15'
             },
 
-            # ──────────────────────────────────────────────────────────────        # FUZZY MODE
+            # ──────────────────────────────────────────────────────────────
+            # FUZZY MODE
             # ──────────────────────────────────────────────────────────────
             'fuzzy_default_margin_pct': {
                 'description': 'Fuzzy Margin %',
@@ -8467,66 +7705,6 @@ class TradingApp:
             except Exception as e:
                 self.log_message(f"❌ Error resetting backtest params: {e}", "red")
 
-    def _get_param_values(self, param_key):
-        """
-        Get values for a parameter:
-        - If ACTIVE: Returns the 4 values for optimization (grid search)
-        - If INACTIVE: Returns SINGLE value (current/default) as a list
-
-        This ensures inactive parameters are FIXED during optimization.
-        """
-        if param_key not in self.backtest_params:
-            return []
-
-        param_data = self.backtest_params[param_key]
-
-        # =========================================================
-        # CASE 1: Parameter is ACTIVE - return 4 values for optimization
-        # =========================================================
-        if param_data['active'].get():
-            values = []
-            for v in ['value1', 'value2', 'value3', 'value4']:
-                val = param_data[v].get()
-                if val and val != '':
-                    # Convert type based on content
-                    if isinstance(val, str):
-                        if val.lower() == 'true':
-                            val = True
-                        elif val.lower() == 'false':
-                            val = False
-                        elif '.' in val:
-                            try:
-                                val = float(val)
-                            except ValueError:
-                                pass
-                        else:
-                            try:
-                                val = int(val)
-                            except ValueError:
-                                pass
-                    values.append(val)
-
-            # Remove duplicates while preserving order
-            seen = set()
-            unique_values = []
-            for v in values:
-                if v not in seen:
-                    seen.add(v)
-                    unique_values.append(v)
-
-            # Ensure we have at least one value
-            if not unique_values:
-                unique_values = [False]
-
-            return unique_values
-
-        # =========================================================
-        # CASE 2: Parameter is INACTIVE - return SINGLE current value
-        # =========================================================
-        else:
-            current_value = self._get_current_param_value(param_key)
-            return [current_value] if current_value is not None else []
-
     def _get_current_param_value(self, param_key):
         """
         Get the current/default value for an inactive parameter.
@@ -8534,6 +7712,7 @@ class TradingApp:
         1. Live strategy instance (highest - reflects UI changes)
         2. Custom params (saved settings)
         3. MOMENTUM_PARAMS defaults (code defaults)
+        4. Hardcoded fallbacks
         """
         # =========================================================
         # PRIORITY 1: Get from live Momentum strategy
@@ -8587,33 +7766,39 @@ class TradingApp:
             'weight_volume': 12,
 
             # Risk
-            'stop_loss_atr_mult': 2.2,
-            'trailing_activation_pct': 0.04,
-            'trailing_distance_pct': 0.035,
             'risk_tier1': 0.02,
             'risk_tier2': 0.025,
 
-            # Entry filters
+            # Direction-specific stop multipliers
+            'tier1_stop_multiplier_long': 2.0,
+            'tier1_stop_multiplier_short': 3.0,
+            'tier2_stop_multiplier_long': 2.5,
+            'tier2_stop_multiplier_short': 3.5,
+
+            # Trailing stops
+            'trailing_activation_tier1': 0.04,
+            'trailing_activation_tier2': 0.035,
+            'trailing_distance_tier1': 0.035,
+            'trailing_distance_tier2': 0.030,
+
+            # Entry filters - LONG (direction-specific)
             'tier1_adx_hard_min_long': 20,
             'tier1_rsi_min_long': 44,
             'tier1_rsi_max_long': 64,
             'tier1_volume_min_long': 1.0,
             'tier1_momentum_min': 0.02,
 
-            # Short filters
+            # Entry filters - SHORT (direction-specific)
             'tier1_adx_hard_min_short': 28,
             'tier1_rsi_min_short': 34,
             'tier1_rsi_max_short': 54,
             'tier1_volume_min_short': 1.3,
-            # tier1_momentum_min above is shared (sign-flipped for SHORT)
 
             # Tier 2
             'tier2_adx_hard_min': 18,
             'tier2_volume_min': 0.8,
             'tier1_size_multiplier': 1.0,
             'tier2_size_multiplier': 0.70,
-            'tier1_stop_multiplier': 2.0,
-            'tier2_stop_multiplier': 2.5,
             'min_bars_between_trades': 4,
             'min_bars_between_trades_tier1': 4,
             'min_bars_between_trades_tier2': 3,
@@ -8621,10 +7806,9 @@ class TradingApp:
             'tier1_confluence_min': 0.65,
             'tier2_confluence_min': 0.70,
 
-            # Trade management - FIX: ADD max_daily_trades HERE
+            # Trade management
             'only_tier1_entries': False,
-            'max_daily_trades': 15,  # ← ADD THIS
-            'min_bars_between_trades': 5,
+            'max_daily_trades': 15,
             'max_hold_bars': 150,
             'cooldown_after_profit_target_bars': 2,
             'cooldown_after_loss_bars': 12,
@@ -8636,6 +7820,9 @@ class TradingApp:
             # Fuzzy
             'fuzzy_default_margin_pct': 10,
             'fuzzy_absolute_min': 45,
+
+            # Direction
+            'trade_direction': 'both',
         }
 
         return fallbacks.get(param_key, None)
@@ -9126,7 +8313,7 @@ class TradingApp:
             return str(value)
 
     def get_momentum_param_description(self, param_name):
-        """Get description for Momentum parameters - CONSOLIDATED v10.0.5."""
+        """Get description for Momentum parameters - CONSOLIDATED v10.0.7."""
         descriptions = {
             # ─── EMA ────────────────────────────────────────────────────────
             'ema_fast_period': 'Fast EMA period for short-term trend',
@@ -9135,7 +8322,7 @@ class TradingApp:
             'ema_near_tolerance': 'Tolerance for EMA near-price condition',
             'daily_ema_period': 'Daily EMA period for trend filter (bars)',
 
-            # ─── QUALITY THRESHOLDS (CONSOLIDATED) ──────────────────────
+            # ─── QUALITY THRESHOLDS ──────────────────────────────────────
             'quality_tier1_min_long': 'Tier 1 minimum quality score for LONG entries (0-1)',
             'quality_tier2_min_long': 'Tier 2 minimum quality score for LONG entries (0-1)',
             'quality_tier1_min_short': 'Tier 1 minimum quality score for SHORT entries (0-1)',
@@ -9155,45 +8342,45 @@ class TradingApp:
             'min_bars_between_trades_tier1': 'Min bars since last trade for TIER 1 entry',
             'min_bars_between_trades_tier2': 'Min bars since last trade for TIER 2 entry',
             'cooldown_tier2_enabled': 'Enable Tier 2 cooldown after trades',
-            'tier1_confluence_min': 'Number of confluent signals required for Tier 1 (default: 3)',
-            'tier2_confluence_min': 'Number of confluent signals required for Tier 2 (default: 2)',
+            'tier1_confluence_min': 'Number of confluent signals required for Tier 1',
+            'tier2_confluence_min': 'Number of confluent signals required for Tier 2',
 
             # ─── TIER 1 LONG ───────────────────────────────────────────────
-            'tier1_adx_hard_min_long': 'Hard minimum ADX for Tier 1 LONG entries (default: 25)',
-            'tier1_rsi_min_long': 'Minimum RSI for Tier 1 LONG entries (default: 55)',
-            'tier1_rsi_max_long': 'Maximum RSI for Tier 1 LONG entries (default: 75)',
-            'tier1_volume_min_long': 'Minimum volume ratio for Tier 1 LONG entries (default: 1.5)',
-            'tier1_momentum_min': 'Minimum momentum for Tier 1 entries, shared LONG/SHORT and sign-flipped (default: 0.02)',
+            'tier1_adx_hard_min_long': 'Hard minimum ADX for Tier 1 LONG entries',
+            'tier1_rsi_min_long': 'Minimum RSI for Tier 1 LONG entries',
+            'tier1_rsi_max_long': 'Maximum RSI for Tier 1 LONG entries',
+            'tier1_volume_min_long': 'Minimum volume ratio for Tier 1 LONG entries',
+            'tier1_momentum_min': 'Minimum momentum for Tier 1 entries (shared, sign-flipped for SHORT)',
             'tier1_macd_gate_long': 'MACD gate required for Tier 1 entries',
             'tier1_price_ema_max_pct': 'Maximum price-EMA distance % for Tier 1',
             'daily_trend_filter_enabled': 'Enable daily trend filter for LONG entries',
-            'pullback_zone_lower_pct': 'Pullback zone lower bound %',
-            'pullback_zone_upper_pct': 'Pullback zone upper bound %',
-            'adx_slope_min': 'Minimum ADX slope (rise per bar)',
 
             # ─── TIER 1 SHORT ──────────────────────────────────────────────
-            'tier1_adx_hard_min_short': 'Hard minimum ADX for Tier 1 SHORT entries (default: 30)',
-            'tier1_rsi_min_short': 'Minimum RSI for Tier 1 SHORT entries (default: 25)',
-            'tier1_rsi_max_short': 'Maximum RSI for Tier 1 SHORT entries (default: 45)',
-            'tier1_volume_min_short': 'Minimum volume ratio for Tier 1 SHORT entries (default: 1.3)',
+            'tier1_adx_hard_min_short': 'Hard minimum ADX for Tier 1 SHORT entries',
+            'tier1_rsi_min_short': 'Minimum RSI for Tier 1 SHORT entries',
+            'tier1_rsi_max_short': 'Maximum RSI for Tier 1 SHORT entries',
+            'tier1_volume_min_short': 'Minimum volume ratio for Tier 1 SHORT entries',
             'tier1_macd_gate_short': 'MACD gate required for Tier 1 SHORT entries',
             'daily_trend_down_filter_enabled': 'Enable daily trend filter for SHORT entries',
 
             # ─── TIER 2 FILTERS ────────────────────────────────────────────
-            'tier2_adx_hard_min': 'Hard minimum ADX for Tier 2 entries (default: 20)',
-            'tier2_volume_min': 'Minimum volume ratio for Tier 2 entries (default: 1.2)',
-            'tier2_momentum_min': 'Minimum momentum for Tier 2 entries (default: 0.01)',
-            'tier2_rsi_min_long': 'Minimum RSI for Tier 2 LONG entries (default: 50)',
-            'tier2_rsi_max_long': 'Maximum RSI for Tier 2 LONG entries (default: 70)',
-            'tier2_rsi_min_short': 'Minimum RSI for Tier 2 SHORT entries (default: 30)',
-            'tier2_rsi_max_short': 'Maximum RSI for Tier 2 SHORT entries (default: 50)',
+            'tier2_adx_hard_min': 'Hard minimum ADX for Tier 2 entries',
+            'tier2_volume_min': 'Minimum volume ratio for Tier 2 entries',
+            'tier2_momentum_min': 'Minimum momentum for Tier 2 entries',
+            'tier2_rsi_min_long': 'Minimum RSI for Tier 2 LONG entries',
+            'tier2_rsi_max_long': 'Maximum RSI for Tier 2 LONG entries',
+            'tier2_rsi_min_short': 'Minimum RSI for Tier 2 SHORT entries',
+            'tier2_rsi_max_short': 'Maximum RSI for Tier 2 SHORT entries',
             'tier2_macd_histogram_min': 'Minimum MACD histogram for Tier 2',
             'tier2_require_macd_histogram': 'Require MACD histogram for Tier 2',
 
             # ─── SIZE/STOP/EXIT/TRAILING ──────────────────────────────────
             'tier1_size_multiplier': 'Position size multiplier for Tier 1 entries',
             'tier2_size_multiplier': 'Position size multiplier for Tier 2 entries',
-            'stop_loss_atr_mult': 'ATR multiplier for stop loss (unified for all tiers)',
+            'tier1_stop_multiplier_long': 'Tier 1 ATR multiplier for LONG stops (stop below entry)',
+            'tier1_stop_multiplier_short': 'Tier 1 ATR multiplier for SHORT stops (stop above entry)',
+            'tier2_stop_multiplier_long': 'Tier 2 ATR multiplier for LONG stops (stop below entry)',
+            'tier2_stop_multiplier_short': 'Tier 2 ATR multiplier for SHORT stops (stop above entry)',
             'exit_threshold_tier1': 'Exit-power score below which Tier 1 closes',
             'exit_threshold_tier2': 'Exit-power score below which Tier 2 closes',
             'trailing_activation_tier1': 'Profit % to activate trailing stop (Tier 1)',
@@ -9210,12 +8397,6 @@ class TradingApp:
             'macd_fast': 'MACD fast period',
             'macd_slow': 'MACD slow period',
             'macd_signal': 'MACD signal period',
-            'supertrend_atr_period': 'SuperTrend ATR period',
-            'supertrend_multiplier': 'SuperTrend multiplier',
-            'kalman_q_param': 'Kalman filter process noise Q',
-            'kalman_r_param': 'Kalman filter measurement noise R',
-            'vix_atr_period': 'VIX ATR period',
-            'vix_rolling_period': 'VIX rolling period',
 
             # ─── RISK ───────────────────────────────────────────────────────
             'risk_tier1': 'Risk percentage for Tier 1 entries (0.02 = 2%)',
@@ -9230,9 +8411,6 @@ class TradingApp:
             'take_profit_r1': 'Profit target R1 (partial exit)',
             'take_profit_r2': 'Profit target R2 (partial exit)',
             'take_profit_r3': 'Profit target R3 (full exit)',
-            'profit_target_r1': 'Profit target R1 (alias)',
-            'profit_target_r2': 'Profit target R2 (alias)',
-            'profit_target_r3': 'Profit target R3 (alias)',
 
             # ─── EXIT CONDITIONS ────────────────────────────────────────────
             'max_hold_bars': 'Maximum hold bars before exit',
@@ -9242,13 +8420,6 @@ class TradingApp:
             'macd_bearish_cross_profit_min': 'Min profit % for MACD cross exit',
             'ema_cross_exit': 'Exit on EMA crossover',
             'rsi_exit_threshold': 'RSI exit threshold',
-            'kalman_fade_threshold': 'Kalman fade threshold',
-            'momentum_reversal_exit': 'Exit on momentum reversal',
-            'momentum_reversal_threshold': 'Momentum reversal threshold',
-            'momentum_reversal_profit_min': 'Min profit for momentum reversal exit',
-            'profit_min_fade': 'Min profit for fade exit',
-            'profit_min_time_exit': 'Min profit for time exit',
-            'profit_min_ma_crossover': 'Min profit for MA crossover exit',
 
             # ─── COOLDOWN ────────────────────────────────────────────────────
             'max_daily_trades': 'Maximum trades per day',
@@ -9259,18 +8430,8 @@ class TradingApp:
             'consecutive_loss_cooldown_bars': 'Extended cooldown after loss streak',
 
             # ─── PRECISION FILTERS ──────────────────────────────────────────
-            'dmi_spread_min_long': 'DMI spread minimum for LONG',
-            'dmi_spread_min_short': 'DMI spread minimum for SHORT',
-            'ema_trending_bars': 'EMA trending bars required',
-            'macd_hist_rising_bars': 'MACD histogram rising bars required',
             'rsi_direction_bars': 'RSI direction bars',
             'rsi_direction_min_move': 'RSI direction minimum move',
-            'macd_hist_positive_required_long': 'MACD histogram positive required for LONG',
-            'macd_hist_negative_required_short': 'MACD histogram negative required for SHORT',
-            'bb_expand_required': 'BB expand required',
-            'time_filter_enabled': 'Time filter enabled',
-            'time_filter_start_utc': 'Time filter start (UTC hour)',
-            'time_filter_end_utc': 'Time filter end (UTC hour)',
 
             # ─── REGIME ─────────────────────────────────────────────────────
             'regime_filter_enabled': 'Enable regime filter',
@@ -9281,10 +8442,6 @@ class TradingApp:
             'kc_atr_mult': 'Keltner Channel ATR multiplier',
             'chop_period': 'Choppiness Index period',
             'chop_threshold': 'Choppiness Index threshold',
-            'volatility_scaling': 'Enable volatility scaling',
-            'trade_high_vol': 'Allow trading in high volatility',
-            'trade_ranging': 'Allow trading in ranging markets',
-            'supertrend_exit_enabled': 'Enable SuperTrend exit',
             'atr_compression_enabled': 'Enable ATR compression filter',
             'atr_compression_threshold': 'ATR compression threshold',
             'extended_run_max_pct_long': 'Max extended run % for LONG',
@@ -9296,13 +8453,6 @@ class TradingApp:
             'price_percentile_early_threshold': 'Percentile for early entry',
             'price_percentile_late_threshold': 'Percentile for late entry',
             'price_percentile_lookback': 'Lookback for price percentile',
-
-            # ─── ADX SCORING ────────────────────────────────────────────────
-            'adx_score_trend_forming': 'ADX trend forming threshold',
-            'adx_score_good_trend': 'ADX good trend threshold',
-            'adx_score_strong_trend': 'ADX strong trend threshold',
-            'adx_score_very_strong': 'ADX very strong threshold',
-            'adx_score_extended': 'ADX extended threshold',
 
             # ─── MACD SCORING ────────────────────────────────────────────────
             'macd_score_line_vs_signal': 'Enable MACD line vs signal scoring',
@@ -13018,6 +12168,88 @@ class TradingApp:
         """Thread-safe wrapper: schedules a UI call on the main thread."""
         self.root.after(0, lambda: func(*args, **kwargs))
 
+    def run_best_param_values(self):
+        """
+        Launch the standalone strategies/Best_Param_Values.py script as a
+        separate process. Does not block the GUI and does not interfere
+        with the normal backtest workflow.
+        """
+        import subprocess
+
+        script_path = self.resource_path(os.path.join("strategies", "Best_Param_Values.py"))
+
+        if not os.path.exists(script_path):
+            self.log_message(f"❌ Best_Param_Values.py not found at: {script_path}", "red")
+            messagebox.showerror(
+                "File Not Found",
+                f"Could not find:\n{script_path}\n\n"
+                "Make sure Best_Param_Values.py exists in the 'strategies' directory."
+            )
+            return
+
+        if hasattr(self, 'best_param_btn'):
+            self.best_param_btn.config(state=tk.DISABLED, text="⏳ Running...")
+
+        self.log_message("=" * 70, "blue")
+        self.log_message(f"🏆 Launching Best_Param_Values.py ({self.start_date_var.get()} → {self.end_date_var.get()})",
+                         "blue")
+        self.log_message("=" * 70, "blue")
+
+        def _worker():
+            try:
+                # Get the currently selected strategy from the GUI
+                current_strategy = self.strategy_type_var.get() if hasattr(self, 'strategy_type_var') else "Momentum"
+
+                env = os.environ.copy()
+                env['BEST_PARAM_SYMBOL'] = self.symbol_var.get()
+                env['BEST_PARAM_INTERVAL'] = self.interval_var.get()
+                env['BEST_PARAM_START_DATE'] = self.start_date_var.get()
+                env['BEST_PARAM_END_DATE'] = self.end_date_var.get()
+                env['BEST_PARAM_STRATEGY'] = current_strategy
+
+                self.log_message(f"📊 Passing strategy to Best_Param_Values: {current_strategy}", "cyan")
+
+                # ─── Run WITHOUT creating a new console window ──────────────────
+                process = subprocess.Popen(
+                    [sys.executable, script_path],
+                    cwd=os.path.abspath("."),
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+
+                # Read and log output
+                for line in process.stdout:
+                    line = line.rstrip("\n")
+                    if line:
+                        self._ui_safe(self.log_message, f"[Best_Param_Values] {line}", "cyan")
+
+                return_code = process.wait()
+
+                if return_code == 0:
+                    self._ui_safe(self.log_message, "✅ Best_Param_Values.py finished successfully", "green")
+                else:
+                    self._ui_safe(
+                        self.log_message,
+                        f"⚠️ Best_Param_Values.py exited with code {return_code}",
+                        "orange"
+                    )
+
+            except Exception as e:
+                self._ui_safe(self.log_message, f"❌ Failed to run Best_Param_Values.py: {e}", "red")
+                import traceback
+                self._ui_safe(self.log_message, traceback.format_exc(), "red")
+            finally:
+                if hasattr(self, 'best_param_btn'):
+                    self._ui_safe(
+                        self.best_param_btn.config,
+                        state=tk.NORMAL, text="🏆 Best Params"
+                    )
+
+        threading.Thread(target=_worker, daemon=True, name="BestParamValues").start()
+
     def _run_backtest_in_thread(self):
         import threading
 
@@ -13124,6 +12356,21 @@ class TradingApp:
     def _set_initial_cash(self, cash):
         """Set initial cash for objective function"""
         self._initial_cash = cash
+
+    def get_optimized_params_for_export(self, optimized_params_dict):
+        """Extract and format optimized parameters for saving."""
+        if not optimized_params_dict:
+            return {}
+
+        # Filter to only include parameters that changed from defaults
+        default_params = self.get_default_momentum_params()
+        changed_params = {}
+
+        for key, value in optimized_params_dict.items():
+            if key in default_params and value != default_params[key]:
+                changed_params[key] = value
+
+        return changed_params
 
     # ── ADD this new helper anywhere in TradingApp ────────────────────────────
     def _normalize_ohlcv_columns(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -13756,8 +13003,62 @@ class TradingApp:
                             random_state=42,
                             return_heatmap=False
                         )
+                        # After optimization search completes
                         self.log_message("✅ Optimization search complete!", "green")
 
+                        # ─── NEW: COMPARE OPTIMIZED VS BASELINE ──────────────────────────────────
+                        if optimized_stats is not None and hasattr(optimized_stats, '_strategy'):
+                            optimized_params_dict = {
+                                k: v for k, v in optimized_stats._strategy._params.items()
+                                if not k.startswith('_')
+                            }
+
+                            if optimized_params_dict:
+                                # Get baseline metrics
+                                init_equity = initial_stats.get('Equity Final [$]', 0)
+                                init_sharpe = initial_stats.get('Sharpe Ratio', 0)
+                                init_return = initial_stats.get('Return [%]', 0)
+
+                                # Get optimized metrics
+                                opt_equity = float(optimized_stats.get('Equity Final [$]', 0))
+                                opt_sharpe = float(optimized_stats.get('Sharpe Ratio', 0))
+                                opt_return = float(optimized_stats.get('Return [%]', 0))
+
+                                # ─── COMPARE AND DECIDE ─────────────────────────────────────────
+                                if opt_equity < init_equity and opt_sharpe < init_sharpe:
+                                    self.log_message("=" * 70, "red")
+                                    self.log_message("⚠️ OPTIMIZED RESULT IS WORSE THAN BASELINE", "red")
+                                    self.log_message("=" * 70, "red")
+                                    self.log_message(f"   Baseline Equity:  ${init_equity:,.2f}", "white")
+                                    self.log_message(f"   Optimized Equity: ${opt_equity:,.2f}", "red")
+                                    self.log_message(f"   Difference:       ${opt_equity - init_equity:,.2f}", "red")
+                                    self.log_message("", "white")
+                                    self.log_message("   → KEEPING BASELINE PARAMETERS", "bold cyan")
+                                    self.log_message("=" * 70, "red")
+
+                                    # Keep baseline
+                                    optimized_stats = initial_stats
+                                    optimized_params_dict = None
+                                else:
+                                    self.log_message("=" * 70, "green")
+                                    self.log_message("✅ OPTIMIZED RESULT IMPROVED BASELINE", "green")
+                                    self.log_message("=" * 70, "green")
+                                    self.log_message(f"   Baseline Equity:  ${init_equity:,.2f}", "white")
+                                    self.log_message(f"   Optimized Equity: ${opt_equity:,.2f}", "green")
+                                    self.log_message(f"   Improvement:      ${opt_equity - init_equity:,.2f}", "green")
+                                    self.log_message("", "white")
+                                    self.log_message("   → USING OPTIMIZED PARAMETERS", "bold green")
+                                    self.log_message("=" * 70, "green")
+
+                                    # Re-run with optimized params to ensure consistency
+                                    self.log_message("🔄 Re-running with optimized parameters...", "blue")
+                                    try:
+                                        optimized_stats = bt.run(**optimized_params_dict)
+                                        self.log_message("✅ Re-run complete!", "green")
+                                    except Exception as rerun_err:
+                                        self.log_message(f"❌ Re-run error: {rerun_err}", "red")
+                                        optimized_stats = initial_stats
+                                        optimized_params_dict = None
                     except Exception as opt_err:
                         self.log_message(f"❌ Optimization error: {opt_err}", "red")
                         self.log_message(traceback.format_exc(), "red")
@@ -14138,7 +13439,7 @@ class TradingApp:
                                 val = int(val)
                             except ValueError:
                                 pass
-                    # FIX: Ensure max_daily_trades is always int
+                    # Ensure max_daily_trades is always int
                     if param_key == 'max_daily_trades' and isinstance(val, (int, float)):
                         val = int(val)
                     values.append(val)

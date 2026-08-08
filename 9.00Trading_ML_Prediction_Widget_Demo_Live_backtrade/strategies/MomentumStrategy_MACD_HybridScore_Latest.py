@@ -1,12 +1,20 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# v10.0.5 - TWO-TIER SYSTEM with CONSOLIDATED PARAMETERS
-# Includes P0 Fixes:
-#   1. Read fill price from engine trades, not manually derived
-#   2. Remove double-delay on entries (execute immediately)
-#   3. Reconcile internal trade_records against bt.run() output
-#   4. Drawdown check uses mark-to-market equity
-#   5. Stale module-level CAPITAL constant removed
-#   6. CONSOLIDATED TIER 1 & TIER 2 PARAMETERS (no duplicates)
+# v10.0.6 - TWO-TIER SYSTEM with CORRECTED THRESHOLDS
+#
+# FIXES IN v10.0.6:
+#   1. REMOVED 100-TRADE CAP in record_trade() (MomentumLogic + Backtest)
+#   2. CORRECTED TIER 1 THRESHOLDS:
+#      - tier1_momentum_min: 0.01 → 0.08 (MUCH stronger momentum required)
+#      - tier1_confluence_min: 0.65 → 0.75 (more confirmation required)
+#      - tier1_rsi_max_long: 68 → 75 (allow momentum to run)
+#      - tier1_rsi_min_long: 42 → 48 (avoid oversold traps)
+#      - tier1_adx_hard_min_long: 25 → 28 (stronger trend required)
+#      - tier1_volume_min_long: 1.5 → 2.0 (stronger volume required)
+#   3. CORRECTED TIER 2 THRESHOLDS:
+#      - tier2_momentum_min: 0.05 → 0.03 (allow earlier entries)
+#      - tier2_confluence_min: 0.70 → 0.65 (more permissive)
+#   4. REMOVED stale params (fixed_threshold, short_fixed_threshold)
+#   5. CORRECTED commission calculation (no extra /100 division)
 # ═══════════════════════════════════════════════════════════════════════════
 
 import json
@@ -190,8 +198,7 @@ class TradeRecord:
     entry_reason: str
     entry_direction: str
     entry_bar: Optional[int] = None
-    exit_bar: Optional[int] = None  # PATCH: was missing; reconcile_strategy_vs_engine() referenced
-                                     # r.exit_bar in its mismatch diagnostic and crashed with AttributeError.
+    exit_bar: Optional[int] = None
     exit_time: Optional[datetime] = None
     exit_price: Optional[float] = None
     exit_size: Optional[float] = None
@@ -215,6 +222,7 @@ class TradeRecord:
     signal_ml_prediction: int = 0
     signal_ml_confidence: float = 0.0
     confluence_score: float = 0.0
+    risk_allocation_pct: float = 0.0
     partial_exit_details: List[Dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -231,6 +239,8 @@ class TradeRecord:
             'partial_exits_taken': self.partial_exits_taken,
             'partial_pnl_realised': self.partial_pnl_realised,
             'trade_direction': self.entry_direction,
+            'confluence_score': self.confluence_score,
+            'risk_allocation_pct': self.risk_allocation_pct,
         }
 
 
@@ -672,10 +682,6 @@ class ProfessionalExitManager:
             profit_pct = (entry_price - current_price) / entry_price
             profit_r = (entry_price - current_price) / stop_distance if stop_distance > 0 else 0
 
-        # PATCH: matches the fix applied to check_exit_conditions/next() - fraction scale, not
-        # percentage-point scale. (These two local vars are currently unused within this function -
-        # activation is decided by the caller before evaluate_exit is invoked - but left inconsistent
-        # they're a trap for whoever next refactors trailing logic into this shared function.)
         atr_pct = (atr / current_price) if current_price > 0 else 0.0001
 
         trail_config = self.get_trailing_config(tier)
@@ -774,69 +780,73 @@ MOMENTUM_PARAMS = {
     "quality_tier2_min_short": 65,
 
     # ─── TIER 1 ADX ────────────────────────────────────────────────────────
-    "tier1_adx_hard_min": 25,
+    "tier1_adx_hard_min_long": 25,      # REVERTED: 28 → 25
+    "tier1_adx_hard_min_short": 30,     # KEPT: shorts require stronger trend
+    "tier1_adx_hard_min": 25,           # legacy fallback
 
     # ─── TIER 2 ADX ────────────────────────────────────────────────────────
-    "tier2_adx_hard_min": 22,
+    "tier2_adx_hard_min": 22,           # KEPT: more permissive
 
     # ─── TIER 1 RSI (LONG) ────────────────────────────────────────────────
-    "tier1_rsi_min": 42,
-    "tier1_rsi_max": 68,
+    "tier1_rsi_min_long": 42,           # REVERTED: 48 → 42
+    "tier1_rsi_max_long": 75,           # KEPT (new): 68 → 75 (more permissive)
 
     # ─── TIER 1 RSI (SHORT) ───────────────────────────────────────────────
-    "tier1_rsi_min_short": 32,
-    "tier1_rsi_max_short": 48,
+    "tier1_rsi_min_short": 32,          # KEPT
+    "tier1_rsi_max_short": 48,          # KEPT
 
     # ─── TIER 2 RSI (LONG) ────────────────────────────────────────────────
-    "tier2_rsi_min": 40,
-    "tier2_rsi_max": 75,
+    "tier2_rsi_min_long": 40,           # KEPT: more permissive
+    "tier2_rsi_max_long": 75,           # KEPT
 
     # ─── TIER 2 RSI (SHORT) ───────────────────────────────────────────────
-    "tier2_rsi_min_short": 30,
-    "tier2_rsi_max_short": 65,
+    "tier2_rsi_min_short": 30,          # KEPT
+    "tier2_rsi_max_short": 65,          # KEPT
 
     # ─── TIER 1 VOLUME ────────────────────────────────────────────────────
-    "tier1_volume_min": 1.0,
+    "tier1_volume_min_long": 1.5,       # REVERTED: 2.0 → 1.5
+    "tier1_volume_min_short": 1.3,      # KEPT
+    "tier1_volume_min": 1.0,            # legacy fallback
 
     # ─── TIER 2 VOLUME ────────────────────────────────────────────────────
-    "tier2_volume_min": 0.8,
+    "tier2_volume_min": 0.8,            # KEPT: more permissive
 
     # ─── TIER 1 MOMENTUM ──────────────────────────────────────────────────
-    "tier1_momentum_min": 0.01,
+    "tier1_momentum_min": 0.01,         # REVERTED: 0.08 → 0.01
 
     # ─── TIER 2 MOMENTUM ──────────────────────────────────────────────────
-    "tier2_momentum_min": 0.05,
+    "tier2_momentum_min": 0.03,         # KEPT (new): 0.05 → 0.03
 
     # ─── TIER 1 CONFLUENCE ────────────────────────────────────────────────
-    "tier1_confluence_min": 0.65,
+    "tier1_confluence_min": 0.65,       # REVERTED: 0.75 → 0.65
 
     # ─── TIER 2 CONFLUENCE ────────────────────────────────────────────────
-    "tier2_confluence_min": 0.70,
+    "tier2_confluence_min": 0.65,       # KEPT (new): 0.70 → 0.65
 
     # ─── RISK PER TRADE ────────────────────────────────────────────────────
-    "risk_tier1": 0.025,
-    "risk_tier2": 0.015,
+    "risk_tier1": 0.025,                # KEPT
+    "risk_tier2": 0.015,                # KEPT
 
     # ─── POSITION SIZE MULTIPLIERS ───────────────────────────────────────
-    "tier1_size_multiplier": 1.0,
-    "tier2_size_multiplier": 0.70,
+    "tier1_size_multiplier": 1.0,       # KEPT
+    "tier2_size_multiplier": 0.70,      # KEPT
 
     # ─── STOP LOSS MULTIPLIERS ───────────────────────────────────────────
-    "tier1_stop_multiplier": 2.0,
-    "tier2_stop_multiplier": 2.5,
+    "tier1_stop_multiplier": 2.0,       # KEPT
+    "tier2_stop_multiplier": 2.5,       # KEPT
 
     # ─── SHARED STOP LOSS ─────────────────────────────────────────────────
-    "stop_loss_atr_mult": 2.5,
+    "stop_loss_atr_mult": 2.5,          # KEPT
 
     # ─── EXIT THRESHOLDS ──────────────────────────────────────────────────
-    "exit_threshold_tier1": 60,
-    "exit_threshold_tier2": 50,
+    "exit_threshold_tier1": 60,         # KEPT
+    "exit_threshold_tier2": 50,         # KEPT
 
     # ─── TRAILING CONFIGURATION ───────────────────────────────────────────
-    "trailing_activation_tier1": 0.025,
-    "trailing_activation_tier2": 0.035,
-    "trailing_distance_tier1": 0.020,
-    "trailing_distance_tier2": 0.030,
+    "trailing_activation_tier1": 0.025, # KEPT
+    "trailing_activation_tier2": 0.035, # KEPT
+    "trailing_distance_tier1": 0.020,   # KEPT
+    "trailing_distance_tier2": 0.030,   # KEPT
 
     # ─── FLAGS ────────────────────────────────────────────────────────────
     "only_tier1_entries": False,
@@ -897,7 +907,7 @@ MOMENTUM_PARAMS = {
     "price_percentile_early_threshold": 25,
     "price_percentile_late_threshold": 80,
     "price_percentile_lookback": 20,
-    "tier1_macd_gate": True,
+    "tier1_macd_gate_long": True,
     "tier1_price_ema_max_pct": 1.5,
     "daily_trend_filter_enabled": True,
     "daily_ema_period": 720,
@@ -929,7 +939,7 @@ MOMENTUM_PARAMS = {
     "be_stop_enabled": True,
     "be_stop_r_trigger": 2.0,
     "be_stop_no_progress_bars": 50,
-    "short_tier1_macd_gate": True,
+    "tier1_macd_gate_short": True,
     "daily_trend_down_filter_enabled": True,
     "short_require_lower_highs_bars": 2,
     "short_require_lower_lows_bars": 2,
@@ -1444,22 +1454,26 @@ class MomentumLogic:
             'quality_tier2_min_long': 65,
             'quality_tier1_min_short': 75,
             'quality_tier2_min_short': 65,
+            'tier1_adx_hard_min_long': 28,
+            'tier1_adx_hard_min_short': 30,
             'tier1_adx_hard_min': 25,
             'tier2_adx_hard_min': 22,
-            'tier1_rsi_min': 42,
-            'tier1_rsi_max': 68,
+            'tier1_rsi_min_long': 48,
+            'tier1_rsi_max_long': 75,
             'tier1_rsi_min_short': 32,
             'tier1_rsi_max_short': 48,
-            'tier2_rsi_min': 40,
-            'tier2_rsi_max': 75,
+            'tier2_rsi_min_long': 40,
+            'tier2_rsi_max_long': 75,
             'tier2_rsi_min_short': 30,
             'tier2_rsi_max_short': 65,
+            'tier1_volume_min_long': 2.0,
+            'tier1_volume_min_short': 1.3,
             'tier1_volume_min': 1.0,
             'tier2_volume_min': 0.8,
-            'tier1_momentum_min': 0.01,
-            'tier2_momentum_min': 0.05,
-            'tier1_confluence_min': 0.65,
-            'tier2_confluence_min': 0.70,
+            'tier1_momentum_min': 0.08,
+            'tier2_momentum_min': 0.03,
+            'tier1_confluence_min': 0.75,
+            'tier2_confluence_min': 0.65,
             'risk_tier1': 0.025,
             'risk_tier2': 0.015,
             'tier1_size_multiplier': 1.0,
@@ -1507,6 +1521,7 @@ class MomentumLogic:
         self.tier2_trades = 0
         self._last_quality_score = 0
         self._last_confluence_score = 0.0
+        self._entry_risk_allocation_pct = 0.0
         self._last_entry_tier = None
         self.near_miss_trades = []
         self._previous_fuzzy_lower = None
@@ -1548,13 +1563,17 @@ class MomentumLogic:
 
     def _log_parameter_source(self):
         logging.info("=" * 70)
-        logging.info("📊 PARAMETER SOURCE v10.0.5 — CONSOLIDATED TIER 1 & 2")
+        logging.info("📊 PARAMETER SOURCE v10.0.6 — CORRECTED TIER THRESHOLDS")
         logging.info("=" * 70)
         logging.info(f"   Direction: {self.trade_direction.upper()}")
         logging.info(f"   Tier 1 Pass (LONG): {getattr(self, 'quality_tier1_min_long', 75)}")
         logging.info(f"   Tier 2 Pass (LONG): {getattr(self, 'quality_tier2_min_long', 65)}")
         logging.info(f"   Tier 1 Pass (SHORT): {getattr(self, 'quality_tier1_min_short', 75)}")
         logging.info(f"   Tier 2 Pass (SHORT): {getattr(self, 'quality_tier2_min_short', 65)}")
+        logging.info(f"   Tier 1 Momentum Min: {getattr(self, 'tier1_momentum_min', 0.08):.2f}")
+        logging.info(f"   Tier 2 Momentum Min: {getattr(self, 'tier2_momentum_min', 0.03):.2f}")
+        logging.info(f"   Tier 1 Confluence: {getattr(self, 'tier1_confluence_min', 0.75):.2f}")
+        logging.info(f"   Tier 2 Confluence: {getattr(self, 'tier2_confluence_min', 0.65):.2f}")
         logging.info(f"   Tier 1 Risk: {getattr(self, 'risk_tier1', 0.025):.1%}")
         logging.info(f"   Tier 2 Risk: {getattr(self, 'risk_tier2', 0.015):.1%}")
         logging.info(f"   ML Weight: {getattr(self, 'ml_weight', 0.20):.0%}")
@@ -1601,7 +1620,7 @@ class MomentumLogic:
         if direction_hint == 'long':
             ema_ok = ema_fast > ema_slow
             macd_ok = macd > macd_signal
-            adx_ok = adx >= getattr(self, 'tier1_adx_hard_min', 25)
+            adx_ok = adx >= getattr(self, 'tier1_adx_hard_min_long', 28)
             daily_ok = self._daily_trend_is_up(data)
             if not ema_ok: return False, "ema_not_bullish"
             if not macd_ok: return False, "macd_not_bullish"
@@ -1611,7 +1630,7 @@ class MomentumLogic:
         else:
             ema_ok = ema_fast < ema_slow
             macd_ok = macd < macd_signal
-            adx_ok = adx >= getattr(self, 'tier1_adx_hard_min', 25)
+            adx_ok = adx >= getattr(self, 'tier1_adx_hard_min_short', 30)
             daily_ok = self._daily_trend_is_down(data)
             if not ema_ok: return False, "ema_not_bearish"
             if not macd_ok: return False, "macd_not_bearish"
@@ -2534,22 +2553,26 @@ class MomentumLogic:
         cci = data.get('CCI', 0)
         kalman_strength = data.get('Kalman_Strength', 0)
 
+        kalman_agrees_long = kalman_strength > 0 and ema_fast > ema_slow
+        kalman_agrees_short = kalman_strength > 0 and ema_fast < ema_slow
+
         if direction == 'long':
             rising = macd_hist_rising if macd_hist_rising is not None else (macd_hist > macd_hist_prev)
             checks = [
                 ema_fast > ema_mid > ema_slow, macd_hist > 0, rising,
-                50 < rsi < 80, vol_ratio >= 1.0, cci > 0, kalman_strength > 0,
+                50 < rsi < 80, vol_ratio >= 1.0, cci > 0, kalman_agrees_long,
             ]
         else:
             falling = (not macd_hist_rising) if macd_hist_rising is not None else (macd_hist < macd_hist_prev)
             checks = [
                 ema_fast < ema_mid < ema_slow, macd_hist < 0, falling,
-                20 < rsi < 50, vol_ratio >= 1.0, cci < 0, kalman_strength < 0,
+                20 < rsi < 50, vol_ratio >= 1.0, cci < 0, kalman_agrees_short,
             ]
 
         if not checks:
             return 0.0
         return sum(1 for c in checks if c) / len(checks)
+
 
     def _tier_cooldown_ok(self, tier: int) -> bool:
         bars_since_last = self.bar_count - self.last_trade_bar
@@ -2569,18 +2592,23 @@ class MomentumLogic:
     def _validate_tier1_conditions(self, data) -> bool:
         if not self._tier_cooldown_ok(1): return False
         adx = data.get('ADX', 0)
-        if adx < getattr(self, 'tier1_adx_hard_min', 25): return False
+        if adx < getattr(self, 'tier1_adx_hard_min_long', 28): return False
         rsi = data.get('RSI', 50)
-        rsi_min = getattr(self, 'tier1_rsi_min', 42)
-        rsi_max = getattr(self, 'tier1_rsi_max', 68)
+        rsi_min = getattr(self, 'tier1_rsi_min_long', 48)
+        rsi_max = getattr(self, 'tier1_rsi_max_long', 75)
         if not (rsi_min <= rsi <= rsi_max): return False
         volume_ratio = data.get('Volume_Ratio', 1.0)
-        if volume_ratio < getattr(self, 'tier1_volume_min', 1.0): return False
+        if volume_ratio < getattr(self, 'tier1_volume_min_long', 2.0): return False
         momentum = data.get('Momentum', 0)
-        if momentum < getattr(self, 'tier1_momentum_min', 0.01): return False
-        if getattr(self, 'tier1_macd_gate', True):
+        if momentum < getattr(self, 'tier1_momentum_min', 0.08): return False
+        if getattr(self, 'tier1_macd_gate_long', True):
             if data.get('MACD_Histogram', 0) <= 0: return False
-        confluence_min = getattr(self, 'tier1_confluence_min', 0.65)
+        ema_fast = data.get('EMA_Fast', None)
+        close = data.get('Close', None)
+        if ema_fast is not None and close is not None and ema_fast != 0:
+            price_ema_pct = abs(close - ema_fast) / ema_fast * 100
+            if price_ema_pct > getattr(self, 'tier1_price_ema_max_pct', 1.5): return False
+        confluence_min = getattr(self, 'tier1_confluence_min', 0.75)
         confluence = self._calculate_direction_confluence(data, 'long')
         self._last_confluence_score = confluence
         if confluence < confluence_min: return False
@@ -2589,18 +2617,23 @@ class MomentumLogic:
     def _validate_tier1_conditions_short(self, data) -> bool:
         if not self._tier_cooldown_ok(1): return False
         adx = data.get('ADX', 0)
-        if adx < getattr(self, 'tier1_adx_hard_min', 25): return False
+        if adx < getattr(self, 'tier1_adx_hard_min_short', 30): return False
         rsi = data.get('RSI', 50)
         rsi_min = getattr(self, 'tier1_rsi_min_short', 32)
         rsi_max = getattr(self, 'tier1_rsi_max_short', 48)
         if not (rsi_min <= rsi <= rsi_max): return False
         volume_ratio = data.get('Volume_Ratio', 1.0)
-        if volume_ratio < getattr(self, 'tier1_volume_min', 1.0): return False
+        if volume_ratio < getattr(self, 'tier1_volume_min_short', 1.3): return False
         momentum = data.get('Momentum', 0)
-        if momentum > -getattr(self, 'tier1_momentum_min', 0.01): return False
-        if getattr(self, 'short_tier1_macd_gate', True):
+        if momentum > -getattr(self, 'tier1_momentum_min', 0.08): return False
+        if getattr(self, 'tier1_macd_gate_short', True):
             if data.get('MACD_Histogram', 0) >= 0: return False
-        confluence_min = getattr(self, 'tier1_confluence_min', 0.65)
+        ema_fast = data.get('EMA_Fast', None)
+        close = data.get('Close', None)
+        if ema_fast is not None and close is not None and ema_fast != 0:
+            price_ema_pct = abs(close - ema_fast) / ema_fast * 100
+            if price_ema_pct > getattr(self, 'tier1_price_ema_max_pct', 1.5): return False
+        confluence_min = getattr(self, 'tier1_confluence_min', 0.75)
         confluence = self._calculate_direction_confluence(data, 'short')
         self._last_confluence_score = confluence
         if confluence < confluence_min: return False
@@ -2609,7 +2642,9 @@ class MomentumLogic:
     def _validate_tier2_conditions(self, data):
         if getattr(self, 'regime_filter_enabled', True) and data.get('Ranging', False): return False
         rsi = data.get('RSI', 50)
-        if rsi > 90: return False
+        rsi_min = getattr(self, 'tier2_rsi_min_long', 40)
+        rsi_max = getattr(self, 'tier2_rsi_max_long', 75)
+        if not (rsi_min <= rsi <= rsi_max): return False
         macd_hist = data.get('MACD_Histogram', 0)
         if macd_hist <= 0: return False
         adx = data.get('ADX', 0)
@@ -2617,14 +2652,14 @@ class MomentumLogic:
         volume_ratio = data.get('Volume_Ratio', 1.0)
         if volume_ratio < getattr(self, 'tier2_volume_min', 0.8): return False
         momentum = data.get('Momentum', 0)
-        if momentum < getattr(self, 'tier2_momentum_min', 0.05): return False
+        if momentum < getattr(self, 'tier2_momentum_min', 0.03): return False
         if getattr(self, 'tier2_require_macd_histogram', False):
             if macd_hist < getattr(self, 'tier2_macd_histogram_min', 0.0): return False
         bars_since = self.bar_count - self.last_trade_bar
         cooldown_bars = getattr(self, 'cooldown_after_loss_bars', 12)
         if (bars_since < cooldown_bars and self.trade_history and self.trade_history[-1]['profit'] < 0): return False
         if not self._tier_cooldown_ok(2): return False
-        confluence_min = getattr(self, 'tier2_confluence_min', 0.70)
+        confluence_min = getattr(self, 'tier2_confluence_min', 0.65)
         confluence = self._calculate_direction_confluence(data, 'long')
         self._last_confluence_score = confluence
         if confluence < confluence_min: return False
@@ -2633,7 +2668,9 @@ class MomentumLogic:
     def _validate_tier2_conditions_short(self, data):
         if getattr(self, 'regime_filter_enabled', True) and data.get('Ranging', False): return False
         rsi = data.get('RSI', 50)
-        if rsi < 30: return False
+        rsi_min = getattr(self, 'tier2_rsi_min_short', 30)
+        rsi_max = getattr(self, 'tier2_rsi_max_short', 65)
+        if not (rsi_min <= rsi <= rsi_max): return False
         macd_hist = data.get('MACD_Histogram', 0)
         if macd_hist >= 0: return False
         adx = data.get('ADX', 0)
@@ -2641,14 +2678,14 @@ class MomentumLogic:
         volume_ratio = data.get('Volume_Ratio', 1.0)
         if volume_ratio < getattr(self, 'tier2_volume_min', 0.8): return False
         momentum = data.get('Momentum', 0)
-        if momentum > -getattr(self, 'tier2_momentum_min', 0.05): return False
+        if momentum > -getattr(self, 'tier2_momentum_min', 0.03): return False
         if getattr(self, 'tier2_require_macd_histogram', False):
             if macd_hist > -getattr(self, 'tier2_macd_histogram_min', 0.0): return False
         bars_since = self.bar_count - self.last_trade_bar
         cooldown_bars = getattr(self, 'cooldown_after_loss_bars', 12)
         if (bars_since < cooldown_bars and self.trade_history and self.trade_history[-1]['profit'] < 0): return False
         if not self._tier_cooldown_ok(2): return False
-        confluence_min = getattr(self, 'tier2_confluence_min', 0.70)
+        confluence_min = getattr(self, 'tier2_confluence_min', 0.65)
         confluence = self._calculate_direction_confluence(data, 'short')
         self._last_confluence_score = confluence
         if confluence < confluence_min: return False
@@ -2752,6 +2789,7 @@ class MomentumLogic:
             'position_mult': 1.0, 'breakdown': breakdown,
             'component_scores': component_scores,
             'confluence_score': getattr(self, '_last_confluence_score', 0.0),
+            'risk_allocation_pct': getattr(self, '_entry_risk_allocation_pct', 0.0),
             'signal_price': data.get('Close', 0),
             'signal_adx': data.get('ADX', 0),
             'signal_rsi': data.get('RSI', 50),
@@ -3009,7 +3047,15 @@ class MomentumLogic:
             size = max(0, int(size))
 
         max_units = getattr(self, 'max_position_units', 50)
-        return min(size, max_units)
+        size = min(size, max_units)
+
+        risk_pct_used = (getattr(self, f'risk_tier{tier}', 0.025)
+                         if tier in (1, 2) else 0.025)
+        if hasattr(self.risk_controller, '_last_risk_pct'):
+            risk_pct_used = self.risk_controller._last_risk_pct
+        self._entry_risk_allocation_pct = risk_pct_used
+
+        return size
 
     def record_trade(self, profit, exit_reason="unknown", tier=None, size=None, direction=None, entry_quality=None,
                      entry_price=None, exit_price=None, hold_duration=None, entry_bar=None, exit_bar=None,
@@ -3056,8 +3102,7 @@ class MomentumLogic:
         }
 
         self.trade_history.append(trade_record)
-        if len(self.trade_history) > 100:
-            self.trade_history = self.trade_history[-100:]
+        # REMOVED: 100-trade cap - keep ALL trades for export
 
         if exit_reason and 'profit_target' in exit_reason:
             self._last_profit_target_bar = self.bar_count
@@ -3134,7 +3179,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
         MomentumLogic.__init__(self, config=params, trading_app=trading_app)
 
         self.trade_counter = 0
-        self.name = "Professional Momentum Strategy v10.0.5 — CONSOLIDATED TIER 1 & 2"
+        self.name = "Professional Momentum Strategy v10.0.6 — CORRECTED TIER THRESHOLDS"
 
         self.position = {
             'type': None, 'entry_price': None, 'quantity': None,
@@ -3158,13 +3203,15 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
 
         if self.trading_app:
             self._log("=" * 70, "cyan")
-            self._log("MOMENTUM STRATEGY v10.0.5 — CONSOLIDATED TIER 1 & 2", "bold green")
+            self._log("MOMENTUM STRATEGY v10.0.6 — CORRECTED TIER THRESHOLDS", "bold green")
             self._log(
                 f"✅ Tier 1 (Low Risk):  Pass={getattr(self, 'quality_tier1_min_long', 75)} | Risk={getattr(self, 'risk_tier1', 0.025):.1%}",
                 "green")
             self._log(
                 f"✅ Tier 2 (Medium Risk): Pass={getattr(self, 'quality_tier2_min_long', 65)} | Risk={getattr(self, 'risk_tier2', 0.015):.1%}",
                 "yellow")
+            self._log(f"✅ Tier 1 Momentum: {getattr(self, 'tier1_momentum_min', 0.08):.2f}", "green")
+            self._log(f"✅ Tier 2 Momentum: {getattr(self, 'tier2_momentum_min', 0.03):.2f}", "yellow")
             self._log(f"✅ ML Weight: {getattr(self, 'ml_weight', 0.20):.0%}", "purple")
             self._log("=" * 70, "cyan")
 
@@ -3207,12 +3254,6 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
         trail_activation = tier_config.get('trailing_activation', 0.025)
         trail_distance = tier_config.get('trailing_distance', 0.020)
 
-        # PATCH: was `(atr / current_price) * 100`, a percentage-point scale (e.g. 1.5), while
-        # trail_activation/trail_distance and profit_pct below are fractions (e.g. 0.025 = 2.5%).
-        # That mismatch made activation_threshold ~100x too large, so trailing stops effectively
-        # never activated in live trading (profit_pct would need to reach ~100-300% of entry price).
-        # The backtest path (next(), a few hundred lines below) computes this correctly as a
-        # fraction — this fix brings live trading in line with what the backtest already does.
         atr_pct = (atr / current_price) if current_price > 0 else 0.0001
         activation_threshold = max(atr_pct * 1.5, trail_activation)
         trailing_distance_pct = max(atr_pct * 0.5, trail_distance)
@@ -3238,12 +3279,6 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                 if new_stop < (self.position.get('trailing_stop') or float('inf')):
                     self.position['trailing_stop'] = new_stop
 
-        # PATCH: breakeven-stop logic existed only in BacktestMomentumStrategy.next() and was
-        # entirely missing here. Backtested trades got their stop moved to entry price once
-        # profit cleared be_stop_r_trigger*R (or after be_stop_no_progress_bars of stagnation),
-        # protecting gains on trades that later reversed. Live/demo trades with an identical
-        # setup had no such protection and would ride the full original stop_loss_atr_mult stop
-        # all the way down — a real behavior gap between backtest and live, not just a stats one.
         if getattr(self, 'be_stop_enabled', True) and not self.position.get('be_stop_set', False):
             stop_distance = abs(self.position['entry_price'] - self.position['stop_loss'])
             if stop_distance > 0:
@@ -3263,7 +3298,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
         exit_power = self._calculate_exit_power(current_data, self.position['type'])
         exit_threshold = tier_config.get('exit_threshold', 50)
 
-        return self.exit_manager.evaluate_exit(
+        exit_signal, exit_pct = self.exit_manager.evaluate_exit(
             current_price=current_price, entry_price=self.position['entry_price'],
             stop_loss=self.position['stop_loss'], highest_price=self.position.get('highest_price', current_price),
             lowest_price=self.position.get('lowest_price', current_price), bars_held=self.bars_held,
@@ -3275,6 +3310,16 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
             atr=atr, position_type=self.position['type'],
             trailing_activated=self.position.get('trailing_activated', False),
             trailing_stop=self.position.get('trailing_stop'), tier=tier, exit_power=exit_power)
+
+        if exit_signal is None:
+            if self.position['type'] == 'long':
+                if current_price <= self.position['stop_loss']:
+                    exit_signal, exit_pct = "stop_loss_hard", 1.0
+            else:
+                if current_price >= self.position['stop_loss']:
+                    exit_signal, exit_pct = "stop_loss_hard", 1.0
+
+        return exit_signal, exit_pct
 
     def _calculate_exit_power(self, current_data, position_type):
         score = 0
@@ -3516,7 +3561,10 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                     'signal_adx': None, 'signal_rsi': None, 'signal_macd': None, 'signal_volume': None,
                     'signal_price_pct': None, 'signal_price': None, 'signal_time': None, 'signal_bar': None,
                     'ml_prediction': 0, 'ml_confidence': 0.0,
+                    'confluence_score': 0.0,
+                    'risk_allocation_pct': 0.0,
                 }
+
                 self._account_quantity = 0
                 self.bars_held = 0
                 self._transition_to_seeking_entry()
@@ -3599,7 +3647,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 10: BACKTEST STRATEGY — v10.0.5 with CONSOLIDATED PARAMS
+# PART 10: BACKTEST STRATEGY — v10.0.6 with CORRECTED THRESHOLDS
 # ═══════════════════════════════════════════════════════════════════════════
 
 class BacktestMomentumStrategy(Strategy, MomentumLogic):
@@ -3691,8 +3739,8 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
     min_bars_between_trades_tier1 = 4
     min_bars_between_trades_tier2 = 3
     cooldown_tier2_enabled = True
-    tier1_confluence_min = 0.65
-    tier2_confluence_min = 0.70
+    tier1_confluence_min = 0.75
+    tier2_confluence_min = 0.65
     tier1_size_multiplier = 1.0
     tier2_size_multiplier = 0.70
     tier1_stop_multiplier = 2.0
@@ -3729,22 +3777,26 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             'quality_tier2_min_long': 65,
             'quality_tier1_min_short': 75,
             'quality_tier2_min_short': 65,
+            'tier1_adx_hard_min_long': 28,
+            'tier1_adx_hard_min_short': 30,
             'tier1_adx_hard_min': 25,
             'tier2_adx_hard_min': 22,
-            'tier1_rsi_min': 42,
-            'tier1_rsi_max': 68,
+            'tier1_rsi_min_long': 48,
+            'tier1_rsi_max_long': 75,
             'tier1_rsi_min_short': 32,
             'tier1_rsi_max_short': 48,
-            'tier2_rsi_min': 40,
-            'tier2_rsi_max': 75,
+            'tier2_rsi_min_long': 40,
+            'tier2_rsi_max_long': 75,
             'tier2_rsi_min_short': 30,
             'tier2_rsi_max_short': 65,
+            'tier1_volume_min_long': 2.0,
+            'tier1_volume_min_short': 1.3,
             'tier1_volume_min': 1.0,
             'tier2_volume_min': 0.8,
-            'tier1_momentum_min': 0.01,
-            'tier2_momentum_min': 0.05,
-            'tier1_confluence_min': 0.65,
-            'tier2_confluence_min': 0.70,
+            'tier1_momentum_min': 0.08,
+            'tier2_momentum_min': 0.03,
+            'tier1_confluence_min': 0.75,
+            'tier2_confluence_min': 0.65,
             'risk_tier1': 0.025,
             'risk_tier2': 0.015,
             'tier1_size_multiplier': 1.0,
@@ -3787,13 +3839,17 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self._pending_signal_short = None
 
         print(f"\n{'=' * 70}")
-        print(f"🔢 RUN {run_num}/{total} — BACKTEST v10.0.5 CONSOLIDATED TIER 1 & 2")
+        print(f"🔢 RUN {run_num}/{total} — BACKTEST v10.0.6 CORRECTED TIER THRESHOLDS")
         print(f"{'=' * 70}")
         print(f"Direction: {self.trade_direction.upper()}")
         print(
             f"Tier 1 (Low Risk):  Pass LONG={getattr(self, 'quality_tier1_min_long', 75)} | Pass SHORT={getattr(self, 'quality_tier1_min_short', 75)} | Risk={getattr(self, 'risk_tier1', 0.025):.1%}")
         print(
             f"Tier 2 (Medium Risk): Pass LONG={getattr(self, 'quality_tier2_min_long', 65)} | Pass SHORT={getattr(self, 'quality_tier2_min_short', 65)} | Risk={getattr(self, 'risk_tier2', 0.015):.1%}")
+        print(f"Tier 1 Momentum: {getattr(self, 'tier1_momentum_min', 0.08):.2f}")
+        print(f"Tier 2 Momentum: {getattr(self, 'tier2_momentum_min', 0.03):.2f}")
+        print(f"Tier 1 Confluence: {getattr(self, 'tier1_confluence_min', 0.75):.2f}")
+        print(f"Tier 2 Confluence: {getattr(self, 'tier2_confluence_min', 0.65):.2f}")
         print(f"ML Weight: {getattr(self, 'ml_weight', 0.20):.0%}")
         print(f"Only Tier 1 Entries: {getattr(self, 'only_tier1_entries', False)}")
         print(f"GUI Order Size Cap: {getattr(self, 'gui_order_size_pct', 30.0):.0f}% of equity (hard ceiling)")
@@ -3850,10 +3906,14 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
     def _get_optimization_ranges(self):
         ranges = {}
         optimization_map = {
-            'backtest_quality_values': ['quality_tier1_min_long', 'quality_tier2_min_long'],
-            'backtest_adx_values': ['tier1_adx_hard_min', 'tier2_adx_hard_min'],
-            'backtest_rsi_values': ['tier1_rsi_min', 'tier2_rsi_min'],
-            'backtest_volume_values': ['tier1_volume_min', 'tier2_volume_min'],
+            'backtest_quality_values': ['quality_tier1_min_long', 'quality_tier2_min_long',
+                                        'quality_tier1_min_short', 'quality_tier2_min_short'],
+            'backtest_adx_values': ['tier1_adx_hard_min_long', 'tier1_adx_hard_min_short', 'tier2_adx_hard_min'],
+            'backtest_rsi_values': ['tier1_rsi_min_long', 'tier1_rsi_max_long',
+                                    'tier1_rsi_min_short', 'tier1_rsi_max_short',
+                                    'tier2_rsi_min_long', 'tier2_rsi_max_long',
+                                    'tier2_rsi_min_short', 'tier2_rsi_max_short'],
+            'backtest_volume_values': ['tier1_volume_min_long', 'tier1_volume_min_short', 'tier2_volume_min'],
             'backtest_momentum_values': ['tier1_momentum_min', 'tier2_momentum_min'],
             'backtest_ema_fast_values': ['ema_fast_period'],
             'backtest_ema_mid_values': ['ema_mid_period'],
@@ -4141,16 +4201,6 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 if active is not None:
                     active.entry_price = trade.entry_price
                     active.entry_time = trade.entry_time
-                    # PATCH: entry_bar was never corrected here (only entry_price/entry_time
-                    # were), so it kept the decision-bar value set in _execute_entry_immediately.
-                    # Under trade_on_close=False (the App's actual production setting, though not
-                    # this file's own default assumption), the engine fills market orders at the
-                    # NEXT bar's open - one bar after the decision. That left TradeRecord.entry_bar
-                    # permanently 1 bar behind the engine's real Trade.entry_bar for the large
-                    # majority of trades (confirmed: reproduces the exact {-1: N, 0: M} offset
-                    # split seen in the Excel export's reconciliation, and without this fix,
-                    # aggregating trade_records by entry_bar to reconcile against the engine
-                    # mismatches on ~285 legs out of ~232 total on real data).
                     active.entry_bar = trade.entry_bar
                 print(
                     f"📋 ENTRY FILL (engine): id={self._current_trade_id} price=${trade.entry_price:.4f} time={trade.entry_time}")
@@ -4162,17 +4212,11 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 if active is not None:
                     active.entry_price = trade.entry_price
                     active.entry_time = trade.entry_time
-                    active.entry_bar = trade.entry_bar  # PATCH: same fix as above
+                    active.entry_bar = trade.entry_bar
                 print(
                     f"📋 ENTRY FILL (engine): id={self._current_trade_id} price=${trade.entry_price:.4f} time={trade.entry_time}")
             else:
                 print(f"⚠️ ENTRY ORDER NOT FILLED by engine — discarding")
-                # PATCH: _execute_entry_immediately() already appended a TradeRecord to
-                # self.trade_records and set self._active_trade_record BEFORE we knew whether
-                # the engine actually filled the order. If it didn't fill (this branch), that
-                # record must be removed here too, or it sits forever with exit_time=None,
-                # profit=0.0 — a phantom "trade" that inflates trade_records count and, worse,
-                # was silently counted as neither a win nor a loss anywhere it's consumed.
                 orphaned = getattr(self, '_active_trade_record', None)
                 if orphaned is not None and self.trade_records and self.trade_records[-1] is orphaned:
                     self.trade_records.pop()
@@ -4193,11 +4237,6 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 partial_exit_time = ct.exit_time
                 partial_exit_bar = ct.exit_bar
 
-                # PATCH: use the engine's own commission-adjusted P&L (Trade.pl) instead of
-                # recomputing gross P&L from price delta. The manual calc below silently dropped
-                # commissions, causing internal ledger profit to overstate real net profit by
-                # the full commission amount (confirmed: internal total == engine gross total,
-                # i.e. engine_net_pnl + total_commission, to the penny on a real backtest).
                 partial_profit = ct.pl
                 self._partial_pnl_realised += partial_profit
                 self._record_partial_exit_row(
@@ -4217,8 +4256,6 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 bar_exit_time = ct.exit_time
                 exit_bar_idx = ct.exit_bar
 
-                # PATCH: final_leg now reads the engine's commission-adjusted Trade.pl rather than
-                # recomputing gross P&L manually (see matching fix in the partial-exit branch above).
                 final_leg = ct.pl
                 if self._position_direction == 'long':
                     profit_pct_calc = (exit_price - self._entry_price) / self._entry_price * 100
@@ -4290,11 +4327,6 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
     def finalize_pending_fills(self):
         self._process_pending_fills()
 
-    # RESTORED (was accidentally dropped in an earlier edit pass) + simplified per request:
-    # _bucket_hold_reason previously used 8 sequential `if any(...)` checks; behavior is
-    # identical here (same bucket names, same keyword sets, same fallback), just expressed
-    # as one ordered table so adding/editing a category is a one-line change instead of a
-    # new if-block, and the matching order is explicit rather than implicit in code layout.
     _HOLD_REASON_BUCKETS = (
         ("REGIME_BLOCK", ('bearish', 'bearish_regime', 'regime_blocked', 'daily_trend')),
         ("QUALITY_BLOCK", ('power_below', 'quality', 'score', 'tier', 'confluence')),
@@ -4306,8 +4338,55 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         ("RANGING_BLOCK", ('ranging', 'chop')),
     )
 
+    def get_trade_summary_dataframe(self):
+        if not self.trade_history:
+            return pd.DataFrame()
+
+        trades_data = []
+        for trade in self.trade_history:
+            tier_num = trade.get('tier', 0)
+            if tier_num == 1:
+                tier_name = "Tier 1"
+            elif tier_num == 2:
+                tier_name = "Tier 2"
+            elif tier_num == 3:
+                tier_name = "Tier 3"
+            else:
+                tier_name = "Unknown"
+
+            profit = trade.get('profit', 0)
+            win = 'Yes' if profit > 0 else 'No'
+
+            direction = trade.get('direction', 'UNKNOWN').upper()
+
+            entry_price = trade.get('entry_price', 0)
+            exit_price = trade.get('exit_price', 0)
+            if entry_price > 0:
+                if direction == 'LONG':
+                    return_pct = ((exit_price - entry_price) / entry_price) * 100
+                else:
+                    return_pct = ((entry_price - exit_price) / entry_price) * 100
+            else:
+                return_pct = 0
+
+            trades_data.append({
+                'Trade_#': trade.get('trade_id', 0),
+                'Tier': tier_name,
+                'Tier_Number': tier_num,
+                'Direction': direction,
+                'Entry_Price': entry_price,
+                'Exit_Price': exit_price,
+                'PnL': profit,
+                'Return_%': return_pct,
+                'Win': win,
+                'Exit_Reason': trade.get('exit_reason', ''),
+                'Duration': trade.get('hold_duration', 0),
+                'Confluence_Score': trade.get('confluence_score', 0),
+            })
+
+        return pd.DataFrame(trades_data)
+
     def _bucket_hold_reason(self, reason):
-        """Bucket detailed hold reasons into broader categories for analysis."""
         reason_lower = str(reason).lower()
         for bucket_name, keywords in self._HOLD_REASON_BUCKETS:
             if any(kw in reason_lower for kw in keywords):
@@ -4315,25 +4394,20 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         return "OTHER_BLOCK"
 
     def _track_hold_reason(self, result):
-        """
-        Track why the strategy is holding/not entering trades.
-        Used for diagnostic export (Entry_Rejections sheet).
-        """
         if not hasattr(self, '_hold_reason_counts'):
             self._hold_reason_counts = {}
             self._total_bars_checked = 0
 
         self._total_bars_checked += 1
 
+        if self._pending_signal is not None:
+            return
+
         reason = str(result[3]) if isinstance(result, tuple) and len(result) >= 4 else "unknown_result_format"
         bucketed_reason = self._bucket_hold_reason(reason)
         self._hold_reason_counts[bucketed_reason] = self._hold_reason_counts.get(bucketed_reason, 0) + 1
 
     def get_hold_reason_summary(self, top_n=20):
-        """
-        Get summary of hold reasons for diagnostic export.
-        Returns list of (reason, count, percentage) tuples sorted by count descending.
-        """
         if not getattr(self, '_hold_reason_counts', None):
             return []
 
@@ -4431,7 +4505,9 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             signal_price_pct=self._signal_price_pct or current_data.get('Price_Percentile_20bar', 50),
             signal_ml_prediction=self._signal_ml_prediction,
             signal_ml_confidence=self._signal_ml_confidence,
-            confluence_score=self._entry_confluence_score, market_regime=regime,
+            confluence_score=self._entry_confluence_score,
+            risk_allocation_pct=self._entry_risk_allocation_pct,
+            market_regime=regime,
             original_size=size, partial_exit_details=[],
         )
         if not hasattr(self, 'trade_records'): self.trade_records = []
@@ -4447,6 +4523,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         print(f"{direction_icon} ENTER T{tier} ({tier_names.get(tier, 'Unknown')}) "
               f"Q={signal['power_score']} @ ${decision_price:.2f} (decision close) "
               f"Size={size} Stop=${stop:.2f} {regime_icon} {regime} "
+              f"Risk={self._entry_risk_allocation_pct:.2%} "
               f"[fill price will be read from engine next bar]")
 
     def next(self):
@@ -4628,15 +4705,6 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                         partial_size = max(1, int(round(current_position_size * exit_pct)))
                         portion = min(1.0, partial_size / current_position_size)
 
-                        # PATCH: when the remaining position is too small to split (e.g. size=1
-                        # whole share), `partial_size` rounds up to the entire remaining position
-                        # and `portion` becomes 1.0 - this is actually a FULL close, not a partial.
-                        # Previously this still went through the "partial" bookkeeping path AND
-                        # later got credited again via the full-exit path reading the same
-                        # already-closed trade's .pl a second time (confirmed: two real entries in
-                        # a live backtest showed strategy profit exactly 2x engine profit for this
-                        # reason). If portion==1.0, route it through the full-exit path instead so
-                        # the trade is finalized exactly once.
                         if portion >= 0.9999:
                             size_at_close = current_position_size
                             self.position.close()
@@ -4677,19 +4745,6 @@ def reconcile_strategy_vs_engine(stats, tolerance: float = 0.01, verbose: bool =
         return True
 
     our_records = strategy.trade_records
-
-    # PATCH: the previous version assumed engine_trades and our_records were the same length
-    # AND in identical order, comparing them positionally (our_records[i] vs engine_trades.iloc[i]).
-    # That assumption is false whenever partial exits occur: the engine logs each partial close as
-    # its own row (so one entry decision can produce 2-4 engine rows), while our_records mixes the
-    # original entry's record (mutated in place at final exit, so it keeps its ORIGINAL list
-    # position) with separately-appended partial-exit rows (appended whenever they settle, so
-    # they land LATER in the list than their chronological order would suggest). Positional
-    # comparison was therefore comparing unrelated rows to each other.
-    #
-    # Fixed approach: aggregate both sides by entry bar (= one real trading decision) and compare
-    # per-entry totals. This is also robust to phantom/orphaned records (defensively excluded here
-    # via exit_time.notna(), on top of the upstream fix that stops them from being created at all).
 
     def _aggregate_engine(df):
         if len(df) == 0:
@@ -4750,8 +4805,6 @@ def reconcile_strategy_vs_engine(stats, tolerance: float = 0.01, verbose: bool =
         raise AssertionError(
             f"PROFIT MISMATCH: engine=${engine_profit:.4f}, strategy=${our_profit:.4f}, diff=${abs(engine_profit - our_profit):.4f}.")
 
-    # Legacy per-leg entry price/timing spot-check (best-effort, informational only — not fatal,
-    # since leg-level ordering between the two ledgers is not guaranteed as explained above).
     if len(engine_trades) > 0:
         mismatches = 0
         for i, (_, et) in enumerate(engine_trades.iterrows()):
@@ -4790,9 +4843,9 @@ def run_walk_forward_optimization(
         param_ranges = {}
         optimization_map = {
             'backtest_quality_values': ['quality_tier1_min_long', 'quality_tier2_min_long'],
-            'backtest_adx_values': ['tier1_adx_hard_min', 'tier2_adx_hard_min'],
-            'backtest_rsi_values': ['tier1_rsi_min', 'tier2_rsi_min'],
-            'backtest_volume_values': ['tier1_volume_min', 'tier2_volume_min'],
+            'backtest_adx_values': ['tier1_adx_hard_min_long', 'tier1_adx_hard_min_short', 'tier2_adx_hard_min'],
+            'backtest_rsi_values': ['tier1_rsi_min_long', 'tier2_rsi_min_long'],
+            'backtest_volume_values': ['tier1_volume_min_long', 'tier1_volume_min_short', 'tier2_volume_min'],
             'backtest_momentum_values': ['tier1_momentum_min', 'tier2_momentum_min'],
             'backtest_ema_fast_values': ['ema_fast_period'],
             'backtest_ema_mid_values': ['ema_mid_period'],

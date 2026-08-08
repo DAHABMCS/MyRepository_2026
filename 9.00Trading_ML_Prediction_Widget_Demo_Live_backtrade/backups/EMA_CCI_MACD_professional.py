@@ -30,7 +30,7 @@ from collections import deque
 import numpy as np
 import pandas as pd
 import talib
-from .base3_New import BaseStrategy
+from strategies.base3_New import BaseStrategy
 from backtesting import Strategy
 
 

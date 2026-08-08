@@ -1,6 +1,6 @@
 """
 Monte Carlo Simulation Module for Backtesting
-Adds probabilistic analysis to backtest results
+Adds probabilistic analysis to backtest results with capacity limits and optional log-scale plotting.
 """
 
 import numpy as np
@@ -42,28 +42,6 @@ class MonteCarloSimulator:
         if not self.trade_history:
             raise ValueError("No trade history provided")
 
-        # ── FIX: the original filter looked for trade.get('type') == 'sell'
-        # plus a 'pnl_pct' field. Trades produced by MomentumLogic /
-        # BacktestMomentumStrategy never have a 'type' field at all (they
-        # use 'direction': 'long'/'short') and never have 'pnl_pct' (they
-        # have 'profit', a dollar amount). That filter matched zero real
-        # trades, which is why this simulator was silently running on
-        # whatever stale/unrelated data happened to be passed in instead
-        # of the actual backtest results, with no error ever raised.
-        #
-        # Every entry in trade_history from this strategy is already a
-        # completed/closed trade (record_trade() is only called on a full
-        # exit), so there's nothing to filter by "type" — we just need to
-        # convert each trade's dollar profit into a percent return so it
-        # can be fed into the multiplicative equity-curve model below.
-        #
-        # NOTE: this normalizes by starting capital (self.initial_capital),
-        # not by the equity at the moment of each individual trade. Since
-        # your strategy risks a small, fairly stable % of equity per trade,
-        # this is a reasonable approximation — but it is NOT exactly the
-        # same as true equity-relative return. If you want exact accuracy,
-        # have your strategy record an 'equity_at_entry' field per trade
-        # and this code will prefer that automatically.
         skipped = 0
         for trade in self.trade_history:
             if 'pnl_pct' in trade:
@@ -113,7 +91,7 @@ class MonteCarloSimulator:
         excess_returns = np.array(self.trade_returns)
         return np.mean(excess_returns) / np.std(excess_returns) if np.std(excess_returns) > 0 else 0
 
-    def run_simulation(self, n_simulations=1000, n_trades=100, method='parametric'):
+    def run_simulation(self, n_simulations=1000, n_trades=1000, method='parametric', max_position_capital=None):
         """
         Run Monte Carlo simulation with multiple methods.
 
@@ -121,6 +99,7 @@ class MonteCarloSimulator:
             n_simulations: Number of random paths to generate
             n_trades: Number of trades per simulation
             method: 'parametric', 'bootstrap', or 'hybrid'
+            max_position_capital: Maximum allowed capital per trade position (None for unconstrained geometric compounding)
 
         Returns:
             dict: Simulation results with equity curves and statistics
@@ -129,6 +108,8 @@ class MonteCarloSimulator:
         print(f"   Method: {method.upper()}")
         print(f"   Simulations: {n_simulations:,}")
         print(f"   Trades per path: {n_trades}")
+        if max_position_capital:
+            print(f"   Max Position Capital Cap: ${max_position_capital:,.2f}")
 
         simulation_results = {
             'equity_curves': [],
@@ -139,7 +120,7 @@ class MonteCarloSimulator:
         }
 
         for i in range(n_simulations):
-            equity_curve, trades = self._generate_path(n_trades, method)
+            equity_curve, trades = self._generate_path(n_trades, method, max_position_capital)
 
             simulation_results['equity_curves'].append(equity_curve)
             simulation_results['final_capitals'].append(equity_curve[-1])
@@ -147,14 +128,15 @@ class MonteCarloSimulator:
             max_dd = self._calculate_max_drawdown(equity_curve)
             simulation_results['max_drawdowns'].append(max_dd)
 
-            returns = np.diff(equity_curve) / equity_curve[:-1]
+            eq_array = np.array(equity_curve)
+            returns = np.diff(eq_array) / eq_array[:-1]
             sharpe = np.mean(returns) / np.std(returns) if np.std(returns) > 0 else 0
             simulation_results['sharpe_ratios'].append(sharpe)
 
             wins = sum(1 for t in trades if t > 0)
             simulation_results['win_rates'].append(wins / len(trades) if trades else 0)
 
-            if (i + 1) % (n_simulations // 10) == 0:
+            if (i + 1) % max(1, (n_simulations // 10)) == 0:
                 print(f"   Progress: {(i + 1) / n_simulations * 100:.0f}%")
 
         print("✅ Simulation complete!")
@@ -163,7 +145,7 @@ class MonteCarloSimulator:
 
         return simulation_results
 
-    def _generate_path(self, n_trades, method='parametric'):
+    def _generate_path(self, n_trades, method='parametric', max_position_capital=None):
         """Generate single simulation path using specified method"""
         equity = [self.initial_capital]
         trades = []
@@ -190,7 +172,16 @@ class MonteCarloSimulator:
             else:
                 raise ValueError(f"Unknown method: {method}")
 
-            new_equity = equity[-1] * (1 + trade_return)
+            current_equity = equity[-1]
+
+            # Apply position capacity constraint if provided
+            if max_position_capital is not None:
+                allocated_capital = min(current_equity, max_position_capital)
+                pnl = allocated_capital * trade_return
+                new_equity = max(0.0, current_equity + pnl)
+            else:
+                new_equity = max(0.0, current_equity * (1 + trade_return))
+
             equity.append(new_equity)
             trades.append(trade_return)
 
@@ -204,18 +195,19 @@ class MonteCarloSimulator:
         for value in equity_curve:
             if value > peak:
                 peak = value
-            dd = (peak - value) / peak
-            if dd > max_dd:
-                max_dd = dd
+            if peak > 0:
+                dd = (peak - value) / peak
+                if dd > max_dd:
+                    max_dd = dd
 
         return max_dd * 100
 
     def _calculate_statistics(self, results):
         """Calculate statistical summary of simulation results"""
-        stats = {}
+        stats_dict = {}
 
         final_caps = results['final_capitals']
-        stats['final_capital'] = {
+        stats_dict['final_capital'] = {
             'mean': np.mean(final_caps),
             'median': np.median(final_caps),
             'std': np.std(final_caps),
@@ -227,7 +219,7 @@ class MonteCarloSimulator:
         }
 
         returns = [(c - self.initial_capital) / self.initial_capital * 100 for c in final_caps]
-        stats['returns'] = {
+        stats_dict['returns'] = {
             'mean': np.mean(returns),
             'median': np.median(returns),
             'std': np.std(returns),
@@ -235,29 +227,29 @@ class MonteCarloSimulator:
             'percentile_95': np.percentile(returns, 95)
         }
 
-        stats['drawdown'] = {
+        stats_dict['drawdown'] = {
             'mean': np.mean(results['max_drawdowns']),
             'median': np.median(results['max_drawdowns']),
             'worst': np.max(results['max_drawdowns']),
             'percentile_95': np.percentile(results['max_drawdowns'], 95)
         }
 
-        stats['sharpe'] = {
+        stats_dict['sharpe'] = {
             'mean': np.mean(results['sharpe_ratios']),
             'median': np.median(results['sharpe_ratios']),
             'percentile_5': np.percentile(results['sharpe_ratios'], 5)
         }
 
-        return stats
+        return stats_dict
 
-    def visualize_results(self, results, save_path='monte_carlo_analysis.png'):
+    def visualize_results(self, results, save_path='monte_carlo_analysis.png', log_scale=False):
         """Create comprehensive visualization of Monte Carlo results"""
         fig = plt.figure(figsize=(20, 12))
         gs = GridSpec(3, 3, figure=fig, hspace=0.3, wspace=0.3)
 
         # 1. Equity Curves
         ax1 = fig.add_subplot(gs[0:2, :2])
-        self._plot_equity_curves(ax1, results)
+        self._plot_equity_curves(ax1, results, log_scale=log_scale)
 
         # 2. Final Capital Distribution
         ax2 = fig.add_subplot(gs[0, 2])
@@ -273,7 +265,7 @@ class MonteCarloSimulator:
 
         # 5. Probability Cone
         ax5 = fig.add_subplot(gs[2, 1])
-        self._plot_probability_cone(ax5, results)
+        self._plot_probability_cone(ax5, results, log_scale=log_scale)
 
         # 6. Statistics Summary
         ax6 = fig.add_subplot(gs[2, 2])
@@ -286,7 +278,7 @@ class MonteCarloSimulator:
         print(f"✅ Monte Carlo visualization saved to: {save_path}")
         plt.show()
 
-    def _plot_equity_curves(self, ax, results):
+    def _plot_equity_curves(self, ax, results, log_scale=False):
         """Plot all simulated equity curves with percentiles"""
         curves = np.array(results['equity_curves'])
         n_trades = curves.shape[1]
@@ -313,25 +305,29 @@ class MonteCarloSimulator:
         ax.set_title('Simulated Equity Curves', fontsize=12, fontweight='bold')
         ax.legend(loc='best', fontsize=9)
         ax.grid(True, alpha=0.3)
-        ax.ticklabel_format(style='plain', axis='y')
+
+        if log_scale:
+            ax.set_yscale('log')
+        else:
+            ax.ticklabel_format(style='plain', axis='y')
 
     def _plot_final_capital_distribution(self, ax, results):
         """Plot distribution of final capital values"""
         final_caps = results['final_capitals']
-        stats = results['statistics']['final_capital']
+        stats_cap = results['statistics']['final_capital']
 
         ax.hist(final_caps, bins=50, alpha=0.7, color='blue', edgecolor='black')
 
-        ax.axvline(stats['mean'], color='red', linestyle='--',
-                   linewidth=2, label=f"Mean: ${stats['mean']:,.0f}")
-        ax.axvline(stats['median'], color='green', linestyle='--',
-                   linewidth=2, label=f"Median: ${stats['median']:,.0f}")
+        ax.axvline(stats_cap['mean'], color='red', linestyle='--',
+                   linewidth=2, label=f"Mean: ${stats_cap['mean']:,.0f}")
+        ax.axvline(stats_cap['median'], color='green', linestyle='--',
+                   linewidth=2, label=f"Median: ${stats_cap['median']:,.0f}")
         ax.axvline(self.initial_capital, color='orange', linestyle='--',
                    linewidth=2, label=f"Initial: ${self.initial_capital:,.0f}")
 
         ax.set_xlabel('Final Capital ($)', fontsize=10)
         ax.set_ylabel('Frequency', fontsize=10)
-        ax.set_title(f'Final Capital Distribution\nProfit Prob: {stats["prob_profit"] * 100:.1f}%',
+        ax.set_title(f'Final Capital Distribution\nProfit Prob: {stats_cap["prob_profit"] * 100:.1f}%',
                      fontsize=11, fontweight='bold')
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3, axis='y')
@@ -339,14 +335,14 @@ class MonteCarloSimulator:
     def _plot_drawdown_distribution(self, ax, results):
         """Plot distribution of maximum drawdowns"""
         drawdowns = results['max_drawdowns']
-        stats = results['statistics']['drawdown']
+        stats_dd = results['statistics']['drawdown']
 
         ax.hist(drawdowns, bins=50, alpha=0.7, color='red', edgecolor='black')
 
-        ax.axvline(stats['mean'], color='blue', linestyle='--',
-                   linewidth=2, label=f"Mean: {stats['mean']:.2f}%")
-        ax.axvline(stats['worst'], color='darkred', linestyle='--',
-                   linewidth=2, label=f"Worst: {stats['worst']:.2f}%")
+        ax.axvline(stats_dd['mean'], color='blue', linestyle='--',
+                   linewidth=2, label=f"Mean: {stats_dd['mean']:.2f}%")
+        ax.axvline(stats_dd['worst'], color='darkred', linestyle='--',
+                   linewidth=2, label=f"Worst: {stats_dd['worst']:.2f}%")
 
         ax.set_xlabel('Max Drawdown (%)', fontsize=10)
         ax.set_ylabel('Frequency', fontsize=10)
@@ -376,7 +372,7 @@ class MonteCarloSimulator:
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3, axis='y')
 
-    def _plot_probability_cone(self, ax, results):
+    def _plot_probability_cone(self, ax, results, log_scale=False):
         """Plot probability cone showing likely equity paths"""
         curves = np.array(results['equity_curves'])
 
@@ -396,7 +392,11 @@ class MonteCarloSimulator:
         ax.set_title('Probability Cone', fontsize=11, fontweight='bold')
         ax.legend(fontsize=8, loc='best')
         ax.grid(True, alpha=0.3)
-        ax.ticklabel_format(style='plain', axis='y')
+
+        if log_scale:
+            ax.set_yscale('log')
+        else:
+            ax.ticklabel_format(style='plain', axis='y')
 
     def _plot_statistics_summary(self, ax, results):
         """Display key statistics as text"""
