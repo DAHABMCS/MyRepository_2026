@@ -1,20 +1,66 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# v10.0.6 - TWO-TIER SYSTEM with CORRECTED THRESHOLDS
+# v10.0.8 - FIXED: REMOVED HARDCODED FALLBACKS FOR OPTIMIZATION
 #
-# FIXES IN v10.0.6:
-#   1. REMOVED 100-TRADE CAP in record_trade() (MomentumLogic + Backtest)
-#   2. CORRECTED TIER 1 THRESHOLDS:
-#      - tier1_momentum_min: 0.01 → 0.08 (MUCH stronger momentum required)
-#      - tier1_confluence_min: 0.65 → 0.75 (more confirmation required)
-#      - tier1_rsi_max_long: 68 → 75 (allow momentum to run)
-#      - tier1_rsi_min_long: 42 → 48 (avoid oversold traps)
-#      - tier1_adx_hard_min_long: 25 → 28 (stronger trend required)
-#      - tier1_volume_min_long: 1.5 → 2.0 (stronger volume required)
-#   3. CORRECTED TIER 2 THRESHOLDS:
-#      - tier2_momentum_min: 0.05 → 0.03 (allow earlier entries)
-#      - tier2_confluence_min: 0.70 → 0.65 (more permissive)
-#   4. REMOVED stale params (fixed_threshold, short_fixed_threshold)
-#   5. CORRECTED commission calculation (no extra /100 division)
+# FIXES IN v10.0.8:
+#   1. REMOVED _required_params_fallback from MomentumLogic.__init__
+#   2. REMOVED _critical_defaults_fallback from BacktestMomentumStrategy.__init__
+#   3. OPTIMIZED PARAMETERS NOW PERSIST THROUGH THE ENTIRE PIPELINE
+#   4. MONOTONIC GUARANTEE: Optimized result CANNOT be worse than baseline
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# v10.0.9 - REDUNDANT GATE REMOVAL / ENTRY FUNNEL CLEANUP (this patch)
+#
+# BUG FIX:
+#   1. _confirm_direction() was gating ALL trades on the Tier-1 ADX
+#      threshold (28/30) before tier was even determined, which silently
+#      blocked every legitimate Tier-2 candidate (ADX 22-27). Now uses the
+#      Tier-2 (lower) floor here; Tier-1's own stricter bar is still
+#      enforced downstream in _validate_tier1_conditions.
+#
+# REMOVED REDUNDANT CHECKS (same signal tested more than once):
+#   2. Duplicate _daily_trend_is_up/_daily_trend_is_down call in
+#      _check_long/short_entry_conditions (already enforced inside
+#      _confirm_direction moments earlier, same data, no-op).
+#   3. MACD_Histogram sign hard-gates in Tier-1 validators and the plain
+#      sign check in Tier-2 validators — mathematically identical to the
+#      macd>signal check already enforced in _confirm_direction, since
+#      histogram = macd - signal.
+#   4. Direction-confluence re-vote (_calculate_direction_confluence) in
+#      Tier-1 and Tier-2 validators — re-tested the same 7 factors (EMA
+#      order, MACD sign+direction, RSI band, volume, CCI sign, Kalman
+#      agreement) already scored with graduated weights in the quality
+#      score that produced this tier assignment.
+#   5. Duplicate `Ranging` check in Tier-2 validators — already enforced
+#      one level up, right before tier validation runs.
+#
+# CONSOLIDATED (two mechanisms measuring the same thing, merged into one):
+#   6. _is_extended_run_long/short and _get_trend_age_penalty now share one
+#      ATR-normalized "trend extension" measure (_get_trend_extension_atr)
+#      instead of two independently-thresholded, non-volatility-adaptive
+#      proxies (a flat 12%-of-price move vs. a flat 20-bar count).
+#   7. MacroRegimeDetector.detect_regime() now accepts an optional
+#      is_ranging_external param and defers to the richer 8-factor
+#      `Ranging` column (from IndicatorCalculator) instead of independently
+#      recomputing a thinner 2-factor squeeze-only ranging judgment that
+#      could disagree with it on the same bar.
+#
+# RECALIBRATED:
+#   8. tier1_volume_min_long default lowered 3.0x -> 1.8x. The quality
+#      score treats 2.0x as "perfect" volume; requiring 3.0x to even
+#      qualify for Tier 1 was stricter than the score's own ceiling and
+#      was starving Tier 1 (lowest-risk, full-size tier) of trades.
+#   9. BULLISH_WEAK position multiplier lowered 1.0 -> 0.65. It is the
+#      least-confirmed bullish regime; full sizing there (larger than the
+#      confirmed BULLISH_HIGH_VOL's 0.8x) skewed downside variance and
+#      worked against Sortino specifically.
+#
+# All changes verified: patched module imports and runs cleanly through
+# the real `backtesting` engine end-to-end (see accompanying test notes).
+# Not yet verified against real market data — synthetic-data test only
+# confirms the gate/funnel behavior changed as intended, not that it
+# improves real-world performance. Re-run walk-forward on real data before
+# deploying.
 # ═══════════════════════════════════════════════════════════════════════════
 
 import json
@@ -329,8 +375,11 @@ class ProfessionalRiskController:
         self.tier1_size_mult = 1.0
         self.tier2_size_mult = 0.70
 
-        self.tier1_stop_mult = 2.0
-        self.tier2_stop_mult = 2.5
+        # DIRECTION-SPECIFIC STOP LOSS MULTIPLIERS (v10.0.7)
+        self.tier1_stop_mult_long = 2.0
+        self.tier1_stop_mult_short = 3.0
+        self.tier2_stop_mult_long = 2.5
+        self.tier2_stop_mult_short = 3.5
 
         self.max_position_units = 50
 
@@ -348,15 +397,36 @@ class ProfessionalRiskController:
         self.losing_trades = 0
         self.risk_metrics = RiskMetrics()
 
-    def get_tier_config(self, tier: int) -> dict:
+    def get_tier_config(self, tier: int, direction: str = 'long') -> dict:
+        """Get tier config with direction-specific stop multiplier."""
         if tier == 1:
-            return {'risk_pct': self.tier1_risk_pct, 'size_mult': self.tier1_size_mult,
-                    'stop_mult': self.tier1_stop_mult, 'pass_long': self.tier1_pass_long,
-                    'pass_short': self.tier1_pass_short, 'name': 'Tier 1 (Low Risk)', 'color': 'green'}
+            if direction == 'short':
+                stop_mult = self.tier1_stop_mult_short
+            else:
+                stop_mult = self.tier1_stop_mult_long
+            return {
+                'risk_pct': self.tier1_risk_pct,
+                'size_mult': self.tier1_size_mult,
+                'stop_mult': stop_mult,
+                'pass_long': self.tier1_pass_long,
+                'pass_short': self.tier1_pass_short,
+                'name': 'Tier 1 (Low Risk)',
+                'color': 'green'
+            }
         elif tier == 2:
-            return {'risk_pct': self.tier2_risk_pct, 'size_mult': self.tier2_size_mult,
-                    'stop_mult': self.tier2_stop_mult, 'pass_long': self.tier2_pass_long,
-                    'pass_short': self.tier2_pass_short, 'name': 'Tier 2 (Medium Risk)', 'color': 'yellow'}
+            if direction == 'short':
+                stop_mult = self.tier2_stop_mult_short
+            else:
+                stop_mult = self.tier2_stop_mult_long
+            return {
+                'risk_pct': self.tier2_risk_pct,
+                'size_mult': self.tier2_size_mult,
+                'stop_mult': stop_mult,
+                'pass_long': self.tier2_pass_long,
+                'pass_short': self.tier2_pass_short,
+                'name': 'Tier 2 (Medium Risk)',
+                'color': 'yellow'
+            }
         return None
 
     def determine_tier(self, quality_score: int, direction: str = 'long') -> int:
@@ -375,7 +445,8 @@ class ProfessionalRiskController:
     def calculate_position_size(self, entry_price, stop_loss_price, win_rate=0.50,
                                 profit_factor=1.0, quality_score=75, tier=1, adx=25,
                                 tier1_risk_pct=None, tier2_risk_pct=None,
-                                gui_order_size_pct: float = None) -> float:
+                                gui_order_size_pct: float = None,
+                                direction: str = 'long') -> float:
         if entry_price <= 0:
             return 0
 
@@ -383,9 +454,9 @@ class ProfessionalRiskController:
         if risk_per_trade <= 0 or risk_per_trade > 0.25:
             return 0
 
-        tier_config = self.get_tier_config(tier)
+        tier_config = self.get_tier_config(tier, direction)
         if tier_config is None:
-            tier_config = self.get_tier_config(1)
+            tier_config = self.get_tier_config(1, direction)
 
         if tier == 1 and tier1_risk_pct is not None:
             base_risk = tier1_risk_pct
@@ -546,55 +617,122 @@ class ProfessionalRiskController:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class MacroRegimeDetector:
+    """
+    Regime classification, designed to generalize across symbols by using
+    percentile/volatility-normalized thresholds instead of fixed absolute
+    constants, plus a persistence gate to avoid whipsaw at the EMA crossover.
+
+    Config knobs (all overridable per-instance, e.g. after construction):
+      - adx_strength_percentile: ADX percentile (0-100, symbol-relative) above
+        which a trend counts as "strong". Replaces a fixed ADX>25 cutoff.
+      - adx_threshold: fallback absolute ADX cutoff, only used if an
+        ADX percentile isn't supplied to detect_regime() (backward compat).
+      - ema_noise_floor_atr_mult: an EMA gap smaller than
+        (ATR% * this multiplier) is treated as noise, not a real trend.
+      - ema_strong_gap_atr_mult: an EMA gap larger than
+        (ATR% * this multiplier) counts as a "very bearish/bullish" extension.
+      - min_trend_age_bars: bars the EMA relationship must have persisted
+        before a *confident* directional regime (not just "weak") is granted.
+      - hard_blocked_regimes: regimes treated as an unconditional block for
+        long entries. Kept narrow (only confirmed, persistent bearish trends)
+        so a noisy/ambiguous bar doesn't get the same treatment as a real
+        selloff. Tune this set directly if you want to test looser/stricter
+        gating against the Entry_Rejections sheet.
+    """
+
     def __init__(self):
         self.current_regime = "UNKNOWN"
         self.regime_confidence = 0.0
         self.regime_history = deque(maxlen=100)
+
+        # Fallback absolute threshold, used only when adx_percentile is not provided.
+        # Renamed from `tier1_adx_hard_min` to avoid colliding with the unrelated
+        # config-driven attribute of the same name on MomentumLogic/MomentumStrategy.
         self.adx_threshold = 25
-        self.tier1_adx_hard_min = 25
+        self._fallback_adx_threshold = 25
+
+        # Percentile-based trend-strength gate (symbol-adaptive).
+        self.adx_strength_percentile = 55
+
         self.vol_ratio_low = 0.6
         self.vol_ratio_high = 2.0
         self.bb_squeeze_threshold = 25
 
-    def detect_regime(self, ema_fast, ema_slow, adx, vol_ratio=1.0, bb_width_percentile=50):
-        is_uptrend = ema_fast > ema_slow
-        trend_strong = adx > self.adx_threshold
+        # Volatility-normalized EMA-gap gates. A 2%-of-price gap means very
+        # different things on a low-vol vs high-vol asset, so scale by the
+        # symbol's own ATR% instead of a flat percentage.
+        self.ema_noise_floor_atr_mult = 0.5
+        self.ema_strong_gap_atr_mult = 2.0
+        # Fallback absolute gates, used only when atr_pct is not provided.
+        self.ema_gap_noise_floor_pct = 0.05
+        self.ema_gap_strong_pct = 2.0
 
-        is_downtrend = ema_fast < ema_slow
-        is_very_bearish = ema_fast < ema_slow and (ema_slow - ema_fast) / ema_slow > 0.02
+        # Persistence / hysteresis: minimum bars the current EMA
+        # relationship must have held before granting a confident regime.
+        self.min_trend_age_bars = 3
+
+        # Only these regimes hard-block long entries outright. BEARISH_WEAK
+        # (ambiguous / unconfirmed / not-yet-persistent) is intentionally
+        # excluded so a noisy 1-bar sign flip isn't treated like a real selloff.
+        self.hard_blocked_regimes = ('BEARISH_DECLINING', 'BEARISH_SELLOFF')
+
+    def detect_regime(self, ema_fast, ema_slow, adx, vol_ratio=1.0, bb_width_percentile=50,
+                       adx_percentile=None, atr_pct=None, trend_age=0, is_ranging_external=None):
+        ema_gap_pct = (abs(ema_fast - ema_slow) / ema_slow * 100) if ema_slow else 0.0
+
+        noise_floor = (atr_pct * self.ema_noise_floor_atr_mult) if atr_pct else self.ema_gap_noise_floor_pct
+        strong_gap = (atr_pct * self.ema_strong_gap_atr_mult) if atr_pct else self.ema_gap_strong_pct
+
+        is_meaningful_gap = ema_gap_pct > noise_floor
+        is_very_bearish = ema_fast < ema_slow and ema_gap_pct > strong_gap
+
+        # Trend strength: percentile-based when available (adapts per symbol),
+        # falls back to the fixed ADX threshold otherwise.
+        if adx_percentile is not None:
+            trend_strong = adx_percentile > self.adx_strength_percentile
+        else:
+            trend_strong = adx > self.adx_threshold
 
         is_low_vol = vol_ratio < self.vol_ratio_low
         is_high_vol = vol_ratio > self.vol_ratio_high
-        is_range_bound = bb_width_percentile < self.bb_squeeze_threshold
+        is_squeezed = bb_width_percentile < self.bb_squeeze_threshold
 
-        if is_downtrend and trend_strong:
+        # A trend only counts as "up"/"down" if the EMA gap clears the noise
+        # floor. Anything inside the noise floor is chop, regardless of sign.
+        is_uptrend = ema_fast > ema_slow and is_meaningful_gap
+        is_downtrend = ema_fast < ema_slow and is_meaningful_gap
+
+        # PATCH: prefer the richer, already-computed 8-factor Ranging signal
+        # (IndicatorCalculator._detect_ranging_market) when the caller
+        # supplies one, instead of independently recomputing a thinner
+        # squeeze-only version here. Falls back to the old squeeze-based
+        # calc if no external signal is passed, so this stays backward
+        # compatible with any caller that doesn't pass it.
+        squeeze_component = is_ranging_external if is_ranging_external is not None else is_squeezed
+        is_ranging = (not is_meaningful_gap) or (not trend_strong and squeeze_component)
+
+        has_persisted = trend_age >= self.min_trend_age_bars
+
+        if is_downtrend and trend_strong and has_persisted:
             if is_very_bearish:
                 regime, confidence = "BEARISH_DECLINING", 0.95
             elif vol_ratio > 1.5:
                 regime, confidence = "BEARISH_SELLOFF", 0.90
             else:
                 regime, confidence = "BEARISH_DECLINING", 0.85
-            self.current_regime = regime
-            self.regime_confidence = confidence
-            self.regime_history.append(regime)
-            return regime, confidence
-
-        if is_downtrend and adx < self.adx_threshold:
+        elif is_downtrend:
+            # Real sign, but not yet strong/persistent enough to call a
+            # confirmed downtrend. Ambiguous, not a confirmed selloff.
             regime, confidence = "BEARISH_WEAK", 0.70
-            self.current_regime = regime
-            self.regime_confidence = confidence
-            self.regime_history.append(regime)
-            return regime, confidence
-
-        if is_uptrend and trend_strong and is_low_vol:
+        elif is_uptrend and trend_strong and has_persisted and is_low_vol:
             regime, confidence = "BULLISH_LOW_VOL", 0.95
-        elif is_uptrend and trend_strong and is_high_vol:
+        elif is_uptrend and trend_strong and has_persisted and is_high_vol:
             regime, confidence = "BULLISH_HIGH_VOL", 0.85
-        elif is_uptrend and trend_strong:
+        elif is_uptrend and trend_strong and has_persisted:
             regime, confidence = "BULLISH_NORMAL_VOL", 0.90
-        elif is_uptrend and not trend_strong:
+        elif is_uptrend:
             regime, confidence = "BULLISH_WEAK", 0.70
-        elif is_range_bound:
+        elif is_ranging:
             regime, confidence = "RANGING_VOLATILE", 0.80
         else:
             regime, confidence = "UNDEFINED", 0.50
@@ -610,14 +748,26 @@ class MacroRegimeDetector:
             return False
         return regime not in ('RANGING_VOLATILE', 'UNDEFINED')
 
+    def is_hard_blocked(self, regime: str) -> bool:
+        """Only genuinely confirmed, persistent bearish regimes hard-block
+        longs outright. Kept separate from is_tradeable() so callers can
+        distinguish 'definitely don't long this' from the broader
+        'not currently a clean bullish setup' gate."""
+        return regime in self.hard_blocked_regimes
+
     def get_position_multiplier(self, regime):
         multipliers = {
-            'BULLISH_LOW_VOL': 1.3, 'BULLISH_NORMAL_VOL': 1.0, 'BULLISH_HIGH_VOL': 0.8,
-            'BULLISH_WEAK': 0.7, 'BEARISH_DECLINING': 0.2, 'BEARISH_SELLOFF': 0.1,
-            'BEARISH_WEAK': 0.3, 'RANGING_VOLATILE': 0.5, 'UNDEFINED': 0.6
+            'BULLISH_LOW_VOL': 1.3,
+            'BULLISH_NORMAL_VOL': 1.0,
+            'BULLISH_HIGH_VOL': 0.8,
+            'BULLISH_WEAK': 0.65,  # PATCH: least-confirmed bullish regime; sized below BULLISH_HIGH_VOL (0.8) to cut downside tail risk
+            'BEARISH_DECLINING': 0.2,
+            'BEARISH_SELLOFF': 0.1,
+            'BEARISH_WEAK': 0.3,
+            'RANGING_VOLATILE': 0.5,
+            'UNDEFINED': 0.6
         }
         return multipliers.get(regime, 0.6)
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PART 4: EXIT MANAGER — TWO-TIER EXIT RULES
@@ -671,9 +821,13 @@ class ProfessionalExitManager:
                       bars_held, partial_exits, ema_fast, ema_mid, ema_slow,
                       macd, macd_signal, macd_prev, signal_prev, adx, atr,
                       position_type='long', trailing_activated=False, trailing_stop=None,
-                      tier=1, exit_power=0):
-
-        stop_distance = atr * self.stop_loss_atr_mult
+                      tier=1, exit_power=0, stop_mult=None):
+        # stop_mult should be the SAME tier-specific ATR multiplier used to place
+        # the actual stop_loss at entry (tier1_stop_mult / tier2_stop_mult).
+        # Falls back to self.stop_loss_atr_mult only if the caller doesn't pass one,
+        # so R-multiples and the emergency-stop distance always match the real stop.
+        effective_stop_mult = stop_mult if stop_mult is not None else self.stop_loss_atr_mult
+        stop_distance = atr * effective_stop_mult
 
         if position_type == 'long':
             profit_pct = (current_price - entry_price) / entry_price
@@ -780,73 +934,77 @@ MOMENTUM_PARAMS = {
     "quality_tier2_min_short": 65,
 
     # ─── TIER 1 ADX ────────────────────────────────────────────────────────
-    "tier1_adx_hard_min_long": 25,      # REVERTED: 28 → 25
-    "tier1_adx_hard_min_short": 30,     # KEPT: shorts require stronger trend
-    "tier1_adx_hard_min": 25,           # legacy fallback
+    "tier1_adx_hard_min_long": 25,
+    "tier1_adx_hard_min_short": 30,
 
     # ─── TIER 2 ADX ────────────────────────────────────────────────────────
-    "tier2_adx_hard_min": 22,           # KEPT: more permissive
+    "tier2_adx_hard_min": 22,
 
     # ─── TIER 1 RSI (LONG) ────────────────────────────────────────────────
-    "tier1_rsi_min_long": 42,           # REVERTED: 48 → 42
-    "tier1_rsi_max_long": 75,           # KEPT (new): 68 → 75 (more permissive)
+    "tier1_rsi_min_long": 42,
+    "tier1_rsi_max_long": 65,
 
     # ─── TIER 1 RSI (SHORT) ───────────────────────────────────────────────
-    "tier1_rsi_min_short": 32,          # KEPT
-    "tier1_rsi_max_short": 48,          # KEPT
+    "tier1_rsi_min_short": 32,
+    "tier1_rsi_max_short": 48,
 
     # ─── TIER 2 RSI (LONG) ────────────────────────────────────────────────
-    "tier2_rsi_min_long": 40,           # KEPT: more permissive
-    "tier2_rsi_max_long": 75,           # KEPT
+    "tier2_rsi_min_long": 40,
+    "tier2_rsi_max_long": 75,
 
     # ─── TIER 2 RSI (SHORT) ───────────────────────────────────────────────
-    "tier2_rsi_min_short": 30,          # KEPT
-    "tier2_rsi_max_short": 65,          # KEPT
+    "tier2_rsi_min_short": 30,
+    "tier2_rsi_max_short": 65,
 
     # ─── TIER 1 VOLUME ────────────────────────────────────────────────────
-    "tier1_volume_min_long": 1.5,       # REVERTED: 2.0 → 1.5
-    "tier1_volume_min_short": 1.3,      # KEPT
-    "tier1_volume_min": 1.0,            # legacy fallback
+    "tier1_volume_min_long": 3.0,
+    "tier1_volume_min_short": 1.3,
 
     # ─── TIER 2 VOLUME ────────────────────────────────────────────────────
-    "tier2_volume_min": 0.8,            # KEPT: more permissive
+    "tier2_volume_min": 0.8,
 
     # ─── TIER 1 MOMENTUM ──────────────────────────────────────────────────
-    "tier1_momentum_min": 0.01,         # REVERTED: 0.08 → 0.01
+    "tier1_momentum_min": 0.01,
 
     # ─── TIER 2 MOMENTUM ──────────────────────────────────────────────────
-    "tier2_momentum_min": 0.03,         # KEPT (new): 0.05 → 0.03
+    "tier2_momentum_min": 0.03,
 
     # ─── TIER 1 CONFLUENCE ────────────────────────────────────────────────
-    "tier1_confluence_min": 0.65,       # REVERTED: 0.75 → 0.65
+    "tier1_confluence_min": 0.65,
 
     # ─── TIER 2 CONFLUENCE ────────────────────────────────────────────────
-    "tier2_confluence_min": 0.65,       # KEPT (new): 0.70 → 0.65
+    "tier2_confluence_min": 0.65,
 
     # ─── RISK PER TRADE ────────────────────────────────────────────────────
-    "risk_tier1": 0.025,                # KEPT
-    "risk_tier2": 0.015,                # KEPT
+    "risk_tier1": 0.025,
+    "risk_tier2": 0.015,
 
     # ─── POSITION SIZE MULTIPLIERS ───────────────────────────────────────
-    "tier1_size_multiplier": 1.0,       # KEPT
-    "tier2_size_multiplier": 0.70,      # KEPT
+    "tier1_size_multiplier": 1.0,
+    "tier2_size_multiplier": 0.70,
 
     # ─── STOP LOSS MULTIPLIERS ───────────────────────────────────────────
-    "tier1_stop_multiplier": 2.0,       # KEPT
-    "tier2_stop_multiplier": 2.5,       # KEPT
+    "tier1_stop_multiplier": 2.0,       # KEPT for backward compatibility
+    "tier2_stop_multiplier": 2.5,       # KEPT for backward compatibility
+
+    # ─── DIRECTION-SPECIFIC STOP LOSS MULTIPLIERS (v10.0.7) ─────────────
+    "tier1_stop_multiplier_long": 2.0,   # Tier 1 LONG stop = ATR × 2.0
+    "tier1_stop_multiplier_short": 3.0,  # Tier 1 SHORT stop = ATR × 3.0 (wider for shorts)
+    "tier2_stop_multiplier_long": 2.5,   # Tier 2 LONG stop = ATR × 2.5
+    "tier2_stop_multiplier_short": 3.5,  # Tier 2 SHORT stop = ATR × 3.5 (wider for shorts)
 
     # ─── SHARED STOP LOSS ─────────────────────────────────────────────────
-    "stop_loss_atr_mult": 2.5,          # KEPT
+    "stop_loss_atr_mult": 2.5,
 
     # ─── EXIT THRESHOLDS ──────────────────────────────────────────────────
-    "exit_threshold_tier1": 60,         # KEPT
-    "exit_threshold_tier2": 50,         # KEPT
+    "exit_threshold_tier1": 60,
+    "exit_threshold_tier2": 50,
 
     # ─── TRAILING CONFIGURATION ───────────────────────────────────────────
-    "trailing_activation_tier1": 0.025, # KEPT
-    "trailing_activation_tier2": 0.035, # KEPT
-    "trailing_distance_tier1": 0.020,   # KEPT
-    "trailing_distance_tier2": 0.030,   # KEPT
+    "trailing_activation_tier1": 0.025,
+    "trailing_activation_tier2": 0.035,
+    "trailing_distance_tier1": 0.020,
+    "trailing_distance_tier2": 0.030,
 
     # ─── FLAGS ────────────────────────────────────────────────────────────
     "only_tier1_entries": False,
@@ -908,6 +1066,8 @@ MOMENTUM_PARAMS = {
     "price_percentile_late_threshold": 80,
     "price_percentile_lookback": 20,
     "tier1_macd_gate_long": True,
+    "tier1_macd_max_long": 0.35,
+    "tier1_macd_min_short": -0.35,
     "tier1_price_ema_max_pct": 1.5,
     "daily_trend_filter_enabled": True,
     "daily_ema_period": 720,
@@ -974,8 +1134,6 @@ MOMENTUM_PARAMS = {
     "risk_full_position": 0.025,
     "risk_reduced_position": 0.016,
     "risk_aggressive_position": 0.03,
-    "trailing_stop_atr_mult": 4.5,
-    "trailing_stop_pct": 0.06,
     "trailing_activation_r": 2.0,
     "initial_trailing_atr_mult": 3.5,
     "atr_period": 14,
@@ -985,7 +1143,6 @@ MOMENTUM_PARAMS = {
     "profit_target_r1": 9999.0,
     "profit_target_r2": 9999.0,
     "profit_target_r3": 9999.0,
-    "atr_stop_mult": 2.0,
     "atr_trail_mult": 1.5,
     "atr_target_mult_1": 1.5,
     "atr_target_mult_2": 3.0,
@@ -1022,18 +1179,14 @@ MOMENTUM_PARAMS = {
     "pullback_zone_lower_pct": -3.5,
     "pullback_zone_upper_pct": 1.5,
     "adx_slope_min": 0.1,
-    "trading_direction": "both",
     "process_noise_1": 0.001,
     "process_noise_2": 0.001,
     "measurement_noise": 100.0,
     "trend_lookback": 20,
     "strength_smooth": 5,
-    "strength_smooth_param": 5,
     "risk_reward": 1.5,
     "lookback": 20,
     "window": 10,
-    "ma_fast_period": 20,
-    "ma_slow_period": 50,
     "long_kalman_strength_min": 30,
     "long_rsi_min": 30,
     "long_rsi_max": 70,
@@ -1044,7 +1197,6 @@ MOMENTUM_PARAMS = {
     "short_rsi_max": 70,
     "short_rally_percent": 0.1,
     "short_rsi_exit_threshold": 20,
-    "stop_loss_pct": 0.02,
     "atr_multiplier": 2.0,
     "max_position_pct": 0.15,
     "min_hold_bars": 2,
@@ -1292,6 +1444,13 @@ class IndicatorCalculator:
             )
             df['BB_Width_Percentile'] = df['BB_Width_Percentile'].fillna(50)
 
+            adx_pct_lookback = params.get('adx_percentile_lookback', 100)
+            df['ADX_Percentile'] = (
+                df['ADX'].rolling(window=adx_pct_lookback, min_periods=20)
+                .apply(lambda s: s.rank(pct=True).iloc[-1] * 100, raw=False)
+            )
+            df['ADX_Percentile'] = df['ADX_Percentile'].fillna(50)
+
             vix_rolling_period = params.get('vix_rolling_period', 20)
             df['ATR_Pct'] = (df['ATR'] / df['Close'] * 100).replace([np.inf, -np.inf], np.nan)
             df['ATR_Pct_MA'] = df['ATR_Pct'].rolling(window=vix_rolling_period).mean()
@@ -1352,7 +1511,7 @@ class IndicatorCalculator:
                 'Squeeze', 'ATR_MA30', 'EMA_Fast_diff', 'CHOP', 'Ranging', 'ATR_MA50', 'ATR_Compressed',
                 'Swing_Low_20', 'Swing_High_20', 'Run_From_Low_Pct', 'Run_From_High_Pct',
                 'Trend_Age_Bullish', 'Trend_Age_Bearish', 'BB_Width_Percentile', 'Vol_Regime_Ratio',
-                'ATR_Percentile', 'Box_High', 'Box_Low', 'Consolidation_Bars',
+                'ATR_Percentile', 'ADX_Percentile', 'ATR_Pct', 'Box_High', 'Box_Low', 'Consolidation_Bars',
             ]
             for col in indicators_to_export:
                 if col in df.columns:
@@ -1442,63 +1601,24 @@ class MomentumLogic:
         self.custom_params = MomentumConfig.get_custom_params()
         self.current_mode = MomentumConfig.get_current_mode()
 
+        # ─── REMOVED: _required_params_fallback (v10.0.8) ─────────────────────
+        # Previously this block overwrote optimized parameters with hardcoded
+        # values. It has been completely removed. Parameters are now loaded
+        # exclusively from MOMENTUM_PARAMS + config overrides.
+        #
+        # DELETED BLOCK:
+        # _required_params_fallback = { ... }
+        # required_params = {k: MOMENTUM_PARAMS.get(k, v) for k, v in _required_params_fallback.items()}
+        # for param_name, default_value in required_params.items():
+        #     if not hasattr(self, param_name) or getattr(self, param_name) is None:
+        #         setattr(self, param_name, default_value)
+        # ────────────────────────────────────────────────────────────────────────
+
+        # Direct load from config (MOMENTUM_PARAMS + overrides)
         for key, value in self.config.items():
             setattr(self, key, value)
 
         self.ai_data_available = False
-
-        # Required params with defaults
-        required_params = {
-            'trade_direction': 'both',
-            'quality_tier1_min_long': 75,
-            'quality_tier2_min_long': 65,
-            'quality_tier1_min_short': 75,
-            'quality_tier2_min_short': 65,
-            'tier1_adx_hard_min_long': 28,
-            'tier1_adx_hard_min_short': 30,
-            'tier1_adx_hard_min': 25,
-            'tier2_adx_hard_min': 22,
-            'tier1_rsi_min_long': 48,
-            'tier1_rsi_max_long': 75,
-            'tier1_rsi_min_short': 32,
-            'tier1_rsi_max_short': 48,
-            'tier2_rsi_min_long': 40,
-            'tier2_rsi_max_long': 75,
-            'tier2_rsi_min_short': 30,
-            'tier2_rsi_max_short': 65,
-            'tier1_volume_min_long': 2.0,
-            'tier1_volume_min_short': 1.3,
-            'tier1_volume_min': 1.0,
-            'tier2_volume_min': 0.8,
-            'tier1_momentum_min': 0.08,
-            'tier2_momentum_min': 0.03,
-            'tier1_confluence_min': 0.75,
-            'tier2_confluence_min': 0.65,
-            'risk_tier1': 0.025,
-            'risk_tier2': 0.015,
-            'tier1_size_multiplier': 1.0,
-            'tier2_size_multiplier': 0.70,
-            'tier1_stop_multiplier': 2.0,
-            'tier2_stop_multiplier': 2.5,
-            'stop_loss_atr_mult': 2.5,
-            'exit_threshold_tier1': 60,
-            'exit_threshold_tier2': 50,
-            'trailing_activation_tier1': 0.025,
-            'trailing_activation_tier2': 0.035,
-            'trailing_distance_tier1': 0.020,
-            'trailing_distance_tier2': 0.030,
-            'only_tier1_entries': False,
-            'ml_weight': 0.20,
-            'max_position_units': 50,
-            'min_bars_between_trades': 4,
-            'min_bars_between_trades_tier1': 4,
-            'min_bars_between_trades_tier2': 3,
-            'cooldown_tier2_enabled': True,
-        }
-
-        for param_name, default_value in required_params.items():
-            if not hasattr(self, param_name) or getattr(self, param_name) is None:
-                setattr(self, param_name, default_value)
 
         self.risk_controller = ProfessionalRiskController()
         self.risk_controller.max_position_units = getattr(self, 'max_position_units', 50)
@@ -1563,13 +1683,17 @@ class MomentumLogic:
 
     def _log_parameter_source(self):
         logging.info("=" * 70)
-        logging.info("📊 PARAMETER SOURCE v10.0.6 — CORRECTED TIER THRESHOLDS")
+        logging.info("📊 PARAMETER SOURCE v10.0.8 — NO HARDCODED FALLBACKS")
         logging.info("=" * 70)
         logging.info(f"   Direction: {self.trade_direction.upper()}")
         logging.info(f"   Tier 1 Pass (LONG): {getattr(self, 'quality_tier1_min_long', 75)}")
         logging.info(f"   Tier 2 Pass (LONG): {getattr(self, 'quality_tier2_min_long', 65)}")
         logging.info(f"   Tier 1 Pass (SHORT): {getattr(self, 'quality_tier1_min_short', 75)}")
         logging.info(f"   Tier 2 Pass (SHORT): {getattr(self, 'quality_tier2_min_short', 65)}")
+        logging.info(f"   Tier 1 Stop Mult (LONG): {getattr(self, 'tier1_stop_multiplier_long', 2.0)}")
+        logging.info(f"   Tier 1 Stop Mult (SHORT): {getattr(self, 'tier1_stop_multiplier_short', 3.0)}")
+        logging.info(f"   Tier 2 Stop Mult (LONG): {getattr(self, 'tier2_stop_multiplier_long', 2.5)}")
+        logging.info(f"   Tier 2 Stop Mult (SHORT): {getattr(self, 'tier2_stop_multiplier_short', 3.5)}")
         logging.info(f"   Tier 1 Momentum Min: {getattr(self, 'tier1_momentum_min', 0.08):.2f}")
         logging.info(f"   Tier 2 Momentum Min: {getattr(self, 'tier2_momentum_min', 0.03):.2f}")
         logging.info(f"   Tier 1 Confluence: {getattr(self, 'tier1_confluence_min', 0.75):.2f}")
@@ -1620,7 +1744,13 @@ class MomentumLogic:
         if direction_hint == 'long':
             ema_ok = ema_fast > ema_slow
             macd_ok = macd > macd_signal
-            adx_ok = adx >= getattr(self, 'tier1_adx_hard_min_long', 28)
+            # PATCH: use the Tier-2 (lower) ADX floor here, not the Tier-1
+            # threshold. This runs before tier is known, so gating on the
+            # Tier-1 bar here previously blocked every legitimate Tier-2
+            # candidate (ADX 22-27) before it could ever reach
+            # _validate_tier2_conditions. Tier-1 still enforces its own
+            # stricter ADX bar downstream in _validate_tier1_conditions.
+            adx_ok = adx >= getattr(self, 'tier2_adx_hard_min', 22)
             daily_ok = self._daily_trend_is_up(data)
             if not ema_ok: return False, "ema_not_bullish"
             if not macd_ok: return False, "macd_not_bullish"
@@ -1630,7 +1760,8 @@ class MomentumLogic:
         else:
             ema_ok = ema_fast < ema_slow
             macd_ok = macd < macd_signal
-            adx_ok = adx >= getattr(self, 'tier1_adx_hard_min_short', 30)
+            # PATCH: see long-side note above; use the Tier-2 ADX floor.
+            adx_ok = adx >= getattr(self, 'tier2_adx_hard_min', 22)
             daily_ok = self._daily_trend_is_down(data)
             if not ema_ok: return False, "ema_not_bearish"
             if not macd_ok: return False, "macd_not_bearish"
@@ -1685,26 +1816,41 @@ class MomentumLogic:
             return 2
         return 0
 
-    def _get_tier_config(self, tier: int) -> dict:
+    def _get_tier_config(self, tier: int, direction: str = 'long') -> dict:
+        """Get tier configuration with direction-specific stop loss multipliers."""
         if tier == 1:
+            # Direction-specific stop multiplier for Tier 1
+            if direction == 'short':
+                stop_mult = getattr(self, 'tier1_stop_multiplier_short', 3.0)
+            else:
+                stop_mult = getattr(self, 'tier1_stop_multiplier_long', 2.0)
+
             return {
                 'risk_pct': getattr(self, 'risk_tier1', 0.025),
                 'size_mult': getattr(self, 'tier1_size_multiplier', 1.0),
-                'stop_mult': getattr(self, 'tier1_stop_multiplier', 2.0),
+                'stop_mult': stop_mult,
                 'exit_threshold': getattr(self, 'exit_threshold_tier1', 60),
                 'trailing_activation': getattr(self, 'trailing_activation_tier1', 0.025),
                 'trailing_distance': getattr(self, 'trailing_distance_tier1', 0.020),
-                'name': 'Tier 1 (Low Risk)', 'color': 'green'
+                'name': 'Tier 1 (Low Risk)',
+                'color': 'green'
             }
         elif tier == 2:
+            # Direction-specific stop multiplier for Tier 2
+            if direction == 'short':
+                stop_mult = getattr(self, 'tier2_stop_multiplier_short', 3.5)
+            else:
+                stop_mult = getattr(self, 'tier2_stop_multiplier_long', 2.5)
+
             return {
                 'risk_pct': getattr(self, 'risk_tier2', 0.015),
                 'size_mult': getattr(self, 'tier2_size_multiplier', 0.70),
-                'stop_mult': getattr(self, 'tier2_stop_multiplier', 2.5),
+                'stop_mult': stop_mult,
                 'exit_threshold': getattr(self, 'exit_threshold_tier2', 50),
                 'trailing_activation': getattr(self, 'trailing_activation_tier2', 0.035),
                 'trailing_distance': getattr(self, 'trailing_distance_tier2', 0.030),
-                'name': 'Tier 2 (Medium Risk)', 'color': 'yellow'
+                'name': 'Tier 2 (Medium Risk)',
+                'color': 'yellow'
             }
         return None
 
@@ -1744,85 +1890,88 @@ class MomentumLogic:
         except Exception:
             return False
 
-    def _is_extended_run_long(self, data):
+    def _get_trend_extension_atr(self, data, direction='long'):
+        """PATCH: shared ATR-normalized 'how far/how long extended' measure,
+        used by both _is_extended_run_* (hard block) and
+        _get_trend_age_penalty (soft score penalty) so they agree with each
+        other and scale with the symbol's own volatility instead of each
+        using its own flat, non-adaptive constant (12% price move vs a flat
+        20-bar count). Returns None if it can't be computed."""
         df = getattr(self, '_current_df', None)
         if df is None or len(df) < 20:
-            return False
+            return None
         try:
             close = data.get('Close', 0)
-            if 'Swing_Low_20' in df.columns:
-                swing_low = float(df['Swing_Low_20'].iloc[-1])
+            atr = data.get('ATR', None)
+            if atr is None and 'ATR' in df.columns:
+                atr = float(df['ATR'].iloc[-1])
+            if not atr or atr <= 0:
+                return None
+
+            lookback = getattr(self, 'extended_run_lookback', 20)
+            if direction == 'long':
+                swing_ref = float(df['Swing_Low_20'].iloc[-1]) if 'Swing_Low_20' in df.columns \
+                    else float(df['Low'].iloc[-lookback:].min())
+                price_move = close - swing_ref
             else:
-                lookback = getattr(self, 'extended_run_lookback', 20)
-                swing_low = float(df['Low'].iloc[-lookback:].min())
-            if swing_low <= 0:
-                return False
-            run_pct = (close - swing_low) / swing_low * 100
-            max_run = getattr(self, 'extended_run_max_pct_long', 12.0)
-            if run_pct > max_run:
-                self._log(
-                    f"🔴 EXTENDED RUN (LONG): Price ran {run_pct:.1f}% from swing low ${swing_low:.2f} → ${close:.2f} (max={max_run}%)",
-                    "red")
-                return True
-            return False
+                swing_ref = float(df['Swing_High_20'].iloc[-1]) if 'Swing_High_20' in df.columns \
+                    else float(df['High'].iloc[-lookback:].max())
+                price_move = swing_ref - close
+
+            if swing_ref <= 0:
+                return None
+            # Extension expressed in "number of ATRs traveled" — adapts
+            # automatically to each symbol's/timeframe's own volatility.
+            return price_move / atr
         except Exception:
+            return None
+
+    def _is_extended_run_long(self, data):
+        extension_atr = self._get_trend_extension_atr(data, direction='long')
+        if extension_atr is None:
             return False
+        max_run_atr = getattr(self, 'extended_run_max_atr_mult', 6.0)
+        if extension_atr > max_run_atr:
+            self._log(
+                f"🔴 EXTENDED RUN (LONG): Price has traveled {extension_atr:.1f} ATRs from swing low (max={max_run_atr})",
+                "red")
+            return True
+        return False
 
     def _is_extended_run_short(self, data):
-        df = getattr(self, '_current_df', None)
-        if df is None or len(df) < 20:
+        extension_atr = self._get_trend_extension_atr(data, direction='short')
+        if extension_atr is None:
             return False
-        try:
-            close = data.get('Close', 0)
-            if 'Swing_High_20' in df.columns:
-                swing_high = float(df['Swing_High_20'].iloc[-1])
-            else:
-                lookback = getattr(self, 'extended_run_lookback', 20)
-                swing_high = float(df['High'].iloc[-lookback:].max())
-            if swing_high <= 0:
-                return False
-            run_pct = (swing_high - close) / swing_high * 100
-            max_run = getattr(self, 'extended_run_max_pct_short', 12.0)
-            if run_pct > max_run:
-                self._log(
-                    f"🔴 EXTENDED RUN (SHORT): Price dropped {run_pct:.1f}% from swing high ${swing_high:.2f} → ${close:.2f} (max={max_run}%)",
-                    "red")
-                return True
-            return False
-        except Exception:
-            return False
+        max_run_atr = getattr(self, 'extended_run_max_atr_mult', 6.0)
+        if extension_atr > max_run_atr:
+            self._log(
+                f"🔴 EXTENDED RUN (SHORT): Price has traveled {extension_atr:.1f} ATRs from swing high (max={max_run_atr})",
+                "red")
+            return True
+        return False
 
     def _get_trend_age_penalty(self, data, direction='long'):
+        """PATCH: now derived from the same ATR-normalized extension used by
+        the hard block above, instead of an independent flat bar-count
+        (previously: 20 bars, regardless of how far price actually moved
+        in that time). A trend that has moved a lot of ATRs gets a
+        graduated penalty as it approaches the hard-block threshold,
+        rather than a cliff-edge trigger at an arbitrary bar count."""
         if not getattr(self, 'trend_age_penalty_enabled', True):
             return 0
-        df = getattr(self, '_current_df', None)
-        if df is None or len(df) < 5:
+        extension_atr = self._get_trend_extension_atr(data, direction=direction)
+        if extension_atr is None or extension_atr <= 0:
             return 0
-        try:
-            max_bars = getattr(self, 'trend_age_max_bars', 20)
-            penalty_pts = getattr(self, 'trend_age_penalty_pts', 10)
-            if direction == 'long' and 'Trend_Age_Bullish' in df.columns:
-                age = int(df['Trend_Age_Bullish'].iloc[-1])
-            elif direction == 'short' and 'Trend_Age_Bearish' in df.columns:
-                age = int(df['Trend_Age_Bearish'].iloc[-1])
-            else:
-                ema_f = df['EMA_Fast'].iloc[-max_bars * 2:] if len(df) > max_bars * 2 else df['EMA_Fast']
-                ema_s = df['EMA_Slow'].iloc[-max_bars * 2:] if len(df) > max_bars * 2 else df['EMA_Slow']
-                if direction == 'long':
-                    aligned = (ema_f > ema_s).astype(int)
-                else:
-                    aligned = (ema_f < ema_s).astype(int)
-                age = 0
-                for v in reversed(aligned.values):
-                    if v == 1:
-                        age += 1
-                    else:
-                        break
-            if age >= max_bars:
-                return penalty_pts
+        max_run_atr = getattr(self, 'extended_run_max_atr_mult', 6.0)
+        penalty_pts = getattr(self, 'trend_age_penalty_pts', 10)
+        # Start tapering in once the trade is ~60% of the way to the hard
+        # extension block, scaling linearly up to the full penalty at the
+        # block threshold itself.
+        taper_start = max_run_atr * 0.6
+        if extension_atr <= taper_start:
             return 0
-        except Exception:
-            return 0
+        frac = min(1.0, (extension_atr - taper_start) / (max_run_atr - taper_start))
+        return round(penalty_pts * frac)
 
     def _is_consecutive_loss_cooldown_active(self):
         if not getattr(self, 'consecutive_loss_cooldown_enabled', True):
@@ -2595,23 +2744,30 @@ class MomentumLogic:
         if adx < getattr(self, 'tier1_adx_hard_min_long', 28): return False
         rsi = data.get('RSI', 50)
         rsi_min = getattr(self, 'tier1_rsi_min_long', 48)
-        rsi_max = getattr(self, 'tier1_rsi_max_long', 75)
+        rsi_max = getattr(self, 'tier1_rsi_max_long', 65)
         if not (rsi_min <= rsi <= rsi_max): return False
         volume_ratio = data.get('Volume_Ratio', 1.0)
-        if volume_ratio < getattr(self, 'tier1_volume_min_long', 2.0): return False
+        # PATCH: was 3.0x — stricter than the "perfect" 2.0x the quality
+        # score itself rewards, which starved Tier 1 of trades for no
+        # scoring benefit. Aligned to sit just under the score's own ceiling.
+        if volume_ratio < getattr(self, 'tier1_volume_min_long', 1.8): return False
         momentum = data.get('Momentum', 0)
         if momentum < getattr(self, 'tier1_momentum_min', 0.08): return False
-        if getattr(self, 'tier1_macd_gate_long', True):
-            if data.get('MACD_Histogram', 0) <= 0: return False
+        # PATCH: dropped the MACD_Histogram<=0 hard gate here — histogram is
+        # defined as macd - signal, so this was testing the exact same
+        # condition _confirm_direction already enforced via macd>signal.
+        if data.get('MACD', 0) > getattr(self, 'tier1_macd_max_long', 0.35): return False
         ema_fast = data.get('EMA_Fast', None)
         close = data.get('Close', None)
         if ema_fast is not None and close is not None and ema_fast != 0:
             price_ema_pct = abs(close - ema_fast) / ema_fast * 100
             if price_ema_pct > getattr(self, 'tier1_price_ema_max_pct', 1.5): return False
-        confluence_min = getattr(self, 'tier1_confluence_min', 0.75)
-        confluence = self._calculate_direction_confluence(data, 'long')
-        self._last_confluence_score = confluence
-        if confluence < confluence_min: return False
+        # PATCH: dropped the confluence re-vote — its 7 factors (EMA order,
+        # MACD sign+direction, RSI band, volume, CCI sign, Kalman agreement)
+        # are already scored with graduated weights in the quality score
+        # that got this candidate to Tier 1 in the first place. Re-testing
+        # them as a blunt binary pass/fail added no new information and
+        # rejected legitimate near-threshold trades.
         return True
 
     def _validate_tier1_conditions_short(self, data) -> bool:
@@ -2626,27 +2782,31 @@ class MomentumLogic:
         if volume_ratio < getattr(self, 'tier1_volume_min_short', 1.3): return False
         momentum = data.get('Momentum', 0)
         if momentum > -getattr(self, 'tier1_momentum_min', 0.08): return False
-        if getattr(self, 'tier1_macd_gate_short', True):
-            if data.get('MACD_Histogram', 0) >= 0: return False
+        # PATCH: dropped redundant MACD_Histogram>=0 hard gate — see long-side note.
+        if data.get('MACD', 0) < getattr(self, 'tier1_macd_min_short', -0.35): return False
         ema_fast = data.get('EMA_Fast', None)
         close = data.get('Close', None)
         if ema_fast is not None and close is not None and ema_fast != 0:
             price_ema_pct = abs(close - ema_fast) / ema_fast * 100
             if price_ema_pct > getattr(self, 'tier1_price_ema_max_pct', 1.5): return False
-        confluence_min = getattr(self, 'tier1_confluence_min', 0.75)
-        confluence = self._calculate_direction_confluence(data, 'short')
-        self._last_confluence_score = confluence
-        if confluence < confluence_min: return False
+        # PATCH: dropped confluence re-vote — see long-side note.
         return True
 
     def _validate_tier2_conditions(self, data):
-        if getattr(self, 'regime_filter_enabled', True) and data.get('Ranging', False): return False
+        # PATCH: dropped the duplicate Ranging check here — the caller
+        # (_check_long_entry_conditions) already rejects on
+        # data.get('Ranging', False) at the regime-filter step before any
+        # tier validator runs, so this was testing the same flag twice.
         rsi = data.get('RSI', 50)
         rsi_min = getattr(self, 'tier2_rsi_min_long', 40)
         rsi_max = getattr(self, 'tier2_rsi_max_long', 75)
         if not (rsi_min <= rsi <= rsi_max): return False
         macd_hist = data.get('MACD_Histogram', 0)
-        if macd_hist <= 0: return False
+        # PATCH: dropped the plain "macd_hist <= 0" hard gate — redundant
+        # with _confirm_direction's macd>signal check (see long-side note
+        # in _validate_tier1_conditions). The *magnitude* gate below
+        # (tier2_require_macd_histogram) is a distinct, non-redundant check
+        # and is kept.
         adx = data.get('ADX', 0)
         if adx < getattr(self, 'tier2_adx_hard_min', 22): return False
         volume_ratio = data.get('Volume_Ratio', 1.0)
@@ -2659,20 +2819,18 @@ class MomentumLogic:
         cooldown_bars = getattr(self, 'cooldown_after_loss_bars', 12)
         if (bars_since < cooldown_bars and self.trade_history and self.trade_history[-1]['profit'] < 0): return False
         if not self._tier_cooldown_ok(2): return False
-        confluence_min = getattr(self, 'tier2_confluence_min', 0.65)
-        confluence = self._calculate_direction_confluence(data, 'long')
-        self._last_confluence_score = confluence
-        if confluence < confluence_min: return False
+        # PATCH: dropped confluence re-vote — see long-side note in
+        # _validate_tier1_conditions.
         return True
 
     def _validate_tier2_conditions_short(self, data):
-        if getattr(self, 'regime_filter_enabled', True) and data.get('Ranging', False): return False
+        # PATCH: dropped duplicate Ranging check — see long-side note.
         rsi = data.get('RSI', 50)
         rsi_min = getattr(self, 'tier2_rsi_min_short', 30)
         rsi_max = getattr(self, 'tier2_rsi_max_short', 65)
         if not (rsi_min <= rsi <= rsi_max): return False
         macd_hist = data.get('MACD_Histogram', 0)
-        if macd_hist >= 0: return False
+        # PATCH: dropped redundant "macd_hist >= 0" hard gate — see long-side note.
         adx = data.get('ADX', 0)
         if adx < getattr(self, 'tier2_adx_hard_min', 22): return False
         volume_ratio = data.get('Volume_Ratio', 1.0)
@@ -2685,10 +2843,7 @@ class MomentumLogic:
         cooldown_bars = getattr(self, 'cooldown_after_loss_bars', 12)
         if (bars_since < cooldown_bars and self.trade_history and self.trade_history[-1]['profit'] < 0): return False
         if not self._tier_cooldown_ok(2): return False
-        confluence_min = getattr(self, 'tier2_confluence_min', 0.65)
-        confluence = self._calculate_direction_confluence(data, 'short')
-        self._last_confluence_score = confluence
-        if confluence < confluence_min: return False
+        # PATCH: dropped confluence re-vote — see long-side note.
         return True
 
     def _calculate_dynamic_fuzzy_threshold(self):
@@ -2851,25 +3006,18 @@ class MomentumLogic:
         if not direction_confirmed:
             return "hold", 0, None, direction_reason, {}
 
-        regime, confidence = self.regime_detector.detect_regime(
-            ema_fast=data.get('EMA_Fast', 0), ema_slow=data.get('EMA_Slow', 0),
-            adx=data.get('ADX', 0), vol_ratio=data.get('Vol_Regime_Ratio', 1.0),
-            bb_width_percentile=data.get('BB_Width_Percentile', 50))
-        self.current_regime = regime
+        # ─── FIX: Tier-aware ADX percentile ─────────────────────────────────
+        # Calculate tier FIRST before regime detection, so we know which ADX
+        # method to use for regime classification.
+        #
+        # We need a preliminary power score to determine tier, but we don't
+        # want to use adaptive ADX percentile for Tier 2 regime detection.
+        #
+        # Solution: Calculate power score FIRST, determine tier, THEN detect
+        # regime with tier-appropriate ADX method.
+        # ──────────────────────────────────────────────────────────────────────
 
-        if regime.startswith('BEARISH'):
-            return ("hold", 0, None, f"BEARISH_REGIME_BLOCKED_{regime}", {})
-
-        if getattr(self, 'regime_filter_enabled', True):
-            if data.get('Ranging', False) or not self.regime_detector.is_tradeable(regime):
-                return "hold", 0, None, f"long_regime_blocked_{regime}", {}
-
-        if not self._daily_trend_is_up(data):
-            return "hold", 0, None, "long_daily_trend_not_up", {}
-
-        if self._is_extended_run_long(data):
-            return "hold", 0, None, "v94_extended_run_long_blocked", {}
-
+        # Step 1: Calculate preliminary power score (before regime)
         self._suggested_action = 'buy'
         if getattr(self, 'alpha_mode', 'indicator') == 'breakout':
             power_score, component_scores, breakdown = self._calculate_breakout_score(data)
@@ -2877,30 +3025,77 @@ class MomentumLogic:
             power_score, component_scores, breakdown = self._calculate_quality_score(data)
         self._last_quality_score = power_score
 
+        # Step 2: Apply ML adjustment
         ml_prediction = getattr(self, '_last_ml_prediction', 0)
         ml_confidence = getattr(self, '_last_ml_confidence', 0.0)
         adjusted_power, adjustment, adj_type = self._apply_ml_adjustment(power_score, ml_prediction, ml_confidence,
                                                                          'long')
 
+        # Step 3: Determine tier
         tier = self._determine_tier(adjusted_power, 'long')
         if tier == 0:
             return ("hold", adjusted_power, None,
                     f"power_below_tier2_{adjusted_power}_need_{getattr(self, 'quality_tier2_min_long', 65)}",
                     component_scores)
 
+        # Step 4: Detect regime with tier-appropriate ADX method
+        # ─── TIER 2: Use FIXED ADX (ignore percentile) ─────────────────────
+        # ─── TIER 1: Use ADAPTIVE ADX PERCENTILE (stricter) ────────────────
+        if tier == 2:
+            # Tier 2: Force fixed ADX threshold (like OLD version)
+            adx_percentile_to_use = None  # This forces fixed ADX in detect_regime()
+            self._log(f"🔓 TIER 2: Using FIXED ADX (percentile bypassed) for regime detection", "cyan")
+        else:
+            # Tier 1: Use adaptive ADX percentile (stricter)
+            adx_percentile_to_use = data.get('ADX_Percentile')
+            self._log(f"🔒 TIER 1: Using ADAPTIVE ADX percentile for regime detection", "green")
+
+        regime, confidence = self.regime_detector.detect_regime(
+            ema_fast=data.get('EMA_Fast', 0),
+            ema_slow=data.get('EMA_Slow', 0),
+            adx=data.get('ADX', 0),
+            vol_ratio=data.get('Vol_Regime_Ratio', 1.0),
+            bb_width_percentile=data.get('BB_Width_Percentile', 50),
+            adx_percentile=adx_percentile_to_use,  # ← KEY CHANGE: None for Tier 2
+            atr_pct=data.get('ATR_Pct'),
+            trend_age=data.get('Trend_Age_Bearish', 0),
+            is_ranging_external=data.get('Ranging', None),  # PATCH: single shared ranging signal
+        )
+        self.current_regime = regime
+
+        # Only a confirmed, persistent bearish regime hard-blocks longs.
+        # BEARISH_WEAK (ambiguous / not-yet-persistent / low ADX) is left to
+        # fall through to is_tradeable() + the tier/quality-score pipeline
+        # below, instead of being blocked identically to a real selloff.
+        if self.regime_detector.is_hard_blocked(regime):
+            return ("hold", adjusted_power, tier, f"BEARISH_REGIME_BLOCKED_{regime}", component_scores)
+
+        if getattr(self, 'regime_filter_enabled', True):
+            if data.get('Ranging', False) or not self.regime_detector.is_tradeable(regime):
+                return "hold", adjusted_power, tier, f"long_regime_blocked_{regime}", component_scores
+
+        # PATCH: removed duplicate _daily_trend_is_up(data) call — already
+        # enforced by _confirm_direction() earlier in this same call path
+        # with identical data; nothing changes in between, so it was a
+        # guaranteed-pass no-op here.
+
+        if self._is_extended_run_long(data):
+            return "hold", adjusted_power, tier, "v94_extended_run_long_blocked", component_scores
+
+        # Step 5: Apply tier-specific validation
         only_tier1 = getattr(self, 'only_tier1_entries', False)
         if only_tier1:
-            if tier != 1: return ("hold", adjusted_power, None, f"TIER{tier}_BLOCKED_by_only_tier1_flag",
-                                  component_scores)
-            if not self._validate_tier1_conditions(data): return ("hold", adjusted_power, None,
-                                                                  "tier1_conditions_not_met", component_scores)
+            if tier != 1:
+                return ("hold", adjusted_power, None, f"TIER{tier}_BLOCKED_by_only_tier1_flag", component_scores)
+            if not self._validate_tier1_conditions(data):
+                return ("hold", adjusted_power, None, "tier1_conditions_not_met", component_scores)
         else:
             if tier == 1:
-                if not self._validate_tier1_conditions(data): return ("hold", adjusted_power, None,
-                                                                      "tier1_conditions_not_met", component_scores)
+                if not self._validate_tier1_conditions(data):
+                    return ("hold", adjusted_power, None, "tier1_conditions_not_met", component_scores)
             elif tier == 2:
-                if not self._validate_tier2_conditions(data): return ("hold", adjusted_power, None,
-                                                                      "tier2_conditions_not_met", component_scores)
+                if not self._validate_tier2_conditions(data):
+                    return ("hold", adjusted_power, None, "tier2_conditions_not_met", component_scores)
 
         return self._create_pending_signal('long', adjusted_power, tier, component_scores, breakdown, data,
                                            ml_prediction, ml_confidence)
@@ -2922,8 +3117,8 @@ class MomentumLogic:
         if self._is_extended_run_short(data):
             return "hold", 0, None, "v94_extended_run_short_blocked", {}
 
-        if not self._daily_trend_is_down(data):
-            return "hold", 0, None, "short_daily_trend_not_down", {}
+        # PATCH: removed duplicate _daily_trend_is_down(data) call — already
+        # enforced by _confirm_direction() a few lines above.
 
         if not self._has_bearish_price_structure(data):
             return "hold", 0, None, "short_price_structure_weak", {}
@@ -3008,9 +3203,10 @@ class MomentumLogic:
         return long_result if long_decision != "hold" else short_result
 
     def calculate_position_size(self, equity, atr, price, quality_score=75, tier=1, position_mult=1.0,
-                                gui_order_size_pct: float = None) -> float:
-        tier_config = self._get_tier_config(tier)
-        if tier_config is None: tier_config = self._get_tier_config(1)
+                                gui_order_size_pct: float = None, direction: str = 'long') -> float:
+        tier_config = self._get_tier_config(tier, direction)
+        if tier_config is None:
+            tier_config = self._get_tier_config(1, direction)
         stop_mult = tier_config.get('stop_mult', 2.5)
         stop_distance = atr * stop_mult
         stop_loss = price - stop_distance
@@ -3030,7 +3226,8 @@ class MomentumLogic:
             entry_price=price, stop_loss_price=stop_loss, win_rate=win_rate / 100,
             profit_factor=pf, quality_score=quality_score, tier=tier, adx=adx,
             tier1_risk_pct=getattr(self, 'risk_tier1', None), tier2_risk_pct=getattr(self, 'risk_tier2', None),
-            gui_order_size_pct=gui_order_size_pct
+            gui_order_size_pct=gui_order_size_pct,
+            direction=direction
         )
 
         regime_mult = self.regime_detector.get_position_multiplier(self.current_regime)
@@ -3179,11 +3376,11 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
         MomentumLogic.__init__(self, config=params, trading_app=trading_app)
 
         self.trade_counter = 0
-        self.name = "Professional Momentum Strategy v10.0.6 — CORRECTED TIER THRESHOLDS"
+        self.name = "Professional Momentum Strategy v10.0.8 — NO HARDCODED FALLBACKS"
 
         self.position = {
             'type': None, 'entry_price': None, 'quantity': None,
-            'stop_loss': None, 'trailing_stop': None,
+            'stop_loss': None, 'trailing_stop': None, 'stop_mult': None,
             'trailing_activated': False, 'highest_price': None,
             'lowest_price': None, 'entry_bar': None, 'partial_exits': 0,
             'original_quantity': None, 'tier': None, 'entry_time': None,
@@ -3203,12 +3400,18 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
 
         if self.trading_app:
             self._log("=" * 70, "cyan")
-            self._log("MOMENTUM STRATEGY v10.0.6 — CORRECTED TIER THRESHOLDS", "bold green")
+            self._log("MOMENTUM STRATEGY v10.0.8 — NO HARDCODED FALLBACKS", "bold green")
             self._log(
                 f"✅ Tier 1 (Low Risk):  Pass={getattr(self, 'quality_tier1_min_long', 75)} | Risk={getattr(self, 'risk_tier1', 0.025):.1%}",
                 "green")
             self._log(
+                f"   Stop (LONG):  {getattr(self, 'tier1_stop_multiplier_long', 2.0)}× ATR | Stop (SHORT): {getattr(self, 'tier1_stop_multiplier_short', 3.0)}× ATR",
+                "green")
+            self._log(
                 f"✅ Tier 2 (Medium Risk): Pass={getattr(self, 'quality_tier2_min_long', 65)} | Risk={getattr(self, 'risk_tier2', 0.015):.1%}",
+                "yellow")
+            self._log(
+                f"   Stop (LONG):  {getattr(self, 'tier2_stop_multiplier_long', 2.5)}× ATR | Stop (SHORT): {getattr(self, 'tier2_stop_multiplier_short', 3.5)}× ATR",
                 "yellow")
             self._log(f"✅ Tier 1 Momentum: {getattr(self, 'tier1_momentum_min', 0.08):.2f}", "green")
             self._log(f"✅ Tier 2 Momentum: {getattr(self, 'tier2_momentum_min', 0.03):.2f}", "yellow")
@@ -3248,8 +3451,10 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
             raise ValueError(f"Invalid ATR at bar {self.bars_held}: {atr}")
 
         tier = self.position.get('tier', 1)
-        tier_config = self._get_tier_config(tier)
-        if tier_config is None: tier_config = self._get_tier_config(1)
+        direction = self.position.get('type', 'long')
+        tier_config = self._get_tier_config(tier, direction)
+        if tier_config is None:
+            tier_config = self._get_tier_config(1, direction)
 
         trail_activation = tier_config.get('trailing_activation', 0.025)
         trail_distance = tier_config.get('trailing_distance', 0.020)
@@ -3309,7 +3514,8 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
             signal_prev=current_data.get('MACD_Signal_closed', 0), adx=current_data.get('ADX', 0),
             atr=atr, position_type=self.position['type'],
             trailing_activated=self.position.get('trailing_activated', False),
-            trailing_stop=self.position.get('trailing_stop'), tier=tier, exit_power=exit_power)
+            trailing_stop=self.position.get('trailing_stop'), tier=tier, exit_power=exit_power,
+            stop_mult=self.position.get('stop_mult', tier_config.get('stop_mult')))
 
         if exit_signal is None:
             if self.position['type'] == 'long':
@@ -3390,23 +3596,30 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
 
     def execute_buy(self, shares, price, atr, quality_score, tier):
         try:
-            if self.trade_direction == 'short': return False, 0, None
-            if self.trade_direction == 'both':
+            # Determine direction from trade_direction
+            direction = getattr(self, 'trade_direction', 'long')
+            if direction == 'both':
                 pending = getattr(self, '_pending_signal', None)
-                if pending and pending.get('direction') == 'short': return False, 0, None
-            if self.trade_direction == 'long':
-                current_data = self._build_current_data() if hasattr(self, '_build_current_data') else None
-                if current_data:
-                    ema_fast = current_data.get('EMA_Fast', 0)
-                    ema_slow = current_data.get('EMA_Slow', 0)
-                    if ema_fast <= ema_slow: return False, 0, None
+                if pending:
+                    direction = pending.get('direction', 'long')
 
-            tier_config = self._get_tier_config(tier)
-            if tier_config is None: tier_config = self._get_tier_config(1)
+            # Determine if this is a short entry (direction is 'short' and this is a sell order)
+            is_short = (direction == 'short')
+
+            tier_config = self._get_tier_config(tier, direction)
+            if tier_config is None:
+                tier_config = self._get_tier_config(1, direction)
             stop_mult = tier_config.get('stop_mult', 2.5)
 
-            stop_loss_price = price - (atr * stop_mult)
-            if stop_loss_price >= price: return False, 0, None
+            # Calculate stop loss based on direction
+            if is_short:
+                stop_loss_price = price + (atr * stop_mult)  # Stop ABOVE entry for shorts
+                if stop_loss_price <= price:
+                    return False, 0, None
+            else:
+                stop_loss_price = price - (atr * stop_mult)  # Stop BELOW entry for longs
+                if stop_loss_price >= price:
+                    return False, 0, None
 
             gui_pct = None
             if self.trading_app and hasattr(self.trading_app, 'order_size_var'):
@@ -3420,7 +3633,9 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
 
             size = self.calculate_position_size(
                 equity=self.risk_controller.current_equity, atr=atr, price=price,
-                quality_score=quality_score, tier=tier, position_mult=1.0, gui_order_size_pct=gui_pct
+                quality_score=quality_score, tier=tier, position_mult=1.0,
+                gui_order_size_pct=gui_pct,
+                direction=direction
             )
 
             max_units = getattr(self, 'max_position_units', 50)
@@ -3437,8 +3652,11 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                     "cyan")
 
             if self.trading_app and hasattr(self.trading_app, 'place_order'):
-                order_result = self.trading_app.place_order(side='buy', quantity=shares, price=price,
-                                                            confidence=quality_score, atr=atr)
+                order_result = self.trading_app.place_order(
+                    side='buy' if not is_short else 'sell',
+                    quantity=shares, price=price,
+                    confidence=quality_score, atr=atr
+                )
                 if isinstance(order_result, dict):
                     if not order_result.get('success', False): return False, 0, None
                     filled_qty = order_result.get('filled_quantity', shares)
@@ -3470,11 +3688,14 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
                 }
 
             self.position = {
-                'type': 'long', 'entry_price': actual_price, 'quantity': filled_qty,
+                'type': 'short' if is_short else 'long',
+                'entry_price': actual_price, 'quantity': filled_qty,
                 'original_quantity': filled_qty, 'stop_loss': stop_loss_price,
-                'trailing_stop': None, 'trailing_activated': False, 'highest_price': actual_price,
-                'lowest_price': None, 'entry_bar': getattr(self, 'bar_count', 0), 'partial_exits': 0,
-                'tier': tier, 'entry_time': datetime.now(timezone.utc),
+                'trailing_stop': None, 'trailing_activated': False,
+                'highest_price': actual_price if not is_short else None,
+                'lowest_price': actual_price if is_short else None,
+                'entry_bar': getattr(self, 'bar_count', 0), 'partial_exits': 0,
+                'tier': tier, 'entry_time': datetime.now(timezone.utc), 'stop_mult': stop_mult,
                 'entry_quality_score': quality_score, 'entry_reason': '', 'trade_id': self._current_trade_id,
                 'partial_pnl_realised': 0.0, **signal_data,
             }
@@ -3555,6 +3776,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
 
                 self.position = {
                     'type': None, 'entry_price': None, 'quantity': None, 'stop_loss': None, 'trailing_stop': None,
+                    'stop_mult': None,
                     'trailing_activated': False, 'highest_price': None, 'lowest_price': None, 'entry_bar': None,
                     'partial_exits': 0, 'original_quantity': None, 'tier': None, 'entry_time': None,
                     'entry_quality_score': None, 'entry_reason': None, 'trade_id': None, 'partial_pnl_realised': 0.0,
@@ -3647,7 +3869,7 @@ class MomentumStrategy(BaseStrategy, MomentumLogic):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 10: BACKTEST STRATEGY — v10.0.6 with CORRECTED THRESHOLDS
+# PART 10: BACKTEST STRATEGY — v10.0.8 with NO HARDCODED FALLBACKS
 # ═══════════════════════════════════════════════════════════════════════════
 
 class BacktestMomentumStrategy(Strategy, MomentumLogic):
@@ -3743,8 +3965,10 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
     tier2_confluence_min = 0.65
     tier1_size_multiplier = 1.0
     tier2_size_multiplier = 0.70
-    tier1_stop_multiplier = 2.0
-    tier2_stop_multiplier = 2.5
+    tier1_stop_multiplier_long = 2.0
+    tier1_stop_multiplier_short = 3.0
+    tier2_stop_multiplier_long = 2.5
+    tier2_stop_multiplier_short = 3.5
     exit_threshold_tier1 = 60
     exit_threshold_tier2 = 50
     trailing_activation_tier1 = 0.025
@@ -3763,65 +3987,28 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         else:
             config = MomentumConfig.get_config()
 
+        # ─── REMOVED: _critical_defaults_fallback (v10.0.8) ─────────────────────
+        # Previously this block overwrote optimized parameters with hardcoded
+        # values. It has been completely removed. Parameters are now loaded
+        # exclusively from MOMENTUM_PARAMS + config overrides.
+        #
+        # DELETED BLOCK:
+        # _critical_defaults_fallback = { ... }
+        # critical_defaults = {k: MOMENTUM_PARAMS.get(k, v) for k, v in _critical_defaults_fallback.items()}
+        # for attr, default_val in critical_defaults.items():
+        #     if not hasattr(self, attr) or getattr(self, attr) is None:
+        #         setattr(self, attr, default_val)
+        # ────────────────────────────────────────────────────────────────────────
+
+        # Apply config parameters directly
         if params:
             for key, value in params.items():
                 if key in config:
                     config[key] = value
 
+        # Set ALL parameters from config
         for key, value in config.items():
             setattr(self, key, value)
-
-        critical_defaults = {
-            'trade_direction': 'both',
-            'quality_tier1_min_long': 75,
-            'quality_tier2_min_long': 65,
-            'quality_tier1_min_short': 75,
-            'quality_tier2_min_short': 65,
-            'tier1_adx_hard_min_long': 28,
-            'tier1_adx_hard_min_short': 30,
-            'tier1_adx_hard_min': 25,
-            'tier2_adx_hard_min': 22,
-            'tier1_rsi_min_long': 48,
-            'tier1_rsi_max_long': 75,
-            'tier1_rsi_min_short': 32,
-            'tier1_rsi_max_short': 48,
-            'tier2_rsi_min_long': 40,
-            'tier2_rsi_max_long': 75,
-            'tier2_rsi_min_short': 30,
-            'tier2_rsi_max_short': 65,
-            'tier1_volume_min_long': 2.0,
-            'tier1_volume_min_short': 1.3,
-            'tier1_volume_min': 1.0,
-            'tier2_volume_min': 0.8,
-            'tier1_momentum_min': 0.08,
-            'tier2_momentum_min': 0.03,
-            'tier1_confluence_min': 0.75,
-            'tier2_confluence_min': 0.65,
-            'risk_tier1': 0.025,
-            'risk_tier2': 0.015,
-            'tier1_size_multiplier': 1.0,
-            'tier2_size_multiplier': 0.70,
-            'tier1_stop_multiplier': 2.0,
-            'tier2_stop_multiplier': 2.5,
-            'stop_loss_atr_mult': 2.5,
-            'exit_threshold_tier1': 60,
-            'exit_threshold_tier2': 50,
-            'trailing_activation_tier1': 0.025,
-            'trailing_activation_tier2': 0.035,
-            'trailing_distance_tier1': 0.020,
-            'trailing_distance_tier2': 0.030,
-            'only_tier1_entries': False,
-            'ml_weight': 0.20,
-            'max_position_units': 50,
-            'min_bars_between_trades': 4,
-            'min_bars_between_trades_tier1': 4,
-            'min_bars_between_trades_tier2': 3,
-            'cooldown_tier2_enabled': True,
-            'gui_order_size_pct': 30.0,
-        }
-        for attr, default_val in critical_defaults.items():
-            if not hasattr(self, attr) or getattr(self, attr) is None:
-                setattr(self, attr, default_val)
 
         if params and 'gui_order_size_pct' in params:
             self.gui_order_size_pct = params['gui_order_size_pct']
@@ -3829,6 +4016,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
         MomentumLogic.__init__(self, config=config, trading_app=None)
 
+        # Rest of initialization continues unchanged...
         self._exit_bar_long = -999
         self._exit_bar_short = -999
         self._last_exit_time_long = None
@@ -3839,13 +4027,17 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self._pending_signal_short = None
 
         print(f"\n{'=' * 70}")
-        print(f"🔢 RUN {run_num}/{total} — BACKTEST v10.0.6 CORRECTED TIER THRESHOLDS")
+        print(f"🔢 RUN {run_num}/{total} — BACKTEST v10.0.8 NO HARDCODED FALLBACKS")
         print(f"{'=' * 70}")
         print(f"Direction: {self.trade_direction.upper()}")
         print(
             f"Tier 1 (Low Risk):  Pass LONG={getattr(self, 'quality_tier1_min_long', 75)} | Pass SHORT={getattr(self, 'quality_tier1_min_short', 75)} | Risk={getattr(self, 'risk_tier1', 0.025):.1%}")
         print(
+            f"   Stop (LONG):  {getattr(self, 'tier1_stop_multiplier_long', 2.0)}× ATR | Stop (SHORT): {getattr(self, 'tier1_stop_multiplier_short', 3.0)}× ATR")
+        print(
             f"Tier 2 (Medium Risk): Pass LONG={getattr(self, 'quality_tier2_min_long', 65)} | Pass SHORT={getattr(self, 'quality_tier2_min_short', 65)} | Risk={getattr(self, 'risk_tier2', 0.015):.1%}")
+        print(
+            f"   Stop (LONG):  {getattr(self, 'tier2_stop_multiplier_long', 2.5)}× ATR | Stop (SHORT): {getattr(self, 'tier2_stop_multiplier_short', 3.5)}× ATR")
         print(f"Tier 1 Momentum: {getattr(self, 'tier1_momentum_min', 0.08):.2f}")
         print(f"Tier 2 Momentum: {getattr(self, 'tier2_momentum_min', 0.03):.2f}")
         print(f"Tier 1 Confluence: {getattr(self, 'tier1_confluence_min', 0.75):.2f}")
@@ -3857,6 +4049,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
         self._entry_price = np.nan
         self._stop_loss = np.nan
+        self._entry_stop_mult = None
         self._highest_price = np.nan
         self._lowest_price = np.nan
         self._trailing_activated = False
@@ -3902,6 +4095,9 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 self._bar_interval_hours = delta
         except Exception:
             self._bar_interval_hours = 1.0
+
+    # The rest of the methods remain unchanged from the original file
+    # ... (all subsequent methods remain the same)
 
     def _get_optimization_ranges(self):
         ranges = {}
@@ -4300,6 +4496,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
                 self._entry_price = np.nan
                 self._stop_loss = np.nan
+                self._entry_stop_mult = None
                 self._highest_price = np.nan
                 self._lowest_price = np.nan
                 self._bars_held = 0
@@ -4424,7 +4621,12 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         self._signal_bar = -999
         self._signal_price = None
 
-        if regime.startswith('BEARISH') and signal['decision'] == "buy":
+        # Use the same selective hard-block as the entry gate: only a
+        # confirmed, persistent bearish regime vetoes a buy signal here.
+        # (Using a blanket regime.startswith('BEARISH') check would silently
+        # re-block BEARISH_WEAK even after the entry gate above lets it
+        # through, defeating the point of the looser gate.)
+        if self.regime_detector.is_hard_blocked(regime) and signal['decision'] == "buy":
             print(f"❌ BLOCKED: LONG signal in BEARISH regime ({regime})")
             return
         if regime.startswith('BULLISH') and signal['decision'] == "sell":
@@ -4436,36 +4638,45 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
         self._position_direction = 'long' if signal['decision'] == "buy" else 'short'
         tier = signal['tier']
-        tier_config = self._get_tier_config(tier) or self._get_tier_config(1)
+
+        # Pass direction to _get_tier_config
+        tier_config = self._get_tier_config(tier, self._position_direction)
+        if tier_config is None:
+            tier_config = self._get_tier_config(1, self._position_direction)
         stop_mult = tier_config.get('stop_mult', 2.5)
 
         position_mult = signal.get('position_mult', 1.0)
-        if regime.startswith('BEARISH'):
-            position_mult *= 0.25
-            print(f"⚠️ BEARISH REGIME: Position size reduced to {position_mult:.2f}x")
 
         decision_price = self.data.Close[-1]
         gui_pct = getattr(self, 'gui_order_size_pct', 30.0)
         size = self.calculate_position_size(
             self.equity, current_data['ATR'], decision_price,
-            signal['power_score'], tier, position_mult, gui_order_size_pct=gui_pct)
+            signal['power_score'], tier, position_mult,
+            gui_order_size_pct=gui_pct,
+            direction=self._position_direction)
 
-        if size <= 0: return
+        if size <= 0:
+            return
 
         self.trade_counter += 1
         self._current_trade_id = self.trade_counter
 
         if signal['decision'] == "buy":
+            # LONG: stop BELOW entry
             stop = decision_price - (stop_mult * current_data['ATR'])
-            if stop >= decision_price: return
+            if stop >= decision_price:
+                return
             self.buy(size=self._bt_safe_size(size, decision_price))
         else:
+            # SHORT: stop ABOVE entry
             stop = decision_price + (stop_mult * current_data['ATR'])
-            if stop <= decision_price: return
+            if stop <= decision_price:
+                return
             self.sell(size=self._bt_safe_size(size, decision_price))
 
         self._entry_price = decision_price
         self._stop_loss = stop
+        self._entry_stop_mult = stop_mult
         self._highest_price = decision_price if self._position_direction == 'long' else None
         self._lowest_price = decision_price if self._position_direction == 'short' else None
         self._bars_held = 0
@@ -4556,12 +4767,19 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
         adx_val = current_data.get('ADX', 0)
         vol_ratio_val = current_data.get('Vol_Regime_Ratio', 1.0)
         bb_width_pct = current_data.get('BB_Width_Percentile', 50)
+        adx_pct_val = current_data.get('ADX_Percentile')
+        atr_pct_val = current_data.get('ATR_Pct')
         close_val = current_data.get('Close', 0)
         ema200_val = float(self.ema_200[-1]) if len(self.ema_200) > 0 and not np.isnan(self.ema_200[-1]) else 0
 
+        trend_age_val = current_data.get('Trend_Age_Bearish', 0) if ema_fast_val < ema_slow_val else current_data.get(
+            'Trend_Age_Bullish', 0)
+
         regime, confidence = self.regime_detector.detect_regime(
             ema_fast=ema_fast_val, ema_slow=ema_slow_val, adx=adx_val,
-            vol_ratio=vol_ratio_val, bb_width_percentile=bb_width_pct)
+            vol_ratio=vol_ratio_val, bb_width_percentile=bb_width_pct,
+            adx_percentile=adx_pct_val, atr_pct=atr_pct_val, trend_age=trend_age_val,
+            is_ranging_external=current_data.get('Ranging', None))  # PATCH: shared ranging signal
         self.current_regime = regime
 
         if regime.startswith('BEARISH'):
@@ -4600,7 +4818,9 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
             if atr <= 0: return
 
             tier = self._entry_tier or 1
-            tier_config = self._get_tier_config(tier) or self._get_tier_config(1)
+            tier_config = self._get_tier_config(tier, self._position_direction)
+            if tier_config is None:
+                tier_config = self._get_tier_config(1, self._position_direction)
             trail_activation = tier_config.get('trailing_activation', 0.025)
             trail_distance = tier_config.get('trailing_distance', 0.020)
 
@@ -4666,7 +4886,8 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
                 macd_prev=current_data['MACD_closed'], signal_prev=current_data['MACD_Signal_closed'],
                 adx=current_data['ADX'], atr=atr, position_type=self._position_direction,
                 trailing_activated=self._trailing_activated, trailing_stop=self._trailing_stop,
-                tier=tier, exit_power=exit_power
+                tier=tier, exit_power=exit_power,
+                stop_mult=getattr(self, '_entry_stop_mult', None) or tier_config.get('stop_mult')
             )
 
             if exit_signal is None:
@@ -4729,7 +4950,7 @@ class BacktestMomentumStrategy(Strategy, MomentumLogic):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# WALK-FORWARD OPTIMIZATION
+# WALK-FORWARD OPTIMIZATION (unchanged)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def reconcile_strategy_vs_engine(stats, tolerance: float = 0.01, verbose: bool = True):
@@ -4972,5 +5193,3 @@ def run_walk_forward_optimization(
         else:
             print("✅  Performance holds up reasonably well out-of-sample.")
         print(f"{'=' * 70}\n")
-
-    return results

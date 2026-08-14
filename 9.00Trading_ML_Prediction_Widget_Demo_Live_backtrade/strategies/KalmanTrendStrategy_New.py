@@ -19,6 +19,105 @@ import logging
 import json
 import os
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GLOBAL PARTIAL TRADING CONTROL - Applied to ALL Strategies
+# ═══════════════════════════════════════════════════════════════════════════
+
+class GlobalPartialConfig:
+    """
+    Global singleton for partial trading control across ALL strategies:
+    - Momentum
+    - Scalping
+    - Kalman
+    - Any future strategies
+    """
+    _instance = None
+    _allow_partials = False  # Default: OFF (commission-optimized)
+    _listeners = []
+    _initialized = False
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def initialize(self, enabled: bool = False):
+        """Initialize with default setting."""
+        if not self._initialized:
+            # Check environment for persisted setting
+            env_val = os.environ.get('GLOBAL_ALLOW_PARTIALS')
+            if env_val is not None:
+                self._allow_partials = env_val.lower() == 'true'
+            else:
+                self._allow_partials = enabled
+            self._initialized = True
+            print(f"🎯 PARTIAL CONFIG INITIALIZED: {'ON' if self._allow_partials else 'OFF'}")
+
+    def set_allow_partials(self, enabled: bool):
+        """Enable or disable partial trading globally."""
+        old_value = self._allow_partials
+        self._allow_partials = enabled
+        self._initialized = True
+
+        # Persist to environment
+        os.environ['GLOBAL_ALLOW_PARTIALS'] = str(enabled)
+
+        print(f"🔄 GLOBAL PARTIAL TRADING: {'ON' if enabled else 'OFF'}")
+
+        # Notify all listeners
+        for listener in self._listeners:
+            try:
+                listener(enabled)
+            except Exception as e:
+                print(f"⚠️ Listener error: {e}")
+
+        return enabled
+
+    def get_allow_partials(self) -> bool:
+        """Get current partial trading setting."""
+        # Check environment override first
+        env_val = os.environ.get('GLOBAL_ALLOW_PARTIALS')
+        if env_val is not None:
+            self._allow_partials = env_val.lower() == 'true'
+            self._initialized = True
+        return self._allow_partials
+
+    def add_listener(self, callback):
+        """Add a listener that gets called when setting changes."""
+        if callback not in self._listeners:
+            self._listeners.append(callback)
+
+    def remove_listener(self, callback):
+        """Remove a listener."""
+        if callback in self._listeners:
+            self._listeners.remove(callback)
+
+    def toggle(self):
+        """Toggle the current setting."""
+        new_state = not self.get_allow_partials()
+        self.set_allow_partials(new_state)
+        return new_state
+
+    def get_status_display(self) -> str:
+        """Get display-friendly status."""
+        return "ON" if self.get_allow_partials() else "OFF"
+
+    def get_status_color(self) -> str:
+        """Get status color for UI."""
+        return "green" if self.get_allow_partials() else "red"
+
+
+# Create global instance
+PARTIAL_CONFIG = GlobalPartialConfig.get_instance()
+PARTIAL_CONFIG.initialize(False)  # Default: OFF
+
 # ═══════════════════════════════════════════════════════════════════════════
 # OPTIMIZED STRATEGY PARAMETERS - SHORT TRADING ENABLED
 # ═══════════════════════════════════════════════════════════════════════════

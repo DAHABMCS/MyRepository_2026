@@ -1636,7 +1636,7 @@ class TradingApp:
         frame3_right.pack_propagate(False)
 
         # ═══════════════════════════════════════════════════════════════════════════
-        # FRAME 1 (LEFT): MODE + RISK MANAGEMENT
+        # FRAME 1 (LEFT): MODE + RISK MANAGEMENT (Partial now next to Interval)
         # ═══════════════════════════════════════════════════════════════════════════
 
         frame1_left.columnconfigure(0, weight=0, minsize=75)
@@ -1656,11 +1656,74 @@ class TradingApp:
         self.symbol_combobox.grid(row=1, column=1, sticky="ew", padx=5, pady=5)
         self.symbol_var.trace_add('write', lambda *_: self.on_symbol_change())
 
-        ttk.Label(frame1_left, text="Interval:").grid(row=2, column=0, sticky="w", padx=5, pady=5)
+        # ─── INTERVAL + PARTIAL EXITS (combined row) ──────────────────────────────
+        # Row 2: Interval label + Interval combobox + Partial Exits
+        interval_row = ttk.Frame(frame1_left)
+        interval_row.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+        interval_row.columnconfigure(0, weight=0, minsize=75)  # Label column
+        interval_row.columnconfigure(1, weight=0)  # Interval combobox
+        interval_row.columnconfigure(2, weight=0, minsize=10)  # Spacer
+        interval_row.columnconfigure(3, weight=0)  # Partial label
+        interval_row.columnconfigure(4, weight=0)  # Partial dot
+        interval_row.columnconfigure(5, weight=0)  # Partial ON/OFF
+
+        # Interval Label
+        ttk.Label(interval_row, text="Interval:").grid(row=0, column=0, sticky="w", padx=(0, 5), pady=0)
+
+        # Interval Combobox
         self.interval_var = tk.StringVar(value="15m")
-        self.interval_combobox = ttk.Combobox(frame1_left, textvariable=self.interval_var,
-                                              values=["1m", "5m", "15m", '30m', "1H", "4H", "1D"], width=22)
-        self.interval_combobox.grid(row=2, column=1, sticky="ew", padx=5, pady=5)
+        self.interval_combobox = ttk.Combobox(interval_row, textvariable=self.interval_var,
+                                              values=["1m", "5m", "15m", '30m', "1H", "4H", "1D"], width=7)
+        self.interval_combobox.grid(row=0, column=1, sticky="w", padx=(0, 5), pady=0)
+
+        # Spacer
+        ttk.Label(interval_row, text="  ").grid(row=0, column=2)
+
+        # Partial Exits Label
+        ttk.Label(interval_row, text="Partial:", font=('Arial', 8, 'bold')).grid(
+            row=0, column=3, sticky="w", padx=(0, 3), pady=0)
+
+        # Status dot - changes color based on state
+        self.partial_status_dot = tk.Canvas(interval_row, width=14, height=14,
+                                            highlightthickness=0, bg='#f0f0f0')
+        self.partial_status_dot.grid(row=0, column=4, padx=(0, 3), pady=0)
+        self._partial_dot_id = None
+        self._update_partial_status_dot()
+
+        # ON/OFF Radio buttons
+        self.partial_exits_enabled = tk.BooleanVar(value=True)  # Default ON
+
+        partial_rb_frame = ttk.Frame(interval_row)
+        partial_rb_frame.grid(row=0, column=5, sticky="w")
+
+        self.partial_on_rb = ttk.Radiobutton(
+            partial_rb_frame,
+            text="ON",
+            variable=self.partial_exits_enabled,
+            value=True,
+            command=self._on_partial_toggle,
+            width=3
+        )
+        self.partial_on_rb.pack(side=tk.LEFT, padx=(0, 2))
+
+        self.partial_off_rb = ttk.Radiobutton(
+            partial_rb_frame,
+            text="OFF",
+            variable=self.partial_exits_enabled,
+            value=False,
+            command=self._on_partial_toggle,
+            width=3
+        )
+        self.partial_off_rb.pack(side=tk.LEFT)
+
+        self.partial_status_label = ttk.Label(
+            partial_rb_frame,
+            text="(ON)",
+            font=('Arial', 7, 'italic'),
+            foreground='#00CC44'
+        )
+        self.partial_status_label.pack(side=tk.LEFT, padx=(3, 0))
+        self._update_partial_status_label()
 
         # Risk Management Frame
         risk_frame = ttk.LabelFrame(frame1_left, text="Risk Management")
@@ -1800,7 +1863,7 @@ class TradingApp:
                                                 values=["Standard Backtest", "Optimization"], width=16)
         self.backtest_type_combo.grid(row=1, column=1, sticky="ew", padx=3, pady=2)
 
-        # Monte Carlo Toggle
+        # ─── Monte Carlo Toggle (same row as Type) ─────────────────────────────
         self.use_monte_carlo_var = tk.BooleanVar(value=False)
         self.monte_carlo_toggle = ttk.Checkbutton(
             self.backtest_controls_frame,
@@ -1849,7 +1912,7 @@ class TradingApp:
                      width=5, state="readonly", font=('Arial', 8)).pack(side=tk.LEFT, padx=2)
         ttk.Label(mc_row1, text="Tr:", font=('Arial', 8)).pack(side=tk.LEFT, padx=(8, 2))
         self.mc_trades_var = tk.IntVar(value=100)
-        ttk.Combobox(mc_row1, textvariable=self.mc_trades_var, values=[50, 100, 200, 500,1000,2000],
+        ttk.Combobox(mc_row1, textvariable=self.mc_trades_var, values=[50, 100, 200, 500, 1000, 2000],
                      width=5, state="readonly", font=('Arial', 8)).pack(side=tk.LEFT, padx=2)
 
         mc_row2 = ttk.Frame(self.monte_carlo_options_frame)
@@ -1875,13 +1938,14 @@ class TradingApp:
             padx=5,
             pady=3
         )
-        self.run_btn.grid(row=4, column=0, columnspan=3, pady=5, sticky="ew", padx=3)
+        self.run_btn.grid(row=5, column=0, columnspan=3, pady=5, sticky="ew", padx=3)
         # Store references for later visibility toggling
         self.backtest_controls_frame_ref = self.backtest_controls_frame
         self.explanation_textbox_ref = self.explanation_textbox
 
         # Initially hide backtest controls (will show when mode changes to backtest)
         self.backtest_controls_frame.pack_forget()
+
         # ═══════════════════════════════════════════════════════════════════════════
         # FRAME 3 (RIGHT): TIMER
         # ═══════════════════════════════════════════════════════════════════════════
@@ -1997,6 +2061,316 @@ class TradingApp:
             self.log_message("📋 Output mode: DETAILED (tables enabled)", "blue")
         else:
             self.log_message("📋 Output mode: SIMPLE (summary only)", "blue")
+
+    def _update_partial_status_dot(self):
+        """Update the status dot color based on partial exits state."""
+        if hasattr(self, 'partial_status_dot') and self.partial_status_dot:
+            try:
+                # Clear previous dot
+                self.partial_status_dot.delete("all")
+
+                # Draw new dot with appropriate color
+                color = "#00CC44" if self.partial_exits_enabled.get() else "#FF3333"  # Green=ON, Red=OFF
+                self.partial_status_dot.create_oval(2, 2, 12, 12, fill=color, outline=color)
+            except tk.TclError:
+                pass
+
+    def _update_partial_status_label(self):
+        """Update the status label text."""
+        if hasattr(self, 'partial_status_label') and self.partial_status_label:
+            try:
+                status = "ON ✓" if self.partial_exits_enabled.get() else "OFF ✗"
+                self.partial_status_label.config(
+                    text=f"({status})",
+                    foreground="#00CC44" if self.partial_exits_enabled.get() else "#FF3333"
+                )
+            except tk.TclError:
+                pass
+
+    def _on_partial_toggle(self):
+        """Called when the Partial radio buttons are toggled."""
+        enabled = self.partial_exits_enabled.get()
+
+        # Update UI
+        self._update_partial_status_dot()
+        self._update_partial_status_label()
+
+        # Log the change
+        self.log_message(
+            f"🔀 Partial exits {'ENABLED' if enabled else 'DISABLED'} for all strategies",
+            "green" if enabled else "orange"
+        )
+
+        # ─── PROPAGATE TO ALL STRATEGIES ──────────────────────────────────────────
+        self._propagate_partial_setting_to_strategies(enabled)
+
+        # ─── UPDATE GLOBAL CONFIG ─────────────────────────────────────────────────
+        try:
+            from strategies.MomentumStrategy_MACD_HybridScore_Claude import GlobalConfig
+            GlobalConfig.PARTIAL_EXITS_ENABLED = enabled
+        except ImportError:
+            pass
+
+        # ─── UPDATE BACKTEST CLASS ───────────────────────────────────────────────
+        try:
+            from strategies.MomentumStrategy_MACD_HybridScore_Claude import BacktestMomentumStrategy
+            BacktestMomentumStrategy.partial_exits_enabled = enabled
+        except ImportError:
+            pass
+
+        # ─── UPDATE SCALPING BACKTEST ────────────────────────────────────────────
+        try:
+            from strategies.scalping_strategy import BacktestScalpingStrategy
+            BacktestScalpingStrategy.partial_exits_enabled = enabled
+        except ImportError:
+            pass
+
+    def _propagate_partial_setting_to_strategies(self, enabled: bool):
+        """Propagate the partial exits setting to all live strategy instances."""
+        strategies_to_update = []
+
+        # Collect all strategy instances
+        if hasattr(self, 'strategy') and self.strategy:
+            strategies_to_update.append(self.strategy)
+
+        if hasattr(self, 'strategies'):
+            for name, strat in self.strategies.items():
+                if strat not in strategies_to_update and not isinstance(strat, type):
+                    strategies_to_update.append(strat)
+
+        # Apply the setting to each strategy
+        for strat in strategies_to_update:
+            # Direct attribute
+            if hasattr(strat, 'partial_exits_enabled'):
+                strat.partial_exits_enabled = enabled
+
+            # Config dict if available
+            if hasattr(strat, 'config') and isinstance(strat.config, dict):
+                strat.config['partial_exits_enabled'] = enabled
+
+            # For Scalping strategy - specific attributes
+            if hasattr(strat, 'allow_partial_exits'):
+                strat.allow_partial_exits = enabled
+
+            # For Momentum/Kalman - specific attributes
+            if hasattr(strat, 'enable_partial_exits'):
+                strat.enable_partial_exits = enabled
+
+            # Update any internal state that caches the setting
+            if hasattr(strat, '_partial_exits_cache'):
+                strat._partial_exits_cache = {'value': enabled, 'updated_at': datetime.now(timezone.utc)}
+
+        # Special handling for Momentum strategy's internal flags
+        if hasattr(self, 'strategies') and 'Momentum' in self.strategies:
+            strat = self.strategies['Momentum']
+            if hasattr(strat, 'take_profit_r1') and hasattr(strat, 'take_profit_r2'):
+                # If partial exits are disabled, set partial exit percentages to 0
+                if not enabled:
+                    # Store original values before disabling
+                    if not hasattr(strat, '_saved_partial_pcts'):
+                        strat._saved_partial_pcts = {
+                            'partial_exit_pct_r1': getattr(strat, 'partial_exit_pct_r1', 0.5),
+                            'partial_exit_pct_r2': getattr(strat, 'partial_exit_pct_r2', 0.3)
+                        }
+                    # Disable partial exits by setting to 0
+                    if hasattr(strat, 'partial_exit_pct_r1'):
+                        strat.partial_exit_pct_r1 = 0.0
+                    if hasattr(strat, 'partial_exit_pct_r2'):
+                        strat.partial_exit_pct_r2 = 0.0
+                    if hasattr(strat, 'config'):
+                        strat.config['partial_exit_pct_r1'] = 0.0
+                        strat.config['partial_exit_pct_r2'] = 0.0
+                else:
+                    # Restore saved values
+                    if hasattr(strat, '_saved_partial_pcts'):
+                        if hasattr(strat, 'partial_exit_pct_r1'):
+                            strat.partial_exit_pct_r1 = strat._saved_partial_pcts.get('partial_exit_pct_r1', 0.5)
+                        if hasattr(strat, 'partial_exit_pct_r2'):
+                            strat.partial_exit_pct_r2 = strat._saved_partial_pcts.get('partial_exit_pct_r2', 0.3)
+                        if hasattr(strat, 'config'):
+                            strat.config['partial_exit_pct_r1'] = strat._saved_partial_pcts.get('partial_exit_pct_r1',
+                                                                                                0.5)
+                            strat.config['partial_exit_pct_r2'] = strat._saved_partial_pcts.get('partial_exit_pct_r2',
+                                                                                                0.3)
+
+        # Special handling for Scalping strategy
+        if hasattr(self, 'strategies') and 'Scalping' in self.strategies:
+            strat = self.strategies['Scalping']
+            if hasattr(strat, 'allow_partial_exits'):
+                strat.allow_partial_exits = enabled
+            if hasattr(strat, 'config'):
+                strat.config['allow_partial_exits'] = enabled
+            # If disabled, set partial exit percentages to 0
+            if not enabled:
+                if hasattr(strat, 'partial_exit_pct_r1'):
+                    strat.partial_exit_pct_r1 = 0.0
+                if hasattr(strat, 'partial_exit_pct_r2'):
+                    strat.partial_exit_pct_r2 = 0.0
+                if hasattr(strat, 'config'):
+                    strat.config['partial_exit_pct_r1'] = 0.0
+                    strat.config['partial_exit_pct_r2'] = 0.0
+            else:
+                # Restore from defaults or saved values
+                try:
+                    from strategies.scalping_strategy import SCALPING_PARAMS
+                    if hasattr(strat, 'partial_exit_pct_r1'):
+                        strat.partial_exit_pct_r1 = SCALPING_PARAMS.get('partial_exit_pct_r1', 0.5)
+                    if hasattr(strat, 'partial_exit_pct_r2'):
+                        strat.partial_exit_pct_r2 = SCALPING_PARAMS.get('partial_exit_pct_r2', 0.3)
+                    if hasattr(strat, 'config'):
+                        strat.config['partial_exit_pct_r1'] = SCALPING_PARAMS.get('partial_exit_pct_r1', 0.5)
+                        strat.config['partial_exit_pct_r2'] = SCALPING_PARAMS.get('partial_exit_pct_r2', 0.3)
+                except ImportError:
+                    pass
+
+    def _update_partial_status_label(self):
+        """Update the status label text."""
+        if hasattr(self, 'partial_status_label') and self.partial_status_label:
+            try:
+                status = "ON ✓" if self.partial_exits_enabled.get() else "OFF ✗"
+                self.partial_status_label.config(
+                    text=f"({status})",
+                    foreground="#00CC44" if self.partial_exits_enabled.get() else "#FF3333"
+                )
+            except tk.TclError:
+                pass
+
+    def _on_partial_toggle(self):
+        """Called when the Partial radio buttons are toggled."""
+        enabled = self.partial_exits_enabled.get()
+
+        # Update UI
+        self._update_partial_status_dot()
+        self._update_partial_status_label()
+
+        # Log the change
+        self.log_message(
+            f"🔀 Partial exits {'ENABLED' if enabled else 'DISABLED'} for all strategies",
+            "green" if enabled else "orange"
+        )
+
+        # ─── PROPAGATE TO ALL STRATEGIES ──────────────────────────────────────────
+        self._propagate_partial_setting_to_strategies(enabled)
+
+        # ─── UPDATE GLOBAL CONFIG ─────────────────────────────────────────────────
+        try:
+            from strategies.MomentumStrategy_MACD_HybridScore_Claude import GlobalConfig
+            GlobalConfig.PARTIAL_EXITS_ENABLED = enabled
+        except ImportError:
+            pass
+
+        # ─── UPDATE BACKTEST CLASS ───────────────────────────────────────────────
+        try:
+            from strategies.MomentumStrategy_MACD_HybridScore_Claude import BacktestMomentumStrategy
+            BacktestMomentumStrategy.partial_exits_enabled = enabled
+        except ImportError:
+            pass
+
+        # ─── UPDATE SCALPING BACKTEST ────────────────────────────────────────────
+        try:
+            from strategies.scalping_strategy import BacktestScalpingStrategy
+            BacktestScalpingStrategy.partial_exits_enabled = enabled
+        except ImportError:
+            pass
+
+    def _propagate_partial_setting_to_strategies(self, enabled: bool):
+        """Propagate the partial exits setting to all live strategy instances."""
+        strategies_to_update = []
+
+        # Collect all strategy instances
+        if hasattr(self, 'strategy') and self.strategy:
+            strategies_to_update.append(self.strategy)
+
+        if hasattr(self, 'strategies'):
+            for name, strat in self.strategies.items():
+                if strat not in strategies_to_update and not isinstance(strat, type):
+                    strategies_to_update.append(strat)
+
+        # Apply the setting to each strategy
+        for strat in strategies_to_update:
+            # Direct attribute
+            if hasattr(strat, 'partial_exits_enabled'):
+                strat.partial_exits_enabled = enabled
+
+            # Config dict if available
+            if hasattr(strat, 'config') and isinstance(strat.config, dict):
+                strat.config['partial_exits_enabled'] = enabled
+
+            # For Scalping strategy - specific attributes
+            if hasattr(strat, 'allow_partial_exits'):
+                strat.allow_partial_exits = enabled
+
+            # For Momentum/Kalman - specific attributes
+            if hasattr(strat, 'enable_partial_exits'):
+                strat.enable_partial_exits = enabled
+
+            # Update any internal state that caches the setting
+            if hasattr(strat, '_partial_exits_cache'):
+                strat._partial_exits_cache = {'value': enabled, 'updated_at': datetime.now(timezone.utc)}
+
+        # Special handling for Momentum strategy's internal flags
+        if hasattr(self, 'strategies') and 'Momentum' in self.strategies:
+            strat = self.strategies['Momentum']
+            if hasattr(strat, 'take_profit_r1') and hasattr(strat, 'take_profit_r2'):
+                # If partial exits are disabled, set partial exit percentages to 0
+                if not enabled:
+                    # Store original values before disabling
+                    if not hasattr(strat, '_saved_partial_pcts'):
+                        strat._saved_partial_pcts = {
+                            'partial_exit_pct_r1': getattr(strat, 'partial_exit_pct_r1', 0.5),
+                            'partial_exit_pct_r2': getattr(strat, 'partial_exit_pct_r2', 0.3)
+                        }
+                    # Disable partial exits by setting to 0
+                    if hasattr(strat, 'partial_exit_pct_r1'):
+                        strat.partial_exit_pct_r1 = 0.0
+                    if hasattr(strat, 'partial_exit_pct_r2'):
+                        strat.partial_exit_pct_r2 = 0.0
+                    if hasattr(strat, 'config'):
+                        strat.config['partial_exit_pct_r1'] = 0.0
+                        strat.config['partial_exit_pct_r2'] = 0.0
+                else:
+                    # Restore saved values
+                    if hasattr(strat, '_saved_partial_pcts'):
+                        if hasattr(strat, 'partial_exit_pct_r1'):
+                            strat.partial_exit_pct_r1 = strat._saved_partial_pcts.get('partial_exit_pct_r1', 0.5)
+                        if hasattr(strat, 'partial_exit_pct_r2'):
+                            strat.partial_exit_pct_r2 = strat._saved_partial_pcts.get('partial_exit_pct_r2', 0.3)
+                        if hasattr(strat, 'config'):
+                            strat.config['partial_exit_pct_r1'] = strat._saved_partial_pcts.get('partial_exit_pct_r1',
+                                                                                                0.5)
+                            strat.config['partial_exit_pct_r2'] = strat._saved_partial_pcts.get('partial_exit_pct_r2',
+                                                                                                0.3)
+
+        # Special handling for Scalping strategy
+        if hasattr(self, 'strategies') and 'Scalping' in self.strategies:
+            strat = self.strategies['Scalping']
+            if hasattr(strat, 'allow_partial_exits'):
+                strat.allow_partial_exits = enabled
+            if hasattr(strat, 'config'):
+                strat.config['allow_partial_exits'] = enabled
+            # If disabled, set partial exit percentages to 0
+            if not enabled:
+                if hasattr(strat, 'partial_exit_pct_r1'):
+                    strat.partial_exit_pct_r1 = 0.0
+                if hasattr(strat, 'partial_exit_pct_r2'):
+                    strat.partial_exit_pct_r2 = 0.0
+                if hasattr(strat, 'config'):
+                    strat.config['partial_exit_pct_r1'] = 0.0
+                    strat.config['partial_exit_pct_r2'] = 0.0
+            else:
+                # Restore from defaults or saved values
+                try:
+                    from strategies.scalping_strategy import SCALPING_PARAMS
+                    if hasattr(strat, 'partial_exit_pct_r1'):
+                        strat.partial_exit_pct_r1 = SCALPING_PARAMS.get('partial_exit_pct_r1', 0.5)
+                    if hasattr(strat, 'partial_exit_pct_r2'):
+                        strat.partial_exit_pct_r2 = SCALPING_PARAMS.get('partial_exit_pct_r2', 0.3)
+                    if hasattr(strat, 'config'):
+                        strat.config['partial_exit_pct_r1'] = SCALPING_PARAMS.get('partial_exit_pct_r1', 0.5)
+                        strat.config['partial_exit_pct_r2'] = SCALPING_PARAMS.get('partial_exit_pct_r2', 0.3)
+                except ImportError:
+                    pass
+
 
     def enable_ai_button(self):
         """Enable AI Analysis button when data becomes available"""
@@ -4534,9 +4908,6 @@ class TradingApp:
             if self.running:
                 self.stop_trading()
 
-            # ═══════════════════════════════════════════════════════════════════
-            # CRITICAL: Ensure market data is available BEFORE strategy switch
-            # ═══════════════════════════════════════════════════════════════════
             self.log_message("=" * 70, "blue")
             self.log_message(f"🔄 Switching to strategy: {new_strategy_name}", "blue")
             self.log_message("=" * 70, "blue")
@@ -4547,9 +4918,7 @@ class TradingApp:
                     self.start_trading()
                 return False
 
-            # ═══════════════════════════════════════════════════════════════════
             # All strategies (Momentum / Kalman / Scalping / Enhanced) - single TF
-            # ═══════════════════════════════════════════════════════════════════
             if True:
                 # Re-enable interval combobox for single-timeframe strategies
                 if hasattr(self, 'interval_combobox'):
@@ -4586,6 +4955,22 @@ class TradingApp:
                     new_strategy.get_balance = self.get_balance
                 if hasattr(new_strategy, 'get_current_price'):
                     new_strategy.get_current_price = self.get_current_price
+
+                # ─── ADD THIS: Force direction for Scalping strategy ──────────────
+                if new_strategy_name == "Scalping":
+                    gui_dir = self.trade_direction_var.get()
+                    if hasattr(new_strategy, 'trade_direction'):
+                        new_strategy.trade_direction = gui_dir
+                        new_strategy.only_long_entries = (gui_dir == 'long')
+                        new_strategy.only_short_entries = (gui_dir == 'short')
+                        if hasattr(new_strategy, 'config'):
+                            new_strategy.config['trade_direction'] = gui_dir
+                        if hasattr(new_strategy, '_last_dir_cache'):
+                            new_strategy._last_dir_cache = {'bar': -999, 'dir': None, 'result': True, 'reason': ''}
+                        self.log_message(f"🔧 Scalping direction set to: {gui_dir.upper()}", "bold green")
+                    # Also update via the dedicated method if available
+                    if hasattr(new_strategy, 'update_trade_direction'):
+                        new_strategy.update_trade_direction(gui_dir)
 
                 # Enable ML if needed
                 if new_strategy_name == "Enhanced" and self.ml_enabled:
@@ -5059,6 +5444,8 @@ class TradingApp:
 
                 # ── ensure trade_direction is always in sync with the GUI ─────
                 _gui_dir = self.trade_direction_var.get()
+
+                # Sync for all strategies
                 if hasattr(self.strategy, 'trade_direction'):
                     if self.strategy.trade_direction != _gui_dir:
                         self.strategy.trade_direction = _gui_dir
@@ -5067,6 +5454,36 @@ class TradingApp:
                     self.strategy.only_long_entries = (_gui_dir == 'long')
                 if hasattr(self.strategy, 'only_short_entries'):
                     self.strategy.only_short_entries = (_gui_dir == 'short')
+
+                # ─── ADD THIS: Specific Scalping direction handling ──────────────────────
+                if self.strategy_type_var.get() == "Scalping":
+                    # Use the dedicated update method if available
+                    if hasattr(self.strategy, 'update_trade_direction'):
+                        self.strategy.update_trade_direction(_gui_dir)
+                    else:
+                        # Fallback: manual sync
+                        if hasattr(self.strategy, 'trade_direction'):
+                            old_dir = self.strategy.trade_direction
+                            if old_dir != _gui_dir:
+                                self.strategy.trade_direction = _gui_dir
+                                self.strategy.only_long_entries = (_gui_dir == 'long')
+                                self.strategy.only_short_entries = (_gui_dir == 'short')
+                                if hasattr(self.strategy, 'config'):
+                                    self.strategy.config['trade_direction'] = _gui_dir
+                                # Clear pending signal if direction changed
+                                if hasattr(self.strategy, '_pending_signal') and self.strategy._pending_signal:
+                                    sig_dir = self.strategy._pending_signal.get('direction', '')
+                                    if sig_dir and sig_dir != _gui_dir and _gui_dir != 'both':
+                                        self.strategy._pending_signal = None
+                                        self.strategy._signal_bar = -999
+                                        self.log_message(
+                                            f"🔄 Cleared pending {sig_dir} signal (direction changed to {_gui_dir})",
+                                            "orange")
+                                if hasattr(self.strategy, '_last_dir_cache'):
+                                    self.strategy._last_dir_cache = {'bar': -999, 'dir': None, 'result': True,
+                                                                     'reason': ''}
+                                self.log_message(f"🔧 Scalping direction synced: {old_dir} → {_gui_dir.upper()}",
+                                                 "bold cyan")
 
                 if df is None or len(df) < 2:
                     self.log_message("⚠️ Indicator calculation failed or insufficient data", "orange")
@@ -11712,7 +12129,16 @@ class TradingApp:
             if current_price >= max(self.position['stop_loss'], tsl):
                 return 'hard_stop' if self.position['stop_loss'] >= tsl else 'trailing_stop'
 
-        if be_stop is None and risk > 0:
+        # ─── BREAKEVEN STOP WITH PARTIAL EXITS SETTING ──────────────────────────
+        # Check if partial exits are enabled
+        partial_enabled = True
+        if hasattr(self, 'trading_app') and hasattr(self.trading_app, 'partial_exits_enabled'):
+            partial_enabled = self.trading_app.partial_exits_enabled.get()
+        elif hasattr(self, 'partial_exits_enabled'):
+            partial_enabled = self.partial_exits_enabled if isinstance(self.partial_exits_enabled,
+                                                                       bool) else self.partial_exits_enabled.get()
+
+        if be_stop is None and risk > 0 and partial_enabled:
             if self.position['type'] == 'long' and current_price >= entry_price + risk:
                 if hasattr(self, "close_partial"):
                     self.close_partial(0.5)
@@ -12169,12 +12595,11 @@ class TradingApp:
         self.root.after(0, lambda: func(*args, **kwargs))
 
     def run_best_param_values(self):
-        """
-        Launch the standalone strategies/Best_Param_Values.py script as a
-        separate process. Does not block the GUI and does not interfere
-        with the normal backtest workflow.
-        """
+        """Launch Best_Param_Values.py (opens its own GUI)."""
         import subprocess
+        import sys
+        import os
+        import threading
 
         script_path = self.resource_path(os.path.join("strategies", "Best_Param_Values.py"))
 
@@ -12187,29 +12612,52 @@ class TradingApp:
             )
             return
 
+        # Get current GUI settings (pass as environment variables)
+        current_strategy = self.strategy_type_var.get()
+        symbol = self.symbol_var.get()
+
+        # Convert symbol for ccxt
+        if '-' in symbol and '/' not in symbol:
+            symbol = symbol.replace('-', '/')
+
+        self.log_message("=" * 70, "blue")
+        self.log_message(f"🏆 Launching Best_Param_Values.py", "blue")
+        self.log_message(f"   Strategy: {current_strategy}", "blue")
+        self.log_message(f"   Symbol:   {symbol}", "blue")
+        self.log_message(f"   (Metric is selected inside the Best Param Values window)", "blue")
+        self.log_message("=" * 70, "blue")
+
+        # Disable button during run
         if hasattr(self, 'best_param_btn'):
             self.best_param_btn.config(state=tk.DISABLED, text="⏳ Running...")
 
-        self.log_message("=" * 70, "blue")
-        self.log_message(f"🏆 Launching Best_Param_Values.py ({self.start_date_var.get()} → {self.end_date_var.get()})",
-                         "blue")
-        self.log_message("=" * 70, "blue")
-
         def _worker():
             try:
-                # Get the currently selected strategy from the GUI
-                current_strategy = self.strategy_type_var.get() if hasattr(self, 'strategy_type_var') else "Momentum"
-
                 env = os.environ.copy()
-                env['BEST_PARAM_SYMBOL'] = self.symbol_var.get()
+                env['BEST_PARAM_STRATEGY'] = current_strategy
+                env['BEST_PARAM_SYMBOL'] = symbol
                 env['BEST_PARAM_INTERVAL'] = self.interval_var.get()
                 env['BEST_PARAM_START_DATE'] = self.start_date_var.get()
                 env['BEST_PARAM_END_DATE'] = self.end_date_var.get()
-                env['BEST_PARAM_STRATEGY'] = current_strategy
 
-                self.log_message(f"📊 Passing strategy to Best_Param_Values: {current_strategy}", "cyan")
+                # Tell Best_Param_Values.py exactly which strategy_settings.json
+                # to read (same file this app loads/saves via
+                # self.strategy_settings_file). This is how it picks up
+                # trade_direction ('long'/'short'/'both') and whichever mode
+                # (Default/Custom) is currently active — no separate UI needed,
+                # and it works reliably even when both scripts are packaged
+                # into a frozen .exe with an unpredictable working directory.
+                settings_path = os.path.abspath(self.strategy_settings_file)
+                if os.path.exists(settings_path):
+                    env['BEST_PARAM_SETTINGS_FILE'] = settings_path
+                else:
+                    self.root.after(0, lambda: self.log_message(
+                        f"⚠️ {settings_path} not found — Best_Param_Values.py will fall back to its own defaults",
+                        "orange"))
 
-                # ─── Run WITHOUT creating a new console window ──────────────────
+                # ─── FIX: Remove --show-gui flag ────────────────────────────────────
+                # The new Best_Param_Values.py opens its own GUI by default.
+                # No flags needed – it reads env vars automatically.
                 process = subprocess.Popen(
                     [sys.executable, script_path],
                     cwd=os.path.abspath("."),
@@ -12220,33 +12668,25 @@ class TradingApp:
                     bufsize=1,
                 )
 
-                # Read and log output
                 for line in process.stdout:
                     line = line.rstrip("\n")
                     if line:
-                        self._ui_safe(self.log_message, f"[Best_Param_Values] {line}", "cyan")
+                        self.root.after(0, lambda l=line: self.log_message(f"[Best_Param_Values] {l}", "cyan"))
 
                 return_code = process.wait()
-
                 if return_code == 0:
-                    self._ui_safe(self.log_message, "✅ Best_Param_Values.py finished successfully", "green")
+                    self.root.after(0,
+                                    lambda: self.log_message("✅ Best_Param_Values.py finished successfully", "green"))
                 else:
-                    self._ui_safe(
-                        self.log_message,
-                        f"⚠️ Best_Param_Values.py exited with code {return_code}",
-                        "orange"
-                    )
+                    self.root.after(0,
+                                    lambda: self.log_message(f"⚠️ Best_Param_Values.py exited with code {return_code}",
+                                                             "orange"))
 
             except Exception as e:
-                self._ui_safe(self.log_message, f"❌ Failed to run Best_Param_Values.py: {e}", "red")
-                import traceback
-                self._ui_safe(self.log_message, traceback.format_exc(), "red")
+                self.root.after(0, lambda: self.log_message(f"❌ Failed to run Best_Param_Values.py: {e}", "red"))
             finally:
                 if hasattr(self, 'best_param_btn'):
-                    self._ui_safe(
-                        self.best_param_btn.config,
-                        state=tk.NORMAL, text="🏆 Best Params"
-                    )
+                    self.root.after(0, lambda: self.best_param_btn.config(state=tk.NORMAL, text="🏆 Best Params"))
 
         threading.Thread(target=_worker, daemon=True, name="BestParamValues").start()
 
